@@ -1,0 +1,18 @@
+{
+  "_note": "空数据集（T-11/D-15）：全部槽位键在值 null、cases=[]。双用途：①空数据导出（基准②：仅剔除占位/循环差异的保真比对，允许全量告警豁免）②E3 下限压测。cases=[] 时循环章实例化 0 份、TOC 置 dirty 豁免（R4 双态口径）。文件=纯 JSON（数据集由 GUI 机写，不走注释剥离约定）。conclusion.pass/fail=null 与样例数据集键位对齐（条件措辞槽分支文案键位契约一致，RC-08）。",
+  "meta": { "title": null, "author": null, "company": null, "date": null, "calc_file": null },
+  "model_stats": { "software_name": null, "node_count": null, "element_count": null },
+  "cases": [],
+  "materials": [],
+  "images": [
+    { "key": "mesh", "path": null, "caption": null },
+    { "key": "boundary", "path": null, "caption": null },
+    { "key": "buckle", "path": null, "caption": null },
+    { "key": "disp", "path": null, "caption": null },
+    { "key": "stress_c", "path": null, "caption": null },
+    { "key": "stress_d", "path": null, "caption": null }
+  ],
+  "manual_fields": { "constraint_desc": null, "load_case_desc": null, "load_type": null,
+                     "calc_method": null, "element_type": null, "project_subject": null },
+  "conclusion": { "verdict": null, "pass": null, "fail": null }
+}

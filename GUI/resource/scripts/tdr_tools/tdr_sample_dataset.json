@@ -1,0 +1,35 @@
+{
+  "_note": "样例数据集（试导出/自测用；含 displacement_max T-05、loads 实测列集 T-09、element_type 人工补录 U-06、project_subject D-24②）。结果数值键位在值 null（C7/D-4 首期标缺→引擎缺项策略+告警）。图片 path=null 走缺项策略（云图 A 允许缺项 U-04）；联调时替换为真实图片路径。文件=纯 JSON（GUI 机写）。",
+  "meta": { "title": "XXX结构强度计算报告", "author": null, "company": null,
+            "date": null, "calc_file": null },
+  "model_stats": { "software_name": "迈曦CAE", "node_count": 183327, "element_count": 172044 },
+  "cases": [
+    { "seq": 1, "name": "工况一", "load_type": "轴向拉伸+外压",
+      "loads": { "position": "筒体中部", "end_load": "1500 kN", "pressure": "0.35 MPa", "temperature": "常温" },
+      "results": { "stress_peak": null, "displacement_max": null, "buckling_mode": null, "reserve_factor": null } },
+    { "seq": 2, "name": "工况二", "load_type": "三点弯",
+      "loads": { "position": "舱段端框", "end_load": "800 kN", "pressure": "0.35 MPa", "temperature": "常温" },
+      "results": { "stress_peak": null, "displacement_max": null, "buckling_mode": null, "reserve_factor": null } },
+    { "seq": 3, "name": "工况三", "load_type": "轴压+高温",
+      "loads": { "position": "筒体中部", "end_load": "1200 kN", "pressure": "0.30 MPa", "temperature": "150℃" },
+      "results": { "stress_peak": null, "displacement_max": null, "buckling_mode": null, "reserve_factor": null } }
+  ],
+  "materials": [
+    { "name": "T700/环氧复材单向板", "allowable_stress": null, "max_stress": null, "reserve_factor": null },
+    { "name": "TC4 钛合金", "allowable_stress": null, "max_stress": null, "reserve_factor": null }
+  ],
+  "images": [
+    { "key": "mesh", "path": null, "caption": "网格划分" },
+    { "key": "boundary", "path": null, "caption": "模型边界及加载" },
+    { "key": "buckle", "path": null, "caption": "失稳模态" },
+    { "key": "disp", "path": null, "caption": "位移" },
+    { "key": "stress_c", "path": null, "caption": "最大应力" },
+    { "key": "stress_d", "path": null, "caption": "最大应力" }
+  ],
+  "manual_fields": { "constraint_desc": "端框螺栓连接约束", "load_case_desc": "端面均布加载",
+                     "load_type": "轴向拉伸", "calc_method": "隐式非线性静力分析",
+                     "element_type": "C3D8R 连续壳单元", "project_subject": "XXX" },
+  "conclusion": { "verdict": null,
+                  "pass": "通过有限元计算分析，{manual_fields.project_subject}在设计载荷下结构稳定性和强度均满足设计要求，计算结果总结如下：",
+                  "fail": "通过有限元计算分析，{manual_fields.project_subject}在设计载荷下强度剩余系数低于 1.0，结构不满足设计要求，需进一步评估。" }
+}

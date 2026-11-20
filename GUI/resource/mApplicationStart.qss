@@ -1,0 +1,667 @@
+﻿
+QToolButton
+{
+	font-size: @{font.body};
+	font-family: '@{font.family}';
+	width:@{size.controlIn};
+	height:@{size.controlIn};
+	background-color: @{color.surface};
+	border-radius:3px;
+	border:1px solid @{color.border};
+}
+QToolButton:hover
+{
+	background-color:@{color.panel};
+	border-radius:4px;
+	border:1px solid @{color.border};
+}
+QToolButton:pressed,
+QToolButton:checked
+{
+	background-color:@{color.selected};
+	border-radius:4px;
+	border:1px solid @{color.primary};
+}
+QToolButton:disabled
+{
+	color:@{color.disabled};
+	background-color:@{color.panel};
+	border-radius:4px;
+}
+QTableWidget
+{
+	font-family: '@{font.family}';
+	background - color: @{color.surface};
+}
+QTableWidget QTableCornerButton::section {
+    background: @{color.header};
+    border: 1px solid @{color.border};
+}
+QTableWidget QHeaderView::section:horizontal
+{
+    background: @{color.header};
+    border: 1px solid @{color.border};
+    border-left: 0;
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+	padding:4px;
+	font-weight:normal;
+}
+QTableWidget QHeaderView::section:vertical
+{
+    background: @{color.header};
+    border: 1px solid @{color.border};
+    border-left: 0;
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+	font-weight:normal;
+}
+QLabel
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+}
+QDoubleSpinBox
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+}
+
+/* QMenu 不再声明任何全局规则：命令菜单已全自绘（mUiMenu/mUiStyle，规则 1.0），
+   容器底色/边框/行内容实时取 UiPalette；全局 QSS 一旦命中 QMenu，
+   QStyleSheetStyle 会接管行/指示器绘制，自绘全部失效 */
+QTextEdit
+{
+	background-color:@{color.panel};
+	border:  1px solid @{color.border};
+}
+QPushButton
+{
+font-size: @{font.body};
+font-family: '@{font.family}';
+	width:80px;
+	height:@{size.controlIn};
+	background-color:@{color.surface};
+	 
+	border:1px solid @{color.border};
+	border-radius:3px;
+}
+QPushButton:hover
+{
+	background-color:@{color.panel};
+	border-radius:4px;
+	border:1px solid @{color.border};
+}
+QPushButton:pressed,
+QPushButton:checked
+{
+	background-color:@{color.selected};
+	border-radius:4px;
+	border:1px solid @{color.primary};
+}
+QPushButton:disabled
+{
+	color:@{color.disabled};
+	background-color:@{color.panel};
+	border-radius:4px;
+}
+QListWidget
+{
+	background-color:@{color.panel};
+	border: 1px solid @{color.border};
+}
+
+QListWidget::item:hover
+{
+	height:26px;
+	flex-direction: row;
+	border-radius:3px;
+	background-color: @{color.panel};
+}
+QListWidget::item:selected,
+QListWidget::item:pressed,
+QListWidget::item:checked
+{
+	height:26px;
+	flex-direction: row;
+	border-radius:3px;
+	background-color: @{color.selected};
+	color:@{color.text};
+	border: none;
+	outline:none;
+}
+
+QListWidget::item
+{
+	height:26px;
+	margin-left: 8px;
+	margin-right: 8px;
+	margin-bottom:5px;
+	border-radius: 3px;
+}
+
+QDoubleSpinBox
+{
+	height:@{size.controlIn};
+	border-radius:4px;
+	border:1px solid @{color.border};
+	background-color:@{color.surface};
+}
+QDoubleSpinBox:hover
+{
+	color:@{color.text};
+	border: 1px solid @{color.muted};
+}
+QDoubleSpinBox:focus
+{
+	color:@{color.text};
+	border: 1px solid @{color.primary};
+}
+QDoubleSpinBox:disabled
+{
+	background-color: @{color.panel};
+	color: @{color.disabled};
+}
+QDoubleSpinBox::lineEdit
+{
+	padding: 0 2px;
+	border: none;
+}
+
+QDoubleSpinBox::up-button,QDoubleSpinBox::down-button
+{
+	background:none;
+	border:none;
+	border-radius:3px;
+	width:10px;
+	height:10px;
+	padding:0px;
+}
+
+QDoubleSpinBox::up-button
+{
+	subcontrol-position:top right;
+	image: url(:/mMainWidgets/Icon/up-list.png);
+}
+
+QDoubleSpinBox::up-button:hover
+{
+	border:1px solid @{color.primary};
+}
+
+QDoubleSpinBox::up-button:pressed
+{
+	background-color:@{color.primary};
+}
+
+QDoubleSpinBox::down-button
+{
+	subcontrol-position:bottom right;
+	image: url(:/mMainWidgets/Icon/down-list.png);
+}
+
+QDoubleSpinBox::down-button:hover
+{
+	border:1px solid @{color.primary};
+}
+
+QDoubleSpinBox::down-button:pressed
+{
+	background-color:@{color.primary};
+}
+
+QSpinBox
+{
+font-family: '@{font.family}';
+font-size: @{font.body};
+	height:@{size.controlIn};
+	border-radius:4px;
+	border:1px solid @{color.border};
+	background-color:@{color.surface};
+}
+
+QSpinbox::lineEdit
+{
+	padding: 0 2px;
+	border: none;
+}
+
+QSpinBox::up-button,QSpinBox::down-button
+{
+	background:none;
+	border:none;
+	border-radius:3px;
+	width:10px;
+	height:10px;
+	padding: 0px;
+}
+
+QSpinBox::up-button
+{
+	subcontrol-position:top right;
+	image: url(:/mMainWidgets/Icon/up-list.png);
+}
+
+QSpinBox::up-button:hover
+{
+	border:1px solid @{color.primary};
+}
+
+QSpinBox::up-button:pressed
+{
+	background-color:@{color.primary};
+}
+
+QSpinBox::down-button
+{
+	subcontrol-position:bottom right;
+	image: url(:/mMainWidgets/Icon/down-list.png);
+}
+
+QSpinBox::down-button:hover
+{
+	border:1px solid @{color.primary};
+}
+
+QSpinBox::down-button:pressed
+{
+	background-color:@{color.primary};
+}
+QSpinBox:hover
+{
+	color:@{color.text};
+	border: 1px solid @{color.muted};
+}
+QSpinBox:focus
+{
+	color:@{color.text};
+	border: 1px solid @{color.primary};
+}
+QSpinBox:disabled
+{
+	background-color: @{color.panel};
+	color: @{color.disabled};
+}
+/*警告弹窗*/
+QMessageBox
+{
+	border-radius:4px;
+	background-color:@{color.surface};
+}
+
+QMessageBox QPushButton
+{
+	min-width:76px;
+	min-height:@{size.controlIn};
+	border:1px solid @{color.border};
+	border-radius:3px;
+	background-color:@{color.surface};
+	
+}
+QMessageBox QPushButton:hover
+{
+	background-color: @{color.primary};
+	color:@{color.text};
+	border-radius:3px;
+}
+QMessageBox QLabel#qt_msgbox_label
+{
+	background-color: @{color.surface};
+}
+
+QMessageBox QLabel#qt_msgboxex_icon_label
+{
+	background-color: @{color.surface};
+}
+/*主窗口*/
+QMainWindow 
+{
+	background-color: @{color.border}; 
+}
+QMainWindow::separator
+{
+	width: 1px;
+	background-color:@{color.border}; 
+}
+QMainWindow::titleBar
+{
+	background-color:E7EEF5;
+}
+
+QMainWindow#mMechMainWindow QMenuBar
+{
+	background-color:@{color.surface};
+}
+
+/*菜单栏*/
+QMenuBar
+{
+	background-color: @{color.header};
+}
+
+/*功能树*/
+
+
+QStackedWidget
+{
+	background-color: @{color.panel};
+}
+QWidget#scrollAreaWidgetContents,
+QWidget#scrollAreaWidgetContents_2
+{
+	background-color: @{color.panel};
+}
+
+/*主界面工具栏按钮美化*/
+QMainWindow#mMechMainWindow QToolBar
+{
+	border:none;
+	background-color:@{color.surface};
+}
+QToolBar QToolButton
+{
+	margin:3px;
+	padding: 0px;
+	border:none;
+}
+QToolBar QToolButton:hover
+{
+	background-color:@{color.panel};
+	border:none;
+}
+QToolBar QToolButton:checked
+{
+	background-color:@{color.selected};
+	border:none;
+}
+QToolBar QToolButton:disabled
+{
+	background-color:@{color.surface};
+}
+
+/*QComboBox*/
+QComboBox::drop-down
+{
+	subcontrol-origin:padding;
+	subcontrol-position:top right;
+	width:30px;
+	border-top-right-radius:3px;
+	border-bottom-right-radius:3px;
+}
+QComboBox::down-arrow
+{
+	border-image:url(:/mMainWidgets/Icon/down-list.png);
+	width:10px;
+	height:10px;
+}
+QComboBox:disabled
+{
+	background-color: @{color.panel};
+	color: @{color.disabled};
+}
+QComboBox::selected
+{
+	background-color: @{color.panel};
+	color:@{color.text};
+	border: 1px solid @{color.border};
+}
+QComboBox::hover
+{
+	color:@{color.text};
+	border: 1px solid @{color.muted};
+}
+QComboBox
+{
+font-family: '@{font.family}';
+font-size: @{font.body};
+	height:@{size.controlIn};
+	border-radius:4px;
+	background-color:@{color.surface};
+	border:1px solid @{color.border};
+}
+QComboBox QAbstractItemView
+{
+	background-color:@{color.surface};
+	color:@{color.text};
+	border-radius:4px 4px 4px 4px;
+	font-size: @{font.body};
+		border:1px solid @{color.border};
+}
+QComboBox QAbstractItemView::item
+{
+	height:24px;
+}
+QComboBox QAbstractItemView::item:hover
+{
+	height:24px;
+	background-color:@{color.panel};
+	color:@{color.text};
+}
+QComboBox QAbstractItemView::item:selected
+{
+	height:24px;
+	background-color:@{color.panel};
+	color:@{color.text};
+}
+QDockWidget::title
+{
+	border: none;
+	background-color:@{color.panel};
+}
+QLineEdit
+{
+    font-family: '@{font.family}';
+    font-size: @{font.body};
+	height:@{size.controlIn};
+	color:@{color.text};
+	/* 原生文本内建左衬约 2px，再补 G−1 与下拉框 inset(G+1) 视觉对齐 */
+	padding-left:@{size.inset};
+	border:1px solid @{color.border};
+	border-radius:4px;
+	background-color: @{color.surface};
+}
+QLineEdit:hover
+{
+	color:@{color.text};
+	border: 1px solid @{color.focus};
+}
+QLineEdit:focus
+{
+	color:@{color.text};
+	border: 1px solid @{color.primary};
+}
+QLineEdit:disabled
+{
+	background-color: @{color.panel};
+	color: @{color.disabled};
+}
+QScrollBar:vertical {
+    background: rgba(0,0,0,0);   /* 轨道全透明 */
+    width: 6px;                  /* 默认细线 */
+    margin: 0px 0px 0px 0px;
+    border: none;
+}
+/* 滑块 */
+QScrollBar::handle:vertical {
+    background: rgba(0,0,0,35);  /* 35% 灰 */
+    min-height: 20px;
+    border-radius: 3px;          /* 圆角 */
+}
+/* 悬浮时 */
+QScrollBar::handle:vertical:hover {
+    background: rgba(0,0,0,55);  /* 加深 */
+    width: 8px;                  /* 稍微变宽 */
+}
+/* 去掉两端箭头按钮 */
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+    height: 0px;
+}
+/* 滑块上下空白区（可省） */
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: none;
+}
+QScrollBar:horizontal {
+    background: rgba(0,0,0,0);
+    height: 6px;
+    margin: 0px;
+    border: none;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(0,0,0,35);
+    min-width: 20px;
+    border-radius: 3px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: rgba(0,0,0,55);
+    height: 8px;
+}
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    border: none;
+    background: none;
+    width: 0px;
+}
+QCheckBox{
+height:@{size.control};
+font-family: '@{font.family}';
+font-size: @{font.body};
+}
+QCheckBox::indicator {
+    width:  @{size.choice};
+    height: @{size.choice};
+}
+QCheckBox::indicator:unchecked {
+    image: url(:/mMainWidgets/Icon/uncheck3x.png);
+}
+QCheckBox::indicator:checked {
+    image: url(:/mMainWidgets/Icon/check3x.png);
+}
+QCheckBox::indicator:unchecked:hover {
+    image: url(:/mMainWidgets/Icon/hoverCheck.png);
+}
+QCheckBox::indicator:checked:hover  {
+    image: url(:/mMainWidgets/Icon/check3x.png);
+}
+QCheckBox::indicator:unchecked:disabled {
+    image: url(:/mMainWidgets/Icon/disableUnCheck.png);
+}
+QCheckBox::indicator:checked:disabled  {
+    image: url(:/mMainWidgets/Icon/disableCheck.png);
+}
+QGroupBox
+{
+font-family: '@{font.family}';
+}
+QRadioButton
+{
+font-family: '@{font.family}';
+font-size: @{font.body};
+}
+QRadioButton::indicator {
+    width: 14px;
+    height: 14;
+    padding: 2px;
+ }
+ QRadioButton::indicator:unchecked {
+    image: url(:/mMainWidgets/Icon/defaultRadio.png);
+ }
+ QRadioButton::indicator:checked {
+    image: url(:/mMainWidgets/Icon/pressRadio.png);
+ }
+QRadioButton::indicator:unchecked:hover {
+    image: url(:/mMainWidgets/Icon/hoverRadio.png);
+}
+QRadioButton::indicator:checked:hover {
+    image: url(:/mMainWidgets/Icon/pressRadio.png);
+}
+QRadioButton::indicator:checked:disabled
+{
+	image: url(:/mMainWidgets/Icon/disableCheckRadio.png);
+} 
+QRadioButton::indicator:unchecked:disabled
+{
+	image: url(:/mMainWidgets/Icon/disableUncheckRadio.png);
+} 
+/*菜单栏mMenuWidget*/
+QWidget#mGroupWidget
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+	font-weight: normal;
+	color: @{color.muted};
+	background: transparent;
+    margin: 0px auto;
+	text-align: center;
+}
+
+QWidget#mGroupWidget  QToolButton
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+	font-weight: normal;
+	color: @{color.text};
+	background: transparent;
+	border: none;
+	text-align: left;
+}
+QWidget#mGroupWidget  QToolButton:hover
+{
+	color: @{color.text};
+	background: @{color.panel};
+}
+QWidget#mGroupWidget QToolButton:pressed 
+{
+	color: @{color.text};
+	background: @{color.selected};
+}
+QWidget#mGroupWidget QToolButton:checked 
+{
+	color: @{color.text};
+	background: @{color.selected};
+}
+QWidget#mGroupWidget QToolButton:disabled 
+{
+	color: @{color.disabled};
+}
+
+QWidget#mGroupWidget QCheckBox
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+	font-weight: normal;
+	color: @{color.text};
+	text-align: left;
+}
+QWidget#mGroupWidget QCheckBox::indicator
+{
+	width: 14px;
+	height: 14px;
+}
+
+
+QTreeWidget
+{
+	background-color:@{color.header};
+	border:1px solid @{color.border};
+	
+}
+QTreeWidget::item {
+background: transparent;
+}
+QTreeWidget::item:hover
+{
+color:@{color.text};	
+background-color: transparent;	
+}
+QTreeWidget::item:selected
+{
+color:@{color.primary};	
+background-color: @{color.header};	
+border:none;
+}
+
+

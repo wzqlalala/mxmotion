@@ -1,0 +1,20 @@
+{
+  "input": {
+    "project": "",
+    "geoFiles": [
+      "F:/2026/ProjectScript/RebuildMech/mech/Software/Common/RebuildGUI/bin/WorkingDir/testModel"
+    ]
+  },
+  "concurrency": 1,
+  "tasks": [
+    {
+      "taskId": "t1",
+      "name": "batch_mesh"
+    }
+  ],
+  "output": {
+    "saveProject": "",
+    "exportMesh": "F:/2026/ProjectScript/RebuildMech/mech/Software/Common/RebuildGUI/bin/WorkingDir/test/",
+    "log": "F:/2026/ProjectScript/RebuildMech/mech/Software/Common/RebuildGUI/bin/WorkingDir/test/batch.log"
+  }
+}

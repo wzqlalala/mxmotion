@@ -1,0 +1,2108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>mMechMainWindow</class>
+ <widget class="QMainWindow" name="mMechMainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1766</width>
+    <height>828</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MxMech V3.0</string>
+  </property>
+  <property name="windowIcon">
+   <iconset resource="../../resource/mMainWidgets.qrc">
+    <normaloff>:/mMainWidgets/Icon/logo.png</normaloff>:/mMainWidgets/Icon/logo.png</iconset>
+  </property>
+  <property name="styleSheet">
+   <string notr="true"/>
+  </property>
+  <widget class="QWidget" name="centralwidget"/>
+  <action name="actionNew">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/new.png</normaloff>:/mMainWidgets/Icon/new.png</iconset>
+   </property>
+   <property name="text">
+    <string>新建</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+N</string>
+   </property>
+  </action>
+  <action name="actionOpen">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/open.png</normaloff>:/mMainWidgets/Icon/open.png</iconset>
+   </property>
+   <property name="text">
+    <string>打开</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+O</string>
+   </property>
+  </action>
+  <action name="actionClose">
+   <property name="text">
+    <string>关闭</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+W</string>
+   </property>
+  </action>
+  <action name="actionSave">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/save.png</normaloff>:/mMainWidgets/Icon/save.png</iconset>
+   </property>
+   <property name="text">
+    <string>保存</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+S</string>
+   </property>
+  </action>
+  <action name="actionSave_a_Copy">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/mMainWidgets/Icon/FCopy.jpg</normaloff>:/mMainWidgets/Icon/FCopy.jpg</iconset>
+   </property>
+   <property name="text">
+    <string>另存为</string>
+   </property>
+  </action>
+  <action name="actionImport">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Import.png</normaloff>:/mMainWidgets/Icon/Import.png</iconset>
+   </property>
+   <property name="text">
+    <string>导入</string>
+   </property>
+  </action>
+  <action name="actionExport">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Export.png</normaloff>:/mMainWidgets/Icon/Export.png</iconset>
+   </property>
+   <property name="text">
+    <string>导出</string>
+   </property>
+  </action>
+  <action name="actionImages">
+   <property name="text">
+    <string>图像</string>
+   </property>
+  </action>
+  <action name="actionReport">
+   <property name="text">
+    <string>报告</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>退出</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Q</string>
+   </property>
+  </action>
+  <action name="actionPlay">
+   <property name="text">
+    <string>运行</string>
+   </property>
+  </action>
+  <action name="actionRecord">
+   <property name="text">
+    <string>保存</string>
+   </property>
+  </action>
+  <action name="actionCreate_2">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>创建</string>
+   </property>
+  </action>
+  <action name="actionModify_2">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>编辑</string>
+   </property>
+  </action>
+  <action name="actionDelete_2">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>删除</string>
+   </property>
+  </action>
+  <action name="actionTile">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/tile.png</normaloff>:/mMainWidgets/Icon/tile.png</iconset>
+   </property>
+   <property name="text">
+    <string>平铺</string>
+   </property>
+  </action>
+  <action name="actionCascade">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Cascade.png</normaloff>:/mMainWidgets/Icon/Cascade.png</iconset>
+   </property>
+   <property name="text">
+    <string>层叠</string>
+   </property>
+  </action>
+  <action name="action10">
+   <property name="text">
+    <string>10</string>
+   </property>
+  </action>
+  <action name="action25">
+   <property name="text">
+    <string>25</string>
+   </property>
+  </action>
+  <action name="action50">
+   <property name="text">
+    <string>50</string>
+   </property>
+  </action>
+  <action name="action75">
+   <property name="text">
+    <string>75</string>
+   </property>
+  </action>
+  <action name="action100">
+   <property name="text">
+    <string>100</string>
+   </property>
+  </action>
+  <action name="action125">
+   <property name="text">
+    <string>125</string>
+   </property>
+  </action>
+  <action name="action150">
+   <property name="text">
+    <string>150</string>
+   </property>
+  </action>
+  <action name="action200">
+   <property name="text">
+    <string>200</string>
+   </property>
+  </action>
+  <action name="action300">
+   <property name="text">
+    <string>300</string>
+   </property>
+  </action>
+  <action name="action400">
+   <property name="text">
+    <string>400</string>
+   </property>
+  </action>
+  <action name="actionCustom">
+   <property name="text">
+    <string>自定义</string>
+   </property>
+  </action>
+  <action name="actionPlot_Erase">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>网格显隐</string>
+   </property>
+  </action>
+  <action name="actionHighlight">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>高亮</string>
+   </property>
+  </action>
+  <action name="actionAuto_Plot_Erase_FEM">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Show and hide all.png</normaloff>:/mMainWidgets/Icon/Show and hide all.png</iconset>
+   </property>
+   <property name="text">
+    <string>显隐开关</string>
+   </property>
+  </action>
+  <action name="actionMouse_rotate_XY">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/3D rotation.png</normaloff>:/mMainWidgets/Icon/3D rotation.png</iconset>
+   </property>
+   <property name="text">
+    <string>空间旋转</string>
+   </property>
+   <property name="toolTip">
+    <string>空间旋转</string>
+   </property>
+  </action>
+  <action name="actionMouse_rotate_Z">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Plane rotation.png</normaloff>:/mMainWidgets/Icon/Plane rotation.png</iconset>
+   </property>
+   <property name="text">
+    <string>平面旋转</string>
+   </property>
+   <property name="toolTip">
+    <string>平面旋转</string>
+   </property>
+  </action>
+  <action name="actionMouse_translate_XY">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/translation.png</normaloff>:/mMainWidgets/Icon/translation.png</iconset>
+   </property>
+   <property name="text">
+    <string>平移</string>
+   </property>
+   <property name="toolTip">
+    <string>平移</string>
+   </property>
+  </action>
+  <action name="actionMouse_zoom">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/zoom.png</normaloff>:/mMainWidgets/Icon/zoom.png</iconset>
+   </property>
+   <property name="text">
+    <string>缩放</string>
+   </property>
+   <property name="toolTip">
+    <string>缩放</string>
+   </property>
+  </action>
+  <action name="actionView_corners">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Frame select and enlarge.png</normaloff>:/mMainWidgets/Icon/Frame select and enlarge.png</iconset>
+   </property>
+   <property name="text">
+    <string>框选放大</string>
+   </property>
+   <property name="toolTip">
+    <string>框选放大</string>
+   </property>
+  </action>
+  <action name="actionFit_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Adaptive view.png</normaloff>:/mMainWidgets/Icon/Adaptive view.png</iconset>
+   </property>
+   <property name="text">
+    <string>适应视图</string>
+   </property>
+   <property name="toolTip">
+    <string>适应视图</string>
+   </property>
+  </action>
+  <action name="actionView_center">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/View center.png</normaloff>:/mMainWidgets/Icon/View center.png</iconset>
+   </property>
+   <property name="text">
+    <string>视图旋转中心</string>
+   </property>
+   <property name="toolTip">
+    <string>视图旋转中心</string>
+   </property>
+  </action>
+  <action name="actionRotate_center">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Custom center.png</normaloff>:/mMainWidgets/Icon/Custom center.png</iconset>
+   </property>
+   <property name="text">
+    <string>自定义旋转中心</string>
+   </property>
+   <property name="toolTip">
+    <string>自定义旋转中心</string>
+   </property>
+  </action>
+  <action name="actionGeometry_center">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Model center.png</normaloff>:/mMainWidgets/Icon/Model center.png</iconset>
+   </property>
+   <property name="text">
+    <string>模型旋转中心</string>
+   </property>
+   <property name="toolTip">
+    <string>模型旋转中心</string>
+   </property>
+  </action>
+  <action name="actionZoom_out">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/narrow.png</normaloff>:/mMainWidgets/Icon/narrow.png</iconset>
+   </property>
+   <property name="text">
+    <string>缩小一倍</string>
+   </property>
+   <property name="toolTip">
+    <string>缩小一倍</string>
+   </property>
+  </action>
+  <action name="actionZoom_in">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/enlarge.png</normaloff>:/mMainWidgets/Icon/enlarge.png</iconset>
+   </property>
+   <property name="text">
+    <string>放大一倍</string>
+   </property>
+   <property name="toolTip">
+    <string>放大一倍</string>
+   </property>
+  </action>
+  <action name="actionFront_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Z-axis front view.png</normaloff>:/mMainWidgets/Icon/Z-axis front view.png</iconset>
+   </property>
+   <property name="text">
+    <string>前视图</string>
+   </property>
+   <property name="toolTip">
+    <string>前视图</string>
+   </property>
+  </action>
+  <action name="actionRear_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Z-axis down view.png</normaloff>:/mMainWidgets/Icon/Z-axis down view.png</iconset>
+   </property>
+   <property name="text">
+    <string>后视图</string>
+   </property>
+   <property name="toolTip">
+    <string>后视图</string>
+   </property>
+  </action>
+  <action name="actionTop_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Y-axis front view.png</normaloff>:/mMainWidgets/Icon/Y-axis front view.png</iconset>
+   </property>
+   <property name="text">
+    <string>仰视图</string>
+   </property>
+   <property name="toolTip">
+    <string>仰视图</string>
+   </property>
+  </action>
+  <action name="actionBottom_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Y-axis down view.png</normaloff>:/mMainWidgets/Icon/Y-axis down view.png</iconset>
+   </property>
+   <property name="text">
+    <string>俯视图</string>
+   </property>
+   <property name="toolTip">
+    <string>俯视图</string>
+   </property>
+  </action>
+  <action name="actionLeft_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/X-axis down view.png</normaloff>:/mMainWidgets/Icon/X-axis down view.png</iconset>
+   </property>
+   <property name="text">
+    <string>左视图</string>
+   </property>
+   <property name="toolTip">
+    <string>左视图</string>
+   </property>
+  </action>
+  <action name="actionRight_view">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/X-axis front view.png</normaloff>:/mMainWidgets/Icon/X-axis front view.png</iconset>
+   </property>
+   <property name="text">
+    <string>右视图</string>
+   </property>
+   <property name="toolTip">
+    <string>右视图</string>
+   </property>
+  </action>
+  <action name="actionISO_view1">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Standard view 1.png</normaloff>:/mMainWidgets/Icon/Standard view 1.png</iconset>
+   </property>
+   <property name="text">
+    <string>轴测视图</string>
+   </property>
+   <property name="toolTip">
+    <string>轴测视图</string>
+   </property>
+  </action>
+  <action name="actionISO_view2">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Standard view 2.png</normaloff>:/mMainWidgets/Icon/Standard view 2.png</iconset>
+   </property>
+   <property name="text">
+    <string>轴测视图2</string>
+   </property>
+   <property name="toolTip">
+    <string>轴测视图2</string>
+   </property>
+  </action>
+  <action name="actionISO_view3">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Standard view 3.png</normaloff>:/mMainWidgets/Icon/Standard view 3.png</iconset>
+   </property>
+   <property name="text">
+    <string>轴测视图3</string>
+   </property>
+   <property name="toolTip">
+    <string>轴测视图3</string>
+   </property>
+  </action>
+  <action name="actionISO_view4">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Standard view 4.png</normaloff>:/mMainWidgets/Icon/Standard view 4.png</iconset>
+   </property>
+   <property name="text">
+    <string>轴测视图4</string>
+   </property>
+   <property name="toolTip">
+    <string>轴测视图4</string>
+   </property>
+  </action>
+  <action name="actionWireframe">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Wireframe mode.png</normaloff>:/mMainWidgets/Icon/Wireframe mode.png</iconset>
+   </property>
+   <property name="text">
+    <string>线框模型</string>
+   </property>
+   <property name="toolTip">
+    <string>线框模型</string>
+   </property>
+  </action>
+  <action name="actionHiddenline">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/surface mode.png</normaloff>:/mMainWidgets/Icon/surface mode.png</iconset>
+   </property>
+   <property name="text">
+    <string>隐藏线模型</string>
+   </property>
+   <property name="toolTip">
+    <string>隐藏线模型</string>
+   </property>
+  </action>
+  <action name="actionsmoothshaded">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Grid mode.png</normaloff>:/mMainWidgets/Icon/Grid mode.png</iconset>
+   </property>
+   <property name="text">
+    <string>网格模型</string>
+   </property>
+   <property name="toolTip">
+    <string>网格模型</string>
+   </property>
+  </action>
+  <action name="actionAny_Labels">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Any label.png</normaloff>:/mMainWidgets/Icon/Any label.png</iconset>
+   </property>
+   <property name="text">
+    <string>所有标签</string>
+   </property>
+   <property name="toolTip">
+    <string>所有标签</string>
+   </property>
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+  </action>
+  <action name="actionLabel_Control">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Label control.png</normaloff>:/mMainWidgets/Icon/Label control.png</iconset>
+   </property>
+   <property name="text">
+    <string>标签显隐开关</string>
+   </property>
+   <property name="toolTip">
+    <string>标签显隐开关</string>
+   </property>
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+  </action>
+  <action name="actionNode_Label">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Node label.png</normaloff>:/mMainWidgets/Icon/Node label.png</iconset>
+   </property>
+   <property name="text">
+    <string>节点标签</string>
+   </property>
+   <property name="toolTip">
+    <string>节点标签</string>
+   </property>
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+  </action>
+  <action name="actionElement_Label">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Unit label.png</normaloff>:/mMainWidgets/Icon/Unit label.png</iconset>
+   </property>
+   <property name="text">
+    <string>单元标签</string>
+   </property>
+   <property name="toolTip">
+    <string>单元标签</string>
+   </property>
+   <property name="visible">
+    <bool>true</bool>
+   </property>
+  </action>
+  <action name="actionShowNode">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Node visibility.png</normaloff>:/mMainWidgets/Icon/Node visibility.png</iconset>
+   </property>
+   <property name="text">
+    <string>节点显隐开关</string>
+   </property>
+   <property name="toolTip">
+    <string>节点显隐开关</string>
+   </property>
+  </action>
+  <action name="action_implicit">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>通用结构分析</string>
+   </property>
+  </action>
+  <action name="action_explicit">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>显式动力学分析</string>
+   </property>
+  </action>
+  <action name="action_Fluid">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>流体分析</string>
+   </property>
+  </action>
+  <action name="action_help">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/manual.png</normaloff>:/mMainWidgets/Icon/manual.png</iconset>
+   </property>
+   <property name="text">
+    <string>用户手册</string>
+   </property>
+  </action>
+  <action name="actionexamples">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/examples.png</normaloff>:/mMainWidgets/Icon/examples.png</iconset>
+   </property>
+   <property name="text">
+    <string>典型算例</string>
+   </property>
+  </action>
+  <action name="actionabout">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/about.png</normaloff>:/mMainWidgets/Icon/about.png</iconset>
+   </property>
+   <property name="text">
+    <string>关于</string>
+   </property>
+  </action>
+  <action name="actiongeometry">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/geometry.png</normaloff>:/mMainWidgets/Icon/geometry.png</iconset>
+   </property>
+   <property name="text">
+    <string>几何</string>
+   </property>
+  </action>
+  <action name="actionmesh">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/grid.png</normaloff>:/mMainWidgets/Icon/grid.png</iconset>
+   </property>
+   <property name="text">
+    <string>网格</string>
+   </property>
+  </action>
+  <action name="actionmaterial">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Material Science.png</normaloff>:/mMainWidgets/Icon/Material Science.png</iconset>
+   </property>
+   <property name="text">
+    <string>材料</string>
+   </property>
+  </action>
+  <action name="actionproperty">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/attribute.png</normaloff>:/mMainWidgets/Icon/attribute.png</iconset>
+   </property>
+   <property name="text">
+    <string>属性</string>
+   </property>
+  </action>
+  <action name="actioncase">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/working condition.png</normaloff>:/mMainWidgets/Icon/working condition.png</iconset>
+   </property>
+   <property name="text">
+    <string>分析工况</string>
+   </property>
+  </action>
+  <action name="actionexcase">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/working condition.png</normaloff>:/mMainWidgets/Icon/working condition.png</iconset>
+   </property>
+   <property name="text">
+    <string>分析类型</string>
+   </property>
+  </action>
+  <action name="actionexmesh">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/grid.png</normaloff>:/mMainWidgets/Icon/grid.png</iconset>
+   </property>
+   <property name="text">
+    <string>模型</string>
+   </property>
+  </action>
+  <action name="actionexmaterial">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Material Science.png</normaloff>:/mMainWidgets/Icon/Material Science.png</iconset>
+   </property>
+   <property name="text">
+    <string>材料</string>
+   </property>
+  </action>
+  <action name="actionexproperty">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Property.png</normaloff>:/mMainWidgets/Icon/Property.png</iconset>
+   </property>
+   <property name="text">
+    <string>截面属性</string>
+   </property>
+  </action>
+  <action name="actionexforce">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/loadmark.png</normaloff>:/mMainWidgets/Icon/loadmark.png</iconset>
+   </property>
+   <property name="text">
+    <string>载荷</string>
+   </property>
+  </action>
+  <action name="actionexbc">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/load.png</normaloff>:/mMainWidgets/Icon/load.png</iconset>
+   </property>
+   <property name="text">
+    <string>边界条件</string>
+   </property>
+  </action>
+  <action name="actionexInitialConditions">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/InitialConditions.png</normaloff>:/mMainWidgets/Icon/InitialConditions.png</iconset>
+   </property>
+   <property name="text">
+    <string>初始条件</string>
+   </property>
+  </action>
+  <action name="actionexconnect">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/connect.png</normaloff>:/mMainWidgets/Icon/connect.png</iconset>
+   </property>
+   <property name="text">
+    <string>连接</string>
+   </property>
+  </action>
+  <action name="actionexcontact">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Contact.png</normaloff>:/mMainWidgets/Icon/Contact.png</iconset>
+   </property>
+   <property name="text">
+    <string>接触</string>
+   </property>
+  </action>
+  <action name="actionexwall">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/wall.png</normaloff>:/mMainWidgets/Icon/wall.png</iconset>
+   </property>
+   <property name="text">
+    <string>刚性墙</string>
+   </property>
+  </action>
+  <action name="actionexairbag">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/AIRBAG.png</normaloff>:/mMainWidgets/Icon/AIRBAG.png</iconset>
+   </property>
+   <property name="text">
+    <string>安全气囊</string>
+   </property>
+  </action>
+  <action name="actionexoutput">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Output.png</normaloff>:/mMainWidgets/Icon/Output.png</iconset>
+   </property>
+   <property name="text">
+    <string>输出</string>
+   </property>
+  </action>
+  <action name="actionexjob">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Analysis.png</normaloff>:/mMainWidgets/Icon/Analysis.png</iconset>
+   </property>
+   <property name="text">
+    <string>计算任务</string>
+   </property>
+  </action>
+  <action name="actionelement">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Element.png</normaloff>:/mMainWidgets/Icon/Element.png</iconset>
+   </property>
+   <property name="text">
+    <string>单元</string>
+   </property>
+  </action>
+  <action name="actionloadbc">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/load.png</normaloff>:/mMainWidgets/Icon/load.png</iconset>
+   </property>
+   <property name="text">
+    <string>边界条件</string>
+   </property>
+  </action>
+  <action name="actionconnector">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/connect.png</normaloff>:/mMainWidgets/Icon/connect.png</iconset>
+   </property>
+   <property name="text">
+    <string>连接</string>
+   </property>
+  </action>
+  <action name="actioncontact">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Contact.png</normaloff>:/mMainWidgets/Icon/Contact.png</iconset>
+   </property>
+   <property name="text">
+    <string>接触</string>
+   </property>
+  </action>
+  <action name="actionoutput">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Output.png</normaloff>:/mMainWidgets/Icon/Output.png</iconset>
+   </property>
+   <property name="text">
+    <string>输出</string>
+   </property>
+  </action>
+  <action name="actionanalysis">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Analysis.png</normaloff>:/mMainWidgets/Icon/Analysis.png</iconset>
+   </property>
+   <property name="text">
+    <string>计算任务</string>
+   </property>
+  </action>
+  <action name="actionset">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/aggregate.png</normaloff>:/mMainWidgets/Icon/aggregate.png</iconset>
+   </property>
+   <property name="text">
+    <string>集合</string>
+   </property>
+  </action>
+  <action name="actionexset">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/aggregate.png</normaloff>:/mMainWidgets/Icon/aggregate.png</iconset>
+   </property>
+   <property name="text">
+    <string>集合</string>
+   </property>
+  </action>
+  <action name="actionexsurface">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/surface.png</normaloff>:/mMainWidgets/Icon/surface.png</iconset>
+   </property>
+   <property name="text">
+    <string>面</string>
+   </property>
+  </action>
+  <action name="actionexcurve">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/curve.png</normaloff>:/mMainWidgets/Icon/curve.png</iconset>
+   </property>
+   <property name="text">
+    <string>曲线</string>
+   </property>
+  </action>
+  <action name="actionexcoord">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Function system.png</normaloff>:/mMainWidgets/Icon/Function system.png</iconset>
+   </property>
+   <property name="text">
+    <string>坐标系</string>
+   </property>
+  </action>
+  <action name="actionexvector">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/exvector.png</normaloff>:/mMainWidgets/Icon/exvector.png</iconset>
+   </property>
+   <property name="text">
+    <string>向量</string>
+   </property>
+  </action>
+  <action name="actionexbox">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/exbox.png</normaloff>:/mMainWidgets/Icon/exbox.png</iconset>
+   </property>
+   <property name="text">
+    <string>盒子</string>
+   </property>
+  </action>
+  <action name="actionrp_2">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Reference point.png</normaloff>:/mMainWidgets/Icon/Reference point.png</iconset>
+   </property>
+   <property name="text">
+    <string>参考点</string>
+   </property>
+  </action>
+  <action name="actionsurface">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/surface.png</normaloff>:/mMainWidgets/Icon/surface.png</iconset>
+   </property>
+   <property name="text">
+    <string>表面</string>
+   </property>
+  </action>
+  <action name="actionwall">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/wall.png</normaloff>:/mMainWidgets/Icon/wall.png</iconset>
+   </property>
+   <property name="text">
+    <string>刚性墙</string>
+   </property>
+  </action>
+  <action name="actioncurve">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/curve.png</normaloff>:/mMainWidgets/Icon/curve.png</iconset>
+   </property>
+   <property name="text">
+    <string>曲线</string>
+   </property>
+  </action>
+  <action name="actioncoord">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Function system.png</normaloff>:/mMainWidgets/Icon/Function system.png</iconset>
+   </property>
+   <property name="text">
+    <string>坐标系</string>
+   </property>
+  </action>
+  <action name="actionlaminate">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/ply.png</normaloff>:/mMainWidgets/Icon/ply.png</iconset>
+   </property>
+   <property name="text">
+    <string>材料铺层</string>
+   </property>
+  </action>
+  <action name="actionbackground">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>背景</string>
+   </property>
+  </action>
+  <action name="actionconnect">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>连接</string>
+   </property>
+  </action>
+  <action name="actionload">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>载荷</string>
+   </property>
+  </action>
+  <action name="actioncoord_2">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>坐标系</string>
+   </property>
+  </action>
+  <action name="actionbc">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>边界条件</string>
+   </property>
+  </action>
+  <action name="actionrp">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>参考点</string>
+   </property>
+  </action>
+  <action name="actionwall_2">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>刚性墙</string>
+   </property>
+  </action>
+  <action name="action_7">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>节点样式</string>
+   </property>
+  </action>
+  <action name="action_8">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>网格样式</string>
+   </property>
+  </action>
+  <action name="actionlabel">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>标签</string>
+   </property>
+  </action>
+  <action name="action_connecton">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Connect1.png</normaloff>:/mMainWidgets/Icon/Connect1.png</iconset>
+   </property>
+   <property name="text">
+    <string>连接开关</string>
+   </property>
+  </action>
+  <action name="action_loadon">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Load1.png</normaloff>:/mMainWidgets/Icon/Load1.png</iconset>
+   </property>
+   <property name="text">
+    <string>载荷开关</string>
+   </property>
+  </action>
+  <action name="action_bcon">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Boundary1.png</normaloff>:/mMainWidgets/Icon/Boundary1.png</iconset>
+   </property>
+   <property name="text">
+    <string>边界开关</string>
+   </property>
+  </action>
+  <action name="action_rpon">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/RP1.png</normaloff>:/mMainWidgets/Icon/RP1.png</iconset>
+   </property>
+   <property name="text">
+    <string>参考点开关</string>
+   </property>
+  </action>
+  <action name="action_wallon">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Wall1.png</normaloff>:/mMainWidgets/Icon/Wall1.png</iconset>
+   </property>
+   <property name="text">
+    <string>刚性墙开关</string>
+   </property>
+  </action>
+  <action name="action_coordon">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Coordinate1.png</normaloff>:/mMainWidgets/Icon/Coordinate1.png</iconset>
+   </property>
+   <property name="text">
+    <string>坐标系开关</string>
+   </property>
+  </action>
+  <action name="actionfreemodel">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/group.png</normaloff>:/mMainWidgets/Icon/group.png</iconset>
+   </property>
+   <property name="text">
+    <string>自由模型</string>
+   </property>
+  </action>
+  <action name="action_contacton">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Contact1.png</normaloff>:/mMainWidgets/Icon/Contact1.png</iconset>
+   </property>
+   <property name="text">
+    <string>接触开关</string>
+   </property>
+  </action>
+  <action name="actioncommon">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Post treatment.png</normaloff>:/mMainWidgets/Icon/Post treatment.png</iconset>
+   </property>
+   <property name="text">
+    <string>通用</string>
+   </property>
+  </action>
+  <action name="actioncloud">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/cloud photo.png</normaloff>:/mMainWidgets/Icon/cloud photo.png</iconset>
+   </property>
+   <property name="text">
+    <string>云图</string>
+   </property>
+  </action>
+  <action name="actiondeform">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Deformation map.png</normaloff>:/mMainWidgets/Icon/Deformation map.png</iconset>
+   </property>
+   <property name="text">
+    <string>变形图</string>
+   </property>
+  </action>
+  <action name="actionanimation">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/video.png</normaloff>:/mMainWidgets/Icon/video.png</iconset>
+   </property>
+   <property name="text">
+    <string>动画</string>
+   </property>
+  </action>
+  <action name="actionworkingdir">
+   <property name="text">
+    <string>设置工作目录</string>
+   </property>
+  </action>
+  <action name="actionleft">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/left90.png</normaloff>:/mMainWidgets/Icon/left90.png</iconset>
+   </property>
+   <property name="text">
+    <string>逆指针旋转90°</string>
+   </property>
+  </action>
+  <action name="actionright">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/right90.png</normaloff>:/mMainWidgets/Icon/right90.png</iconset>
+   </property>
+   <property name="text">
+    <string>顺时针旋转90°</string>
+   </property>
+  </action>
+  <action name="action">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/custom.png</normaloff>:/mMainWidgets/Icon/custom.png</iconset>
+   </property>
+   <property name="text">
+    <string>自定义旋转角度</string>
+   </property>
+  </action>
+  <action name="action_saveview">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/saveView.png</normaloff>:/mMainWidgets/Icon/saveView.png</iconset>
+   </property>
+   <property name="text">
+    <string>保存视角</string>
+   </property>
+  </action>
+  <action name="actionzaihe">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/loadmark.png</normaloff>:/mMainWidgets/Icon/loadmark.png</iconset>
+   </property>
+   <property name="text">
+    <string>载荷</string>
+   </property>
+  </action>
+  <action name="action_callview">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/callView.png</normaloff>:/mMainWidgets/Icon/callView.png</iconset>
+   </property>
+   <property name="text">
+    <string>调用视角</string>
+   </property>
+  </action>
+  <action name="action_capture">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/screenshots.png</normaloff>:/mMainWidgets/Icon/screenshots.png</iconset>
+   </property>
+   <property name="text">
+    <string>截图</string>
+   </property>
+   <property name="toolTip">
+    <string>截图</string>
+   </property>
+  </action>
+  <action name="action_BeginRecord">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Start recording.png</normaloff>:/mMainWidgets/Icon/Start recording.png</iconset>
+   </property>
+   <property name="text">
+    <string>开始录制</string>
+   </property>
+   <property name="toolTip">
+    <string>开始录制</string>
+   </property>
+  </action>
+  <action name="action_EndRecord">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Stop recording.png</normaloff>:/mMainWidgets/Icon/Stop recording.png</iconset>
+   </property>
+   <property name="text">
+    <string>结束录制</string>
+   </property>
+  </action>
+  <action name="actionyouhua">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/topo.png</normaloff>:/mMainWidgets/Icon/topo.png</iconset>
+   </property>
+   <property name="text">
+    <string>优化任务</string>
+   </property>
+  </action>
+  <action name="actionrigid">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/RigidBody.png</normaloff>:/mMainWidgets/Icon/RigidBody.png</iconset>
+   </property>
+   <property name="text">
+    <string>刚体</string>
+   </property>
+  </action>
+  <action name="actionrigidconstraint">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Rc.png</normaloff>:/mMainWidgets/Icon/Rc.png</iconset>
+   </property>
+   <property name="text">
+    <string>刚体约束</string>
+   </property>
+  </action>
+  <action name="actionrigidconnect">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/RigidConnect.png</normaloff>:/mMainWidgets/Icon/RigidConnect.png</iconset>
+   </property>
+   <property name="text">
+    <string>刚体连接</string>
+   </property>
+  </action>
+  <action name="action_license">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/license.png</normaloff>:/mMainWidgets/Icon/license.png</iconset>
+   </property>
+   <property name="text">
+    <string>许可证</string>
+   </property>
+  </action>
+  <action name="actionfind">
+   <property name="text">
+    <string>查询</string>
+   </property>
+  </action>
+  <action name="actiontempNode">
+   <property name="text">
+    <string>临时节点</string>
+   </property>
+  </action>
+  <action name="action_magnet">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>电磁分析</string>
+   </property>
+  </action>
+  <action name="action_piezoelectric">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>压电传感器分析</string>
+   </property>
+  </action>
+  <action name="action_multiPhysic">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>多物理场耦合分析</string>
+   </property>
+  </action>
+  <action name="action_wireEdge">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/outline.png</normaloff>:/mMainWidgets/Icon/outline.png</iconset>
+   </property>
+   <property name="text">
+    <string>边界线</string>
+   </property>
+  </action>
+  <action name="action_feedback">
+   <property name="text">
+    <string>信息反馈</string>
+   </property>
+  </action>
+  <action name="action_unit">
+   <property name="text">
+    <string>单位制</string>
+   </property>
+  </action>
+  <action name="action_key">
+   <property name="text">
+    <string>快捷键</string>
+   </property>
+  </action>
+  <action name="actionshellShow">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/shellShow.png</normaloff>:/mMainWidgets/Icon/shellShow.png</iconset>
+   </property>
+   <property name="text">
+    <string>二维单元渲染</string>
+   </property>
+  </action>
+  <action name="actionbeamShow">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/beamRend.png</normaloff>:/mMainWidgets/Icon/beamRend.png</iconset>
+   </property>
+   <property name="text">
+    <string>一维单元渲染</string>
+   </property>
+  </action>
+  <action name="actionw">
+   <property name="text">
+    <string>网格单元转粒子</string>
+   </property>
+  </action>
+  <action name="action_3">
+   <property name="text">
+    <string>粒子激活区域</string>
+   </property>
+  </action>
+  <action name="action_4">
+   <property name="text">
+    <string>注射流</string>
+   </property>
+  </action>
+  <action name="action_5">
+   <property name="text">
+    <string>盒子生成粒子</string>
+   </property>
+  </action>
+  <action name="actionUndo">
+   <property name="text">
+    <string>撤销</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Z</string>
+   </property>
+  </action>
+  <action name="actionRedo">
+   <property name="text">
+    <string>重做</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Y</string>
+   </property>
+  </action>
+  <action name="action_ribbon">
+   <property name="text">
+    <string>Ribbon菜单</string>
+   </property>
+  </action>
+  <action name="action_traditional">
+   <property name="text">
+    <string>传统菜单</string>
+   </property>
+  </action>
+  <action name="actionpost">
+   <property name="text">
+    <string>后处理</string>
+   </property>
+  </action>
+  <action name="action1">
+   <property name="text">
+    <string>1</string>
+   </property>
+  </action>
+  <action name="action2">
+   <property name="text">
+    <string>2</string>
+   </property>
+  </action>
+  <action name="action3">
+   <property name="text">
+    <string>3</string>
+   </property>
+  </action>
+  <action name="action4">
+   <property name="text">
+    <string>4</string>
+   </property>
+  </action>
+  <action name="action5">
+   <property name="text">
+    <string>5</string>
+   </property>
+  </action>
+  <action name="action6">
+   <property name="text">
+    <string>6</string>
+   </property>
+  </action>
+  <action name="action_setting">
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/tools.png</normaloff>:/mMainWidgets/Icon/tools.png</iconset>
+   </property>
+   <property name="text">
+    <string>设置</string>
+   </property>
+  </action>
+  <action name="action_noMultiply">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/warning.png</normaloff>:/mMainWidgets/Icon/warning.png</iconset>
+   </property>
+   <property name="text">
+    <string>禁用框选</string>
+   </property>
+  </action>
+  <action name="action_quadPick">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Pick quadrilaterial mesh.png</normaloff>:/mMainWidgets/Icon/Pick quadrilaterial mesh.png</iconset>
+   </property>
+   <property name="text">
+    <string>矩形框选</string>
+   </property>
+   <property name="toolTip">
+    <string>矩形框选</string>
+   </property>
+  </action>
+  <action name="action_roundPick">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/RigidBody.png</normaloff>:/mMainWidgets/Icon/RigidBody.png</iconset>
+   </property>
+   <property name="text">
+    <string>圆形框选</string>
+   </property>
+   <property name="toolTip">
+    <string>圆形框选</string>
+   </property>
+  </action>
+  <action name="action_polygonPick">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Polygon picking.png</normaloff>:/mMainWidgets/Icon/Polygon picking.png</iconset>
+   </property>
+   <property name="text">
+    <string>多边形框选</string>
+   </property>
+   <property name="toolTip">
+    <string>多边形框选</string>
+   </property>
+  </action>
+  <action name="action_undo">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/previous.png</normaloff>:/mMainWidgets/Icon/previous.png</iconset>
+   </property>
+   <property name="text">
+    <string>撤销</string>
+   </property>
+   <property name="toolTip">
+    <string>撤销</string>
+   </property>
+  </action>
+  <action name="action_redo">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/next.png</normaloff>:/mMainWidgets/Icon/next.png</iconset>
+   </property>
+   <property name="text">
+    <string>重做</string>
+   </property>
+   <property name="toolTip">
+    <string>重做</string>
+   </property>
+  </action>
+  <action name="actionOpenCloud">
+   <property name="text">
+    <string>打开云端文件</string>
+   </property>
+   <property name="toolTip">
+    <string>打开云端文件</string>
+   </property>
+  </action>
+  <action name="actionSaveCloud">
+   <property name="text">
+    <string>保存云端</string>
+   </property>
+   <property name="toolTip">
+    <string>保存云端</string>
+   </property>
+  </action>
+  <action name="actionSelectCloud">
+   <property name="text">
+    <string>另存为云端</string>
+   </property>
+   <property name="toolTip">
+    <string>另存为云端</string>
+   </property>
+  </action>
+  <action name="actionEncipher">
+   <property name="text">
+    <string>加密云存储</string>
+   </property>
+   <property name="toolTip">
+    <string>加密云存储</string>
+   </property>
+  </action>
+  <action name="actionDecrypt">
+   <property name="text">
+    <string>解密云下载</string>
+   </property>
+   <property name="toolTip">
+    <string>解密云下载</string>
+   </property>
+  </action>
+  <action name="actionad">
+   <property name="text">
+    <string>设置工作空间大小</string>
+   </property>
+  </action>
+  <action name="actionChinese">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Chinese</string>
+   </property>
+  </action>
+  <action name="actionEnglish">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>English</string>
+   </property>
+  </action>
+  <action name="actionCompute">
+   <property name="text">
+    <string>云端计算</string>
+   </property>
+   <property name="toolTip">
+    <string>云端计算</string>
+   </property>
+  </action>
+  <action name="action_hardspot">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/PointInsect.png</normaloff>:/mMainWidgets/Icon/PointInsect.png</iconset>
+   </property>
+   <property name="text">
+    <string>硬点</string>
+   </property>
+   <property name="toolTip">
+    <string>硬点显隐</string>
+   </property>
+  </action>
+  <action name="actionGCLM">
+   <property name="text">
+    <string>GCLM许可</string>
+   </property>
+  </action>
+  <action name="modelFile">
+   <property name="text">
+    <string>模型/文件</string>
+   </property>
+  </action>
+  <action name="material">
+   <property name="text">
+    <string>材料</string>
+   </property>
+  </action>
+  <action name="case1">
+   <property name="text">
+    <string>工况</string>
+   </property>
+  </action>
+  <action name="property">
+   <property name="text">
+    <string>截面属性</string>
+   </property>
+  </action>
+  <action name="set">
+   <property name="text">
+    <string>集合</string>
+   </property>
+  </action>
+  <action name="curve">
+   <property name="text">
+    <string>曲线</string>
+   </property>
+  </action>
+  <action name="bc">
+   <property name="text">
+    <string>边界</string>
+   </property>
+  </action>
+  <action name="load">
+   <property name="text">
+    <string>载荷</string>
+   </property>
+  </action>
+  <action name="output">
+   <property name="text">
+    <string>输出</string>
+   </property>
+  </action>
+  <action name="job">
+   <property name="text">
+    <string>计算</string>
+   </property>
+  </action>
+  <action name="actionAPDL">
+   <property name="text">
+    <string>APDL导入</string>
+   </property>
+  </action>
+  <action name="action_2">
+   <property name="text">
+    <string>数据报告</string>
+   </property>
+  </action>
+  <action name="action_meshcale">
+   <property name="text">
+    <string>网格缩放</string>
+   </property>
+  </action>
+  <action name="Rapid_blanking">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>快速显隐 </string>
+   </property>
+  </action>
+  <action name="action_logDir">
+   <property name="text">
+    <string>设置日志文件</string>
+   </property>
+  </action>
+  <action name="action_reverse">
+   <property name="text">
+    <string>反向(不区分维度)</string>
+   </property>
+  </action>
+  <action name="action_ReverseDim">
+   <property name="text">
+    <string>反向(区分维度)</string>
+   </property>
+  </action>
+  <action name="actionAutoSave">
+   <property name="text">
+    <string>自动保存</string>
+   </property>
+  </action>
+  <action name="action_render">
+   <property name="text">
+    <string>更新渲染符号</string>
+   </property>
+   <property name="toolTip">
+    <string>更新渲染符号</string>
+   </property>
+  </action>
+  <action name="action_model">
+   <property name="text">
+    <string>模型</string>
+   </property>
+  </action>
+  <action name="action_material">
+   <property name="text">
+    <string>材料</string>
+   </property>
+  </action>
+  <action name="action_property">
+   <property name="text">
+    <string>截面属性</string>
+   </property>
+  </action>
+  <action name="action_case">
+   <property name="text">
+    <string>分析工况</string>
+   </property>
+  </action>
+  <action name="action_load">
+   <property name="text">
+    <string>载荷</string>
+   </property>
+  </action>
+  <action name="action_boundary">
+   <property name="text">
+    <string>边界条件</string>
+   </property>
+  </action>
+  <action name="action_result">
+   <property name="text">
+    <string>结果</string>
+   </property>
+  </action>
+  <action name="actionHyperElement">
+   <property name="text">
+    <string>超单元</string>
+   </property>
+  </action>
+  <action name="actionHide">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/Hide.png</normaloff>:/mMainWidgets/Icon/Hide.png</iconset>
+   </property>
+   <property name="text">
+    <string>隐藏</string>
+   </property>
+   <property name="toolTip">
+    <string>隐藏</string>
+   </property>
+  </action>
+  <action name="actionAntiHide">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/AntiHide.png</normaloff>:/mMainWidgets/Icon/AntiHide.png</iconset>
+   </property>
+   <property name="text">
+    <string>反隐藏</string>
+   </property>
+   <property name="toolTip">
+    <string>反隐藏</string>
+   </property>
+  </action>
+  <action name="actionPickPart">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/PickModel.png</normaloff>:/mMainWidgets/Icon/PickModel.png</iconset>
+   </property>
+   <property name="text">
+    <string>拾取部件</string>
+   </property>
+   <property name="toolTip">
+    <string>拾取部件</string>
+   </property>
+  </action>
+  <action name="actionTwoEleRender">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/TwoElement.png</normaloff>:/mMainWidgets/Icon/TwoElement.png</iconset>
+   </property>
+   <property name="text">
+    <string>二维单元渲染</string>
+   </property>
+   <property name="toolTip">
+    <string>二维单元渲染</string>
+   </property>
+  </action>
+  <action name="actionOneEleRender">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/OneElement.png</normaloff>:/mMainWidgets/Icon/OneElement.png</iconset>
+   </property>
+   <property name="text">
+    <string>一维单元渲染</string>
+   </property>
+   <property name="toolTip">
+    <string>一维单元渲染</string>
+   </property>
+  </action>
+  <action name="actionDeleteConnect">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/DeleteConnect.png</normaloff>:/mMainWidgets/Icon/DeleteConnect.png</iconset>
+   </property>
+   <property name="text">
+    <string>删除连接</string>
+   </property>
+   <property name="toolTip">
+    <string>删除连接</string>
+   </property>
+  </action>
+  <action name="action_10">
+   <property name="text">
+    <string>模型树</string>
+   </property>
+  </action>
+  <action name="action_11">
+   <property name="text">
+    <string>参数</string>
+   </property>
+  </action>
+  <action name="action_12">
+   <property name="text">
+    <string>命令行</string>
+   </property>
+  </action>
+  <action name="action_13">
+   <property name="text">
+    <string>功能面板</string>
+   </property>
+  </action>
+  <action name="action_14">
+   <property name="text">
+    <string>文件</string>
+   </property>
+  </action>
+  <action name="action_15">
+   <property name="text">
+    <string>鼠标操作</string>
+   </property>
+  </action>
+  <action name="action_16">
+   <property name="text">
+    <string>视图操作</string>
+   </property>
+  </action>
+  <action name="action_17">
+   <property name="text">
+    <string>模型样式</string>
+   </property>
+  </action>
+  <action name="action_18">
+   <property name="text">
+    <string>视图投影</string>
+   </property>
+  </action>
+  <action name="action_19">
+   <property name="text">
+    <string>标签控制</string>
+   </property>
+  </action>
+  <action name="action_20">
+   <property name="text">
+    <string>视图符号</string>
+   </property>
+  </action>
+  <action name="action_21">
+   <property name="text">
+    <string>视口</string>
+   </property>
+  </action>
+  <action name="action_22">
+   <property name="text">
+    <string>选项</string>
+   </property>
+  </action>
+  <action name="action_profile">
+   <property name="text">
+    <string>剖面</string>
+   </property>
+  </action>
+  <action name="actionElementLabel">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/elementType.png</normaloff>:/mMainWidgets/Icon/elementType.png</iconset>
+   </property>
+   <property name="text">
+    <string>单元标签</string>
+   </property>
+   <property name="toolTip">
+    <string>单元标签</string>
+   </property>
+  </action>
+  <action name="action_loadText">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/容器 3172.png</normaloff>:/mMainWidgets/Icon/容器 3172.png</iconset>
+   </property>
+   <property name="text">
+    <string>载荷文字显隐</string>
+   </property>
+  </action>
+  <action name="action_connectText">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="../../resource/mMainWidgets.qrc">
+     <normaloff>:/mMainWidgets/Icon/容器 3171.png</normaloff>:/mMainWidgets/Icon/容器 3171.png</iconset>
+   </property>
+   <property name="text">
+    <string>连接文字显隐</string>
+   </property>
+  </action>
+  <action name="action_faceLineDesalt">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>面线淡化</string>
+   </property>
+  </action>
+ </widget>
+ <resources>
+  <include location="../../resource/mMainWidgets.qrc"/>
+ </resources>
+ <connections/>
+</ui>

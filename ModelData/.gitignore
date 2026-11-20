@@ -1,0 +1,16 @@
+﻿################################################################################
+# 此 .gitignore 文件已由 Microsoft(R) Visual Studio 自动创建。
+################################################################################
+
+/bin
+/.vs
+/src/Main/main.cpp
+/install
+/问题.txt
+/src/MXGeoPanel
+/.idea
+/out/build
+/CMakePresets.json
+/CMakeUserPresets.json
+/conan_install
+/launch.vs.json

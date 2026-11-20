@@ -1,0 +1,15 @@
+root = true
+
+# 全局设置
+[*]
+charset = utf-8
+end_of_line = lf                # C++ 建议强制 LF (Linux风格)，避免跨平台编译警告
+# insert_final_newline = true     # 文件末尾加空行（很多编译器需要）
+trim_trailing_whitespace = true # 去掉行尾空格
+indent_style = space            # 绝大多数 C++ 指南推荐空格
+indent_size = 4                 # 微软/虚幻引擎风格用 4，Google/LLVM 风格用 2
+
+# 针对 C++ 源代码和头文件
+[*.{cpp,h,hpp,cc,cxx,c}]
+indent_style = space
+indent_size = 4                 # 确保这里和上面一致

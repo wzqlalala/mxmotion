@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- 柱状图：L 轴带箭头 + 蓝/绿/红三柱（原型 04 图标 1 墨迹） -->
+  <path d="M4 5v15h15" stroke="#5A6068" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+  <path d="M19.5 20l2-2-2.8-0.4z" fill="#5A6068"/>
+  <rect x="7" y="9" width="3.2" height="11" rx="0.8" fill="#3A7BFF"/>
+  <rect x="11.6" y="12" width="3.2" height="8" rx="0.8" fill="#34A853"/>
+  <rect x="16.2" y="15" width="3.2" height="5" rx="0.8" fill="#EA4335"/>
+</svg>

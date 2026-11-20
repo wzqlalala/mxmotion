@@ -1,0 +1,60 @@
+################################################################################
+# 此 .gitignore 文件已由 Microsoft(R) Visual Studio 自动创建。
+################################################################################
+
+/bin/.vs/MxPre/v15
+/src/PreData/bin
+/bin
+/Setting
+/install
+/MeshResult
+/.cache
+/CMakeUserPresets.json
+/compile_commands.json
+/build
+*.ps1
+/ProjectContext.md
+/.WorkingDir_41568_preserve/testModel
+/.WorkingDir_41568_preserve/test
+/.WorkingDir_41568_preserve
+/.License_41568_preserve
+/.WorkingDir_47312_preserve
+/.License_36444_preserve
+/.WorkingDir_36444_preserve
+/.WorkingDir_61944_preserve/test
+/.WorkingDir_61944_preserve/testModel
+/.WorkingDir_61944_preserve
+/.License_21096_preserve
+/.License_57764_preserve
+/.WorkingDir_21096_preserve
+/plans
+/.vs
+/out/build
+/CMakePresets.json
+/.idea
+/conan_install
+/CMakePresets.json
+/launch.vs.json
+# ZCode 会话产物目录（plans/截图/探测编译物等），任意层级
+.zcode/
+
+# MSVC 编译器在仓库根生成的调试符号文件
+*.pdb
+
+# 测试目录:回归测试面板(tests/CMakeLists.txt + tests/PostWindow)入库
+# （团队章程："测试:tests/PostWindow(ctest,入库)"）；诊断工具等其余内容仍仅本地。
+# 原 /tests/ 整体忽略使 git add 静默跳过，批次3两测试源因此漏交丢失（2026-10-29）
+/tests/*
+!tests/CMakeLists.txt
+!tests/PostWindow/
+!tests/PostCurveDocName/
+/ArchitectureNotes.md
+/.vs
+
+# Python 编译缓存（仅 py 脚本目录）
+/src/Py/__pycache__/
+/src/Py/**/__pycache__/
+__pycache__/
+/doc/航天四院
+/doc
+/tools_proto
