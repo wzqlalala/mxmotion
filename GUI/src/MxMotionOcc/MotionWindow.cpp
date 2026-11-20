@@ -39,6 +39,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QScreen>
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -47,6 +48,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 using MechMainWindow::ThemeManager;
 using MxFunctions::UiMetrics;
@@ -65,6 +67,15 @@ ModelNode treeNode(const QTreeWidgetItem* item)
 {
     if (!item) return {};
     return { static_cast<ModelNode::Kind>(item->data(0, nodeKindRole).toInt()), item->data(0, partRole).toInt() };
+}
+
+QString treeStateKey(const QTreeWidgetItem* item)
+{
+    const auto node = treeNode(item);
+    if (node.kind != ModelNode::None)
+        return QStringLiteral("%1:%2").arg(int(node.kind)).arg(node.id);
+    if (!item->parent()) return QStringLiteral("root");
+    return treeStateKey(item->parent()) + QLatin1Char('/') + item->text(0);
 }
 
 QIcon icon(const QString& name)
@@ -95,7 +106,10 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
     setObjectName(QStringLiteral("mMechMainWindow"));
     setWindowTitle(QStringLiteral("MxSim.Motion V1.0"));
     setWindowIcon(icon(QStringLiteral("logo.png")));
-    resize(1766, 828);
+    QSize initialSize(1766, 828);
+    if (const auto* screen = QApplication::primaryScreen())
+        initialSize = initialSize.boundedTo(screen->availableGeometry().size());
+    resize(initialSize);
     setMinimumSize(870, 520);
     MechMainWindow::FramelessWindowHelper::installFrameless(this);
     createCommands();
@@ -355,7 +369,14 @@ ads::CDockWidget* MotionWindow::addPane(const QString& key, const QString& title
     auto* dock = new ads::CDockWidget(m_docks, title);
     dock->setObjectName(key);
     dock->setMinimumSizeHintMode(ads::CDockWidget::MinimumSizeHintFromDockWidgetMinimumSize);
-    dock->setWidget(content);
+    if (key == QStringLiteral("Curve")) {
+        // A plot canvas must resize with its dock. ADS's default scroll wrapper
+        // can otherwise leave most of the axes outside a short bottom pane.
+        dock->setWidget(content, ads::CDockWidget::ForceNoScrollArea);
+        dock->setMinimumSize(300, 240);
+    } else {
+        dock->setWidget(content);
+    }
     return dock;
 }
 
@@ -589,6 +610,14 @@ void MotionWindow::createStatusBar()
 void MotionWindow::updateTree()
 {
     const QSignalBlocker block(m_tree);
+    // Refreshes from solving, editing and visibility must not undo the user's
+    // navigation state by expanding every populated group again.
+    std::map<QString, bool> expanded;
+    std::function<void(QTreeWidgetItem*)> remember = [&](QTreeWidgetItem* item) {
+        expanded.emplace(treeStateKey(item), item->isExpanded());
+        for (int i = 0; i < item->childCount(); ++i) remember(item->child(i));
+    };
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i) remember(m_tree->topLevelItem(i));
     m_tree->clear();
     auto* root = new QTreeWidgetItem(m_tree, { tr("多体动力学-%1").arg(m_modelNumber) });
     root->setIcon(0, icon(QStringLiteral("BrowserTree/moxing3x.png")));
@@ -619,20 +648,41 @@ void MotionWindow::updateTree()
     appendRigidNodes(root, groupItems);
     root->setExpanded(true);
     m_partsItem->setExpanded(true);
+    std::function<void(QTreeWidgetItem*)> restore = [&](QTreeWidgetItem* item) {
+        const auto previous = expanded.find(treeStateKey(item));
+        if (previous != expanded.end()) item->setExpanded(previous->second);
+        for (int i = 0; i < item->childCount(); ++i) restore(item->child(i));
+    };
+    restore(root);
+    if (auto* selected = m_tree->currentItem(); selected && !expanded.count(treeStateKey(selected)))
+        for (auto* parent = selected->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
     filterTree();
 }
 
 void MotionWindow::filterTree()
 {
-    if (!m_partsItem) return;
+    if (!m_tree) return;
     const auto needle = m_filter->text().trimmed();
     const int visibility = m_visibilityFilter->currentIndex();
-    for (int i = 0; i < m_partsItem->childCount(); ++i) {
-        auto* item = m_partsItem->child(i);
-        const bool shown = item->checkState(0) == Qt::Checked;
-        item->setHidden(!item->text(0).contains(needle, Qt::CaseInsensitive)
-            || (visibility == 1 && !shown) || (visibility == 2 && shown));
-    }
+    std::function<bool(QTreeWidgetItem*, bool)> filter = [&](QTreeWidgetItem* item, bool parentMatches) {
+        const bool matches = parentMatches || item->text(0).contains(needle, Qt::CaseInsensitive);
+        bool childMatches = false;
+        for (int i = 0; i < item->childCount(); ++i)
+            childMatches = filter(item->child(i), matches) || childMatches;
+        bool visible = matches || childMatches;
+        const auto node = treeNode(item);
+        if (node.kind == ModelNode::Part) {
+            const bool shown = m_hidden.count(node.id) == 0;
+            visible = visible && (visibility == 0 || (visibility == 1 && shown) || (visibility == 2 && !shown));
+        }
+        // Keep structural ancestors only if they have a matching descendant;
+        // preserve empty groups in the unfiltered original framework.
+        if (item->childCount() && node.kind == ModelNode::None && !needle.isEmpty())
+            visible = childMatches || matches;
+        item->setHidden(!visible);
+        return visible;
+    };
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i) filter(m_tree->topLevelItem(i), false);
 }
 
 void MotionWindow::updateParameters()
@@ -690,6 +740,7 @@ void MotionWindow::syncViewport(bool fit)
 
 void MotionWindow::selectPart(int id)
 {
+    leaveRigidAnimation();
     const int previous = m_partId;
     m_partId = m_document.part(id) ? id : -1;
     m_selectionNode = m_partId > 0 ? ModelNode{ModelNode::Part, m_partId} : ModelNode{};
@@ -910,6 +961,7 @@ void MotionWindow::addPrimitive(Primitive primitive)
 
 void MotionWindow::beginMeshSetup()
 {
+    leaveRigidAnimation();
     closeEditor();
     const auto* part = m_document.part(m_partId);
     if (!part || m_jobPart != -1) return;
@@ -944,7 +996,12 @@ void MotionWindow::beginMesh()
         setNotice(error, true);
         return;
     }
-    m_worker->setProgram(QDir(QApplication::applicationDirPath()).filePath(QStringLiteral("MxMotionMeshWorker.exe")));
+#ifdef Q_OS_WIN
+    const auto workerName = QStringLiteral("MxMotionMeshWorker.exe");
+#else
+    const auto workerName = QStringLiteral("MxMotionMeshWorker");
+#endif
+    m_worker->setProgram(QDir(QApplication::applicationDirPath()).filePath(workerName));
     m_worker->setWorkingDirectory(dir->path());
     m_jobKind = m_meshKind->currentIndex() == 0 ? MeshKind::Volume : MeshKind::Surface;
     m_worker->setArguments({ m_jobKind == MeshKind::Volume ? "volume" : "surface",

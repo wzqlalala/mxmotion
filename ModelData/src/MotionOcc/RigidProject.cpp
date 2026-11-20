@@ -31,9 +31,10 @@ constexpr int kMaxName = 1024; // UTF-16 code units, as in rigid model validatio
 constexpr int kMaxBodies = 256;
 constexpr int kMaxJoints = 1024;
 constexpr int kMaxScenarios = 256;
+constexpr int kMaxCurvesPerScenario = 256;
 // More than enough for the largest valid v1 project; prevents a large flat
 // array or object of tiny values from expanding out of proportion during parse.
-constexpr qint64 kMaxJsonSeparators = 200000;
+constexpr qint64 kMaxJsonSeparators = 1000000;
 constexpr int kMaxId = (std::numeric_limits<int>::max)();
 constexpr std::uint64_t kExhaustedPartId = std::uint64_t(kMaxId) + 1;
 
@@ -115,7 +116,7 @@ qint64 countSourceMembers(const QByteArray& bytes)
         } else if (c == '"') {
             inString = true;
         } else if (c == '{' || c == '[') {
-            if (++depth > 5) fail(QStringLiteral("Project JSON is nested too deeply."));
+            if (++depth > 6) fail(QStringLiteral("Project JSON is nested too deeply."));
         } else if (c == '}' || c == ']') {
             if (--depth < 0) fail(QStringLiteral("Unbalanced project JSON."));
         } else if (c == ':') {
@@ -265,6 +266,59 @@ DriveKind readDriveKind(const QJsonValue& value)
     fail(QStringLiteral("Invalid drive kind."));
 }
 
+const char* curveMetric(RigidCurveMetric metric)
+{
+    switch (metric) {
+    case RigidCurveMetric::BodyPosition: return "body_position";
+    case RigidCurveMetric::BodyDisplacement: return "body_displacement";
+    case RigidCurveMetric::BodyVelocity: return "body_velocity";
+    case RigidCurveMetric::BodyRotation: return "body_rotation";
+    case RigidCurveMetric::BodyAngularVelocity: return "body_angular_velocity";
+    case RigidCurveMetric::JointCoordinate: return "joint_coordinate";
+    case RigidCurveMetric::JointRate: return "joint_rate";
+    }
+    fail(QStringLiteral("Unknown curve metric."));
+}
+
+RigidCurveMetric readCurveMetric(const QJsonValue& value)
+{
+    const auto metric = value.toString();
+    for (const auto type : {RigidCurveMetric::BodyPosition, RigidCurveMetric::BodyDisplacement,
+            RigidCurveMetric::BodyVelocity, RigidCurveMetric::BodyRotation,
+            RigidCurveMetric::BodyAngularVelocity, RigidCurveMetric::JointCoordinate,
+            RigidCurveMetric::JointRate})
+        if (metric == QLatin1String(curveMetric(type))) return type;
+    fail(QStringLiteral("Invalid curve metric."));
+}
+
+QJsonArray writeCurveRequests(const std::vector<RigidCurveRequest>& requests)
+{
+    QJsonArray array;
+    for (const auto& request : requests) {
+        array.append(QJsonObject{
+            {QStringLiteral("id"), request.id},
+            {QStringLiteral("metric"), QString::fromLatin1(curveMetric(request.metric))},
+            {QStringLiteral("sourceId"), request.sourceId}, {QStringLiteral("component"), request.component},
+            {QStringLiteral("name"), checkedName(request.name)}, {QStringLiteral("color"), request.color},
+            {QStringLiteral("visible"), request.visible}});
+    }
+    return array;
+}
+
+std::vector<RigidCurveRequest> readCurveRequests(const QJsonValue& value)
+{
+    std::vector<RigidCurveRequest> requests;
+    for (const auto& item : array(value, kMaxCurvesPerScenario, "curveRequests")) {
+        const auto row = record(item, {"id", "metric", "sourceId", "component", "name", "color", "visible"}, "curve request");
+        require(row.value(QStringLiteral("color")).isString(), QStringLiteral("Expected a curve color string."));
+        requests.push_back({id(row), readCurveMetric(row.value(QStringLiteral("metric"))),
+            id(row, "sourceId"), static_cast<int>(integer(row.value(QStringLiteral("component")), 0, 3, "component")),
+            name(row), row.value(QStringLiteral("color")).toString(),
+            boolean(row.value(QStringLiteral("visible")), "visible")});
+    }
+    return requests;
+}
+
 QJsonObject writeModel(const RigidModel& model)
 {
     QJsonArray bodies, joints, drives, scenarios;
@@ -288,10 +342,13 @@ QJsonObject writeModel(const RigidModel& model)
             {QStringLiteral("value"), drive.value}});
     }
     for (const auto& scenario : model.scenarios) {
-        scenarios.append(QJsonObject{
+        QJsonObject row{
             {QStringLiteral("id"), scenario.id}, {QStringLiteral("name"), checkedName(scenario.name)},
             {QStringLiteral("duration"), scenario.duration}, {QStringLiteral("step"), scenario.step},
-            {QStringLiteral("gravityMS2"), writeVector(scenario.gravityMS2)}});
+            {QStringLiteral("gravityMS2"), writeVector(scenario.gravityMS2)}};
+        if (!scenario.curveRequests.empty())
+            row.insert(QStringLiteral("curveRequests"), writeCurveRequests(scenario.curveRequests));
+        scenarios.append(row);
     }
     return {{QStringLiteral("bodies"), bodies}, {QStringLiteral("joints"), joints},
             {QStringLiteral("drives"), drives}, {QStringLiteral("scenarios"), scenarios}};
@@ -319,9 +376,15 @@ RigidModel readModel(const QJsonValue& value)
             number(row.value(QStringLiteral("value")), "value")});
     }
     for (const auto& item : array(object.value(QStringLiteral("scenarios")), kMaxScenarios, "scenarios")) {
-        const auto row = record(item, {"id", "name", "duration", "step", "gravityMS2"}, "scenario");
-        model.scenarios.push_back({id(row), name(row), number(row.value(QStringLiteral("duration")), "duration"),
-            number(row.value(QStringLiteral("step")), "step"), readVector(row.value(QStringLiteral("gravityMS2")), "gravityMS2")});
+        auto data = item.toObject();
+        const bool hasRequests = data.contains(QStringLiteral("curveRequests"));
+        const auto requests = data.take(QStringLiteral("curveRequests"));
+        const auto row = record(item.isObject() ? QJsonValue(data) : item,
+            {"id", "name", "duration", "step", "gravityMS2"}, "scenario");
+        RigidScenario scenario{id(row), name(row), number(row.value(QStringLiteral("duration")), "duration"),
+            number(row.value(QStringLiteral("step")), "step"), readVector(row.value(QStringLiteral("gravityMS2")), "gravityMS2")};
+        if (hasRequests) scenario.curveRequests = readCurveRequests(requests);
+        model.scenarios.push_back(std::move(scenario));
     }
     return model;
 }

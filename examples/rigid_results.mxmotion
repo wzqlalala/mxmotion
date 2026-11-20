@@ -1,0 +1,94 @@
+{
+  "format": "mxmotion",
+  "model": {
+    "bodies": [
+      {
+        "densityKgM3": 2500,
+        "fixed": false,
+        "id": 41,
+        "massKg": 2.5,
+        "name": "转子 é",
+        "partId": 2
+      }
+    ],
+    "drives": [
+      {
+        "id": 109,
+        "jointId": 73,
+        "kind": "speed",
+        "name": "恒速驱动",
+        "value": 105
+      }
+    ],
+    "joints": [
+      {
+        "axis": [
+          2,
+          -3,
+          6
+        ],
+        "baseBodyId": 0,
+        "id": 73,
+        "kind": "revolute",
+        "movingBodyId": 41,
+        "name": "斜轴铰链",
+        "originMm": [
+          17,
+          -13,
+          11
+        ]
+      }
+    ],
+    "scenarios": [
+      {
+        "duration": 2.003,
+        "gravityMS2": [
+          0.4,
+          0.1,
+          -9.8
+        ],
+        "id": 151,
+        "name": "偏置旋转",
+        "step": 0.005,
+        "curveRequests": [
+          {
+            "id": 1,
+            "metric": "joint_coordinate",
+            "sourceId": 73,
+            "component": 0,
+            "name": "旋转副相对转角",
+            "color": "#2176c1",
+            "visible": true
+          },
+          {
+            "id": 2,
+            "metric": "body_position",
+            "sourceId": 41,
+            "component": 0,
+            "name": "质心世界位置 X",
+            "color": "#d35f39",
+            "visible": true
+          },
+          {
+            "id": 3,
+            "metric": "body_displacement",
+            "sourceId": 41,
+            "component": 0,
+            "name": "质心位移增量 X",
+            "color": "#24946b",
+            "visible": false
+          }
+        ]
+      }
+    ]
+  },
+  "nextPartId": 4,
+  "parts": [
+    {
+      "brep": "CkNBU0NBREUgVG9wb2xvZ3kgVjMsIChjKSBPcGVuIENhc2NhZGUKTG9jYXRpb25zIDAKQ3VydmUyZHMgMjQKMSAwIDAgMSAwIAoxIDAgMCAxIDAgCjEgNDAgMCAwIC0xIAoxIDAgMCAwIDEgCjEgMCAtODAgMSAwIAoxIDAgMCAxIDAgCjEgMCAwIDAgLTEgCjEgMCAwIDAgMSAKMSAwIDAgMSAwIAoxIDAgMTIwIDEgMCAKMSA0MCAwIDAgLTEgCjEgMTIwIDAgMCAxIAoxIDAgLTgwIDEgMCAKMSAwIDEyMCAxIDAgCjEgMCAwIDAgLTEgCjEgMTIwIDAgMCAxIAoxIDAgMCAwIDEgCjEgMCAwIDEgMCAKMSA0MCAwIDAgMSAKMSAwIDAgMSAwIAoxIDAgMCAwIDEgCjEgMCA4MCAxIDAgCjEgNDAgMCAwIDEgCjEgMCA4MCAxIDAgCkN1cnZlcyAxMgoxIDAgMCAwIDAgMCAxIAoxIDAgMCA0MCAtMCAxIDAgCjEgMCA4MCAwIDAgMCAxIAoxIDAgMCAwIC0wIDEgMCAKMSAxMjAgMCAwIDAgMCAxIAoxIDEyMCAwIDQwIC0wIDEgMCAKMSAxMjAgODAgMCAwIDAgMSAKMSAxMjAgMCAwIC0wIDEgMCAKMSAwIDAgMCAxIDAgLTAgCjEgMCAwIDQwIDEgMCAtMCAKMSAwIDgwIDAgMSAwIC0wIAoxIDAgODAgNDAgMSAwIC0wIApQb2x5Z29uM0QgMApQb2x5Z29uT25Ucmlhbmd1bGF0aW9ucyAwClN1cmZhY2VzIDYKMSAwIDAgMCAxIDAgLTAgMCAwIDEgMCAtMSAwIAoxIDAgMCAwIC0wIDEgMCAwIDAgMSAxIDAgLTAgCjEgMCAwIDQwIDAgMCAxIDEgMCAtMCAtMCAxIDAgCjEgMCA4MCAwIC0wIDEgMCAwIDAgMSAxIDAgLTAgCjEgMCAwIDAgMCAwIDEgMSAwIC0wIC0wIDEgMCAKMSAxMjAgMCAwIDEgMCAtMCAwIDAgMSAwIC0xIDAgClRyaWFuZ3VsYXRpb25zIDAKClRTaGFwZXMgMzQKVmUKMWUtMDcKMCAwIDQwCjAgMAoKMDEwMTEwMQoqClZlCjFlLTA3CjAgMCAwCjAgMAoKMDEwMTEwMQoqCkVkCiAxZS0wNyAxIDEgMAoxICAxIDAgMCA0MAoyICAxIDEgMCAwIDQwCjIgIDIgMiAwIDAgNDAKMAoKMDEwMTAwMAotMzQgMCArMzMgMCAqClZlCjFlLTA3CjAgODAgNDAKMCAwCgowMTAxMTAxCioKRWQKIDFlLTA3IDEgMSAwCjEgIDIgMCAwIDgwCjIgIDMgMSAwIDAgODAKMiAgNCAzIDAgMCA4MAowCgowMTAxMDAwCi0zMSAwICszNCAwICoKVmUKMWUtMDcKMCA4MCAwCjAgMAoKMDEwMTEwMQoqCkVkCiAxZS0wNyAxIDEgMAoxICAzIDAgMCA0MAoyICA1IDEgMCAwIDQwCjIgIDYgNCAwIDAgNDAKMAoKMDEwMTAwMAotMzEgMCArMjkgMCAqCkVkCiAxZS0wNyAxIDEgMAoxICA0IDAgMCA4MAoyICA3IDEgMCAwIDgwCjIgIDggNSAwIDAgODAKMAoKMDEwMTAwMAotMjkgMCArMzMgMCAqCldpCgowMTAxMTAwCi0zMiAwIC0zMCAwICsyOCAwICsyNyAwICoKRmEKMCAgMWUtMDcgMSAwCgowMTAxMDAwCisyNiAwICoKVmUKMWUtMDcKMTIwIDAgNDAKMCAwCgowMTAxMTAxCioKVmUKMWUtMDcKMTIwIDAgMAowIDAKCjAxMDExMDEKKgpFZAogMWUtMDcgMSAxIDAKMSAgNSAwIDAgNDAKMiAgOSA2IDAgMCA0MAoyICAxMCAyIDAgMCA0MAowCgowMTAxMDAwCi0yNCAwICsyMyAwICoKVmUKMWUtMDcKMTIwIDgwIDQwCjAgMAoKMDEwMTEwMQoqCkVkCiAxZS0wNyAxIDEgMAoxICA2IDAgMCA4MAoyICAxMSA2IDAgMCA4MAoyICAxMiAzIDAgMCA4MAowCgowMTAxMDAwCi0yMSAwICsyNCAwICoKVmUKMWUtMDcKMTIwIDgwIDAKMCAwCgowMTAxMTAxCioKRWQKIDFlLTA3IDEgMSAwCjEgIDcgMCAwIDQwCjIgIDEzIDYgMCAwIDQwCjIgIDE0IDQgMCAwIDQwCjAKCjAxMDEwMDAKLTIxIDAgKzE5IDAgKgpFZAogMWUtMDcgMSAxIDAKMSAgOCAwIDAgODAKMiAgMTUgNiAwIDAgODAKMiAgMTYgNSAwIDAgODAKMAoKMDEwMTAwMAotMTkgMCArMjMgMCAqCldpCgowMTAxMTAwCi0yMiAwIC0yMCAwICsxOCAwICsxNyAwICoKRmEKMCAgMWUtMDcgNiAwCgowMTAxMDAwCisxNiAwICoKRWQKIDFlLTA3IDEgMSAwCjEgIDkgMCAwIDEyMAoyICAxNyAyIDAgMCAxMjAKMiAgMTggNSAwIDAgMTIwCjAKCjAxMDEwMDAKLTIzIDAgKzMzIDAgKgpFZAogMWUtMDcgMSAxIDAKMSAgMTAgMCAwIDEyMAoyICAxOSAyIDAgMCAxMjAKMiAgMjAgMyAwIDAgMTIwCjAKCjAxMDEwMDAKLTI0IDAgKzM0IDAgKgpXaQoKMDEwMTEwMAotMTQgMCAtMjIgMCArMTMgMCArMzIgMCAqCkZhCjAgIDFlLTA3IDIgMAoKMDEwMTAwMAorMTIgMCAqCkVkCiAxZS0wNyAxIDEgMAoxICAxMSAwIDAgMTIwCjIgIDIxIDQgMCAwIDEyMAoyICAyMiA1IDAgMCAxMjAKMAoKMDEwMTAwMAotMTkgMCArMjkgMCAqCkVkCiAxZS0wNyAxIDEgMAoxICAxMiAwIDAgMTIwCjIgIDIzIDQgMCAwIDEyMAoyICAyNCAzIDAgMCAxMjAKMAoKMDEwMTAwMAotMjEgMCArMzEgMCAqCldpCgowMTAxMTAwCi0xMCAwIC0xOCAwICs5IDAgKzI4IDAgKgpGYQowICAxZS0wNyA0IDAKCjAxMDEwMDAKKzggMCAqCldpCgowMTAxMTAwCi0yNyAwIC0xMCAwICsxNyAwICsxNCAwICoKRmEKMCAgMWUtMDcgNSAwCgowMTAxMDAwCis2IDAgKgpXaQoKMDEwMTEwMAotMzAgMCAtOSAwICsyMCAwICsxMyAwICoKRmEKMCAgMWUtMDcgMyAwCgowMTAxMDAwCis0IDAgKgpTaAoKMDEwMTEwMAotMjUgMCArMTUgMCAtMTEgMCArNyAwIC01IDAgKzMgMCAqClNvCgoxMTAwMDAwCisyIDAgKgoKKzEgMCA=",
+      "id": 2,
+      "name": "长方体 2"
+    }
+  ],
+  "version": 1
+}

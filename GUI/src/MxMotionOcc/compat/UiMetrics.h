@@ -19,6 +19,15 @@ public:
     static int choiceSize() { return baseH() / 2; }
     static constexpr int zoneRadius() { return 4; }
 
+    // The original CommonWidgets/FoldSection uses these same logical tokens.
+    static int labelWidth() { return 7 * bodyFontSize(); }
+    static int fieldInset() { return baseG() + 2; }
+    static int columnGap() { return baseG() + 2; }
+    static int rowGap() { return baseG(); }
+    static int choiceGap() { return qMax(2, baseG() - 2); }
+    static int foldHeaderHeight() { return baseH(); }
+    static int iconSize() { return controlIconSize(); }
+
     static QString uiFontFamily()
     {
 #ifdef Q_OS_WIN

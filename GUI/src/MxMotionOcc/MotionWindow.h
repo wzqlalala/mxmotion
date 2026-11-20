@@ -118,11 +118,14 @@ private:
     void removeRigidNode(ModelNode node);
     void commitRigid(RigidModel model, ModelNode selection);
     void clearResults();
-    void startRigidSolve(int scenarioId, bool showCurves);
+    void startRigidSolve(int scenarioId);
     void pollRigidSolve();
     void showRigidResult(ModelNode node);
     void seekRigidTime(double seconds);
     void setPlayback(bool play);
+    void stopRigidPlayback();
+    void leaveRigidAnimation();
+    void updatePlaybackControls();
     void loadRigidExample();
     bool motionBusy() const;
     bool canRemovePart(int id) const;
@@ -135,7 +138,6 @@ private:
         std::atomic_bool stop{false};
         std::atomic_bool done{false};
         std::atomic<double> progress{0};
-        bool showCurves = false;
     };
 
     CadDocument m_document;
@@ -145,8 +147,8 @@ private:
     std::shared_ptr<RigidRun> m_running;
     std::thread m_solverThread;
     int m_resultScenario = 0;
+    bool m_animationActive = false;
     double m_playbackTime = 0.0;
-    double m_playbackStart = 0.0;
     QElapsedTimer m_playbackClock;
     std::map<Command, QAction*> m_commands;
     std::map<int, FemMesh> m_meshes;
@@ -178,8 +180,13 @@ private:
     RigidPlot* m_rigidPlot = nullptr;
     QSlider* m_timeline = nullptr;
     QPushButton* m_playToggle = nullptr;
+    QPushButton* m_pausePlayback = nullptr;
+    QPushButton* m_stopPlayback = nullptr;
     QLabel* m_timeLabel = nullptr;
     QCheckBox* m_loopPlayback = nullptr;
+    QComboBox* m_playbackSpeed = nullptr;
+    QCheckBox* m_followCurveMarker = nullptr;
+    QCheckBox* m_clickCurveJump = nullptr;
     QTimer* m_rigidPoll = nullptr;
     QTimer* m_playbackTimer = nullptr;
     QByteArray m_defaultLayout;

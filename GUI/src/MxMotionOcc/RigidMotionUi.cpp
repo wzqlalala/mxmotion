@@ -2,7 +2,9 @@
 #include "OccViewport.h"
 #include "RigidPlot.h"
 #include "RigidProject.h"
+#include "RigidPlayback.h"
 #include "ThemeManager.h"
+#include "mFoldSection.h"
 #include "mUiMenu.h"
 
 #include <DockAreaWidget.h>
@@ -22,6 +24,7 @@
 #include <QPushButton>
 #include <QQuaternion>
 #include <QSignalBlocker>
+#include <QScrollArea>
 #include <QSlider>
 #include <QTimer>
 #include <QTreeWidget>
@@ -33,8 +36,8 @@ namespace MotionOcc {
 namespace {
 constexpr int idRole = Qt::UserRole;
 constexpr int kindRole = Qt::UserRole + 1;
-constexpr int ticks = 10000;
 using MechMainWindow::ThemeManager;
+using MechMainWindow::FoldSection;
 using MxFunctions::mUiMenu;
 
 QIcon motionIcon(const char* file)
@@ -101,9 +104,6 @@ Vector3d vectorValue(const std::array<QDoubleSpinBox*, 3>& fields)
     return {fields[0]->value(), fields[1]->value(), fields[2]->value()};
 }
 
-QVector3D vector3(const Vector3d& x) { return QVector3D(float(x[0]), float(x[1]), float(x[2])); }
-QQuaternion quaternion(const Quaterniond& x) { return QQuaternion(float(x[0]), float(x[1]), float(x[2]), float(x[3])).normalized(); }
-
 void selectData(QComboBox* combo, int id)
 {
     const int index = combo->findData(id);
@@ -150,7 +150,7 @@ void MotionWindow::createRigidCommands()
     add(Command::Solve, tr("求解"), "solve.png", [this] {
         int id = m_model.scenarios.empty() ? 0 : m_model.scenarios.back().id;
         if (m_selectionNode.kind >= ModelNode::Scenario) id = m_selectionNode.id;
-        if (id) startRigidSolve(id, true);
+        if (id) startRigidSolve(id);
         else editScenario();
     });
     add(Command::StopSolve, tr("停止求解"), "solve.png", [this] {
@@ -167,31 +167,99 @@ void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
     m_docks->addDockWidgetTabToArea(m_curveDock, bottom);
     m_curveDock->closeDockWidget();
     auto* controls = new QWidget;
-    auto* layout = new QHBoxLayout(controls);
+    auto* layout = new QVBoxLayout(controls);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setSpacing(6);
+    auto* playback = new FoldSection(tr("播放控制"), controls);
     m_playToggle = new QPushButton(tr("播放"), controls);
-    auto* stop = new QPushButton(tr("停止"), controls);
+    m_playToggle->setObjectName(QStringLiteral("motionPlayButton"));
+    m_pausePlayback = new QPushButton(tr("暂停"), controls);
+    m_pausePlayback->setObjectName(QStringLiteral("motionPauseButton"));
+    m_stopPlayback = new QPushButton(tr("停止"), controls);
+    m_stopPlayback->setObjectName(QStringLiteral("motionStopButton"));
+    // Fusion's default QPushButton minimum-size hint is about 80 px. Three
+    // such buttons force the original 250 px parameter column to scroll
+    // horizontally. These short labels should share the available row width.
+    for (auto* button : {m_playToggle, m_pausePlayback, m_stopPlayback}) {
+        button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        button->setMinimumWidth(button->fontMetrics().horizontalAdvance(button->text())
+                                + 2 * MxFunctions::UiMetrics::fieldInset());
+    }
+    playback->addRow(m_playToggle, m_pausePlayback, m_stopPlayback, QString());
+    layout->addWidget(playback);
+    auto* timeline = new FoldSection(tr("时间轴"), controls);
     m_timeline = new QSlider(Qt::Horizontal, controls);
     m_timeline->setObjectName(QStringLiteral("motionTimeline"));
-    m_timeline->setRange(0, ticks);
-    m_timeLabel = new QLabel(QStringLiteral("0.000 s"), controls);
-    m_loopPlayback = new QCheckBox(tr("循环"), controls);
-    layout->addWidget(m_playToggle);
-    layout->addWidget(stop);
-    layout->addWidget(m_timeline, 1);
-    layout->addWidget(m_timeLabel);
-    layout->addWidget(m_loopPlayback);
-    m_animationDock = addPane("MotionAnimation", tr("动画"), controls);
-    m_docks->addDockWidget(ads::RightDockWidgetArea, m_animationDock, bottom);
+    m_timeline->setRange(0, 0);
+    timeline->addRow(m_timeline);
+    layout->addWidget(timeline);
+    auto* settings = new FoldSection(tr("播放设置"), controls);
+    m_timeLabel = new QLabel(tr("时间: 0.000 s / 0.000 s"), controls);
+    m_timeLabel->setObjectName(QStringLiteral("motionPlaybackTime"));
+    settings->addRow(m_timeLabel);
+    m_playbackSpeed = new QComboBox(controls);
+    m_playbackSpeed->setObjectName(QStringLiteral("motionPlaybackSpeed"));
+    for (double speed : {0.5, 1.0, 2.0, 5.0, 50.0})
+        m_playbackSpeed->addItem(QStringLiteral("%1x").arg(speed, 0, 'f', 1), speed);
+    m_playbackSpeed->setCurrentIndex(1);
+    settings->addRow(tr("播放速度:"), m_playbackSpeed);
+    m_loopPlayback = new QCheckBox(tr("循环播放"), controls);
+    m_loopPlayback->setObjectName(QStringLiteral("motionLoopPlayback"));
+    settings->addRow(m_loopPlayback);
+    layout->addWidget(settings);
+    auto* curveLink = new FoldSection(tr("曲线联动"), controls);
+    m_followCurveMarker = new QCheckBox(tr("曲线上跟随动画帧标记"), controls);
+    m_followCurveMarker->setObjectName(QStringLiteral("motionFollowCurveMarker"));
+    m_followCurveMarker->setChecked(true);
+    m_clickCurveJump = new QCheckBox(tr("点击曲线跳转动画帧"), controls);
+    m_clickCurveJump->setObjectName(QStringLiteral("motionClickCurveJump"));
+    m_clickCurveJump->setChecked(true);
+    curveLink->addRow(m_followCurveMarker);
+    curveLink->addRow(m_clickCurveJump);
+    layout->addWidget(curveLink);
+    layout->addStretch();
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(controls);
+    m_animationDock = addPane("MotionAnimation", tr("动画"), scroll);
+    // The original animation editor lives in the shared parameter column.
+    m_docks->addDockWidgetTabToArea(m_animationDock, m_parameterDock->dockAreaWidget());
     m_animationDock->closeDockWidget();
-    connect(m_playToggle, &QPushButton::clicked, this, [this] { setPlayback(!m_playbackTimer->isActive()); });
-    connect(stop, &QPushButton::clicked, this, [this] { setPlayback(false); seekRigidTime(0); });
-    connect(m_timeline, &QSlider::valueChanged, this, [this](int position) {
+    connect(m_playToggle, &QPushButton::clicked, this, [this] { setPlayback(true); });
+    connect(m_pausePlayback, &QPushButton::clicked, this, [this] { setPlayback(false); });
+    connect(m_stopPlayback, &QPushButton::clicked, this, &MotionWindow::stopRigidPlayback);
+    connect(m_timeline, &QSlider::valueChanged, this, [this](int frameIndex) {
         const auto run = m_results.find(m_resultScenario);
-        if (run == m_results.end()) return;
-        setPlayback(false);
-        seekRigidTime(run->second->result.frames.back().seconds * position / ticks);
+        if (!m_animationActive || run == m_results.end() || frameIndex < 0
+            || frameIndex >= int(run->second->result.frames.size())) return;
+        if (m_playbackTimer->isActive()) m_playbackClock.restart();
+        seekRigidTime(run->second->result.frames[std::size_t(frameIndex)].seconds);
     });
-    connect(m_rigidPlot, &RigidPlot::timeRequested, this, [this](double time) { setPlayback(false); seekRigidTime(time); });
+    connect(m_playbackSpeed, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+        if (m_playbackTimer && m_playbackTimer->isActive()) m_playbackClock.restart();
+    });
+    connect(m_followCurveMarker, &QCheckBox::toggled, this, [this](bool on) {
+        m_rigidPlot->setTimeMarkerVisible(m_animationActive && on);
+        if (m_animationActive && on) m_rigidPlot->setTime(m_playbackTime);
+    });
+    connect(m_rigidPlot, &RigidPlot::timeRequested, this, [this](double time) {
+        if (!m_animationActive || !m_clickCurveJump->isChecked()) return;
+        if (m_playbackTimer->isActive()) m_playbackClock.restart();
+        seekRigidTime(time);
+    });
+    connect(m_rigidPlot, &RigidPlot::curvesApplied, this, [this] {
+        if (m_rigidPlot->hasVisibleCurves()) openDock(m_curveDock);
+    });
+    connect(m_rigidPlot, &RigidPlot::curveRequestsChanged, this, [this](int scenarioId) {
+        const auto requests = m_rigidPlot->curveRequests(scenarioId);
+        for (auto& scenario : m_model.scenarios)
+            if (scenario.id == scenarioId) { scenario.curveRequests = requests; m_modified = true; }
+        const auto result = m_results.find(scenarioId);
+        if (result != m_results.end()) result->second->input.scenario.curveRequests = requests;
+        updateActions();
+    });
+    m_rigidPlot->setTimeMarkerVisible(false);
 }
 
 void MotionWindow::createRigidControls()
@@ -203,19 +271,35 @@ void MotionWindow::createRigidControls()
     m_playbackTimer->setInterval(16);
     connect(m_playbackTimer, &QTimer::timeout, this, [this] {
         const auto run = m_results.find(m_resultScenario);
-        if (run == m_results.end()) { setPlayback(false); return; }
-        const auto end = run->second->result.frames.back().seconds;
-        double time = m_playbackStart + m_playbackClock.elapsed() / 1000.0;
+        if (!m_animationActive || run == m_results.end() || run->second->result.frames.empty())
+            { setPlayback(false); return; }
+        const auto& frames = run->second->result.frames;
+        const auto first = frames.front().seconds, end = frames.back().seconds;
+        double time = m_playbackTime + m_playbackClock.restart() / 1000.0 * m_playbackSpeed->currentData().toDouble();
         if (time >= end) {
-            if (m_loopPlayback->isChecked() && end > 0) time = std::fmod(time, end);
-            else setPlayback(false);
+            if (m_loopPlayback->isChecked() && end > first) time = first;
+            else { stopRigidPlayback(); return; }
         }
         seekRigidTime(time);
     });
-    connect(m_animationDock, &ads::CDockWidget::closed, this, [this] {
-        setPlayback(false);
-        seekRigidTime(0);
+    connect(m_animationDock, &ads::CDockWidget::closed, this, &MotionWindow::leaveRigidAnimation);
+    auto* animationArea = m_animationDock->dockAreaWidget();
+    connect(animationArea, &ads::CDockAreaWidget::currentChanged, this, [this, animationArea](int) {
+        if (m_animationActive && m_animationDock->dockAreaWidget() == animationArea
+            && !m_animationDock->isCurrentTab()) leaveRigidAnimation();
     });
+    connect(m_animationDock, &ads::CDockWidget::visibilityChanged, this, [this](bool visible) {
+        // Switching the shared parameter column to another editor ends the
+        // animation session just like uneditAnimationPanel in the original UI.
+        // ADS emits Hide before changing its current-widget pointer. The area
+        // signal above handles the normal switch synchronously; check again
+        // after reparenting for dock areas created by a later drag operation.
+        // Minimizing the window keeps the animation as its area's current tab.
+        if (!visible && m_animationActive) QTimer::singleShot(0, this, [this] {
+            if (m_animationActive && !m_animationDock->isCurrentTab()) leaveRigidAnimation();
+        });
+    });
+    updatePlaybackControls();
 }
 
 bool MotionWindow::motionBusy() const { return bool(m_running); }
@@ -241,6 +325,7 @@ void MotionWindow::updateRigidActions()
     command(Command::NewScenario)->setEnabled(idle);
     command(Command::LoadRigidExample)->setEnabled(idle);
     command(Command::StopSolve)->setEnabled(m_running && !m_running->stop.load());
+    updatePlaybackControls();
 }
 
 void MotionWindow::appendRigidNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups)
@@ -285,6 +370,7 @@ void MotionWindow::selectRigidNode(ModelNode node)
     case ModelNode::Scenario: editScenario(node.id); break;
     case ModelNode::Animation:
     case ModelNode::Curves: showRigidResult(node); break;
+    case ModelNode::Export: leaveRigidAnimation(); break;
     default: break;
     }
 }
@@ -305,7 +391,7 @@ void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
         if (node.kind == ModelNode::Scenario) {
             auto* solve = menu.addAction(tr("求解"));
             solve->setEnabled(idle);
-            connect(solve, &QAction::triggered, this, [this, node] { startRigidSolve(node.id, true); });
+            connect(solve, &QAction::triggered, this, [this, node] { startRigidSolve(node.id); });
         }
         auto* remove = menu.addAction(tr("删除"));
         remove->setEnabled(idle);
@@ -317,6 +403,7 @@ void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
 
 void MotionWindow::showEditor(QWidget* editor)
 {
+    leaveRigidAnimation();
     closeEditor();
     m_meshForm->hide();
     m_parameterTitle->hide();
@@ -490,6 +577,7 @@ void MotionWindow::editScenario(int id)
     finishForm(form, this, [=] {
         RigidModel model = m_model;
         RigidScenario scenario{initial.id, name->text().trimmed(), end->value(), step->value(), vectorValue(gravity)};
+        scenario.curveRequests = initial.curveRequests;
         replace(model.scenarios, scenario);
         commitRigid(std::move(model), {ModelNode::Scenario, scenario.id});
     }, [this] { closeEditor(); updateParameters(); });
@@ -512,6 +600,12 @@ void MotionWindow::removeRigidNode(ModelNode node)
     } else if (node.kind == ModelNode::Drive) eraseIf(next.drives, [&](const auto& d) { return d.id == node.id; });
     else if (node.kind == ModelNode::Scenario) eraseIf(next.scenarios, [&](const auto& sc) { return sc.id == node.id; });
     else return;
+    for (auto& scenario : next.scenarios) {
+        eraseIf(scenario.curveRequests, [&](const auto& request) {
+            const bool joint = request.metric == RigidCurveMetric::JointCoordinate || request.metric == RigidCurveMetric::JointRate;
+            return joint ? !byId(next.joints, request.sourceId) : !byId(next.bodies, request.sourceId);
+        });
+    }
     commitRigid(std::move(next), {});
 }
 
@@ -534,25 +628,28 @@ void MotionWindow::commitRigid(RigidModel model, ModelNode selection)
 
 void MotionWindow::clearResults()
 {
-    if (m_playbackTimer) setPlayback(false);
+    leaveRigidAnimation();
     m_rigidPlot->setResult(nullptr, nullptr);
     m_resultScenario = 0;
     m_playbackTime = 0.0;
     m_results.clear();
     m_viewport->clearPartPoses();
+    const QSignalBlocker blocker(m_timeline);
+    m_timeline->setRange(0, 0);
+    m_timeLabel->setText(tr("时间: 0.000 s / 0.000 s"));
     m_animationDock->closeDockWidget();
     m_curveDock->closeDockWidget();
+    updatePlaybackControls();
 }
 
-void MotionWindow::startRigidSolve(int scenarioId, bool showCurves)
+void MotionWindow::startRigidSolve(int scenarioId)
 {
     if (motionBusy() || m_jobPart >= 0) return;
     auto run = std::make_shared<RigidRun>();
     QString error;
     if (!prepareRigidModel(m_document, m_model, scenarioId, run->input, error)) { setNotice(error, true); return; }
     closeEditor();
-    setPlayback(false);
-    run->showCurves = showCurves;
+    leaveRigidAnimation();
     try {
         m_solverThread = std::thread([run] {
             try {
@@ -586,13 +683,17 @@ void MotionWindow::pollRigidSolve()
     m_progress->setRange(0, 0);
     if (run->status == SolveStatus::Completed && !run->result.frames.empty()) {
         const int id = run->result.scenarioId;
-        m_rigidPlot->setResult(nullptr, nullptr);
+        // Replacing this result must release the plot's pointers first. A solve
+        // does not implicitly enter animation or create a result curve.
+        if (m_resultScenario == id) {
+            m_rigidPlot->setResult(nullptr, nullptr);
+            m_resultScenario = 0;
+        }
         m_results[id] = run;
-        m_resultScenario = 0;
         m_selectionNode = {ModelNode::Scenario, id};
         updateTree();
-        showRigidResult({run->showCurves ? ModelNode::Curves : ModelNode::Animation, id});
-        setNotice(tr("MotionEngine 求解完成：%1 帧 / %2 s").arg(run->result.frames.size()).arg(run->result.frames.back().seconds));
+        setNotice(tr("MotionEngine 求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
+            .arg(run->result.frames.size()).arg(run->result.frames.back().seconds));
     } else {
         setNotice(run->status == SolveStatus::Stopped ? tr("已停止求解。") : tr("求解失败：%1").arg(run->error), run->status != SolveStatus::Stopped);
     }
@@ -603,9 +704,14 @@ void MotionWindow::pollRigidSolve()
 void MotionWindow::showRigidResult(ModelNode node)
 {
     const auto it = m_results.find(node.id);
-    if (it == m_results.end()) return;
+    if (motionBusy() || m_jobPart >= 0 || it == m_results.end() || it->second->result.frames.empty()) return;
     const auto& run = *it->second;
+    if (node.kind == ModelNode::Animation) {
+        QString error;
+        if (!validateRigidPlayback(run.input, run.result, error)) { setNotice(error, true); return; }
+    }
     if (node.kind == ModelNode::Export) {
+        leaveRigidAnimation();
         auto path = QFileDialog::getSaveFileName(this, tr("导出求解结果"), run.input.scenario.name + ".csv", tr("CSV 表格 (*.csv)"));
         if (path.isEmpty()) return;
         if (QFileInfo(path).suffix().isEmpty()) path += ".csv";
@@ -615,57 +721,112 @@ void MotionWindow::showRigidResult(ModelNode node)
         return;
     }
     if (m_resultScenario != node.id) {
-        setPlayback(false);
+        leaveRigidAnimation();
         m_resultScenario = node.id;
         m_rigidPlot->setResult(&run.input, &run.result);
-        seekRigidTime(0);
+        m_playbackTime = run.result.frames.front().seconds;
     }
-    m_animationDock->toggleView(true);
-    if (node.kind == ModelNode::Curves) openDock(m_curveDock);
-    else openDock(m_animationDock);
+    if (node.kind == ModelNode::Curves) {
+        showEditor(m_rigidPlot->createConfigurationPanel());
+        if (m_rigidPlot->hasVisibleCurves()) openDock(m_curveDock);
+        return;
+    }
+    if (node.kind != ModelNode::Animation) return;
+    closeEditor();
+    setPlayback(false);
+    m_animationActive = true;
+    {
+        const QSignalBlocker blocker(m_timeline);
+        m_timeline->setRange(0, int(run.result.frames.size()) - 1);
+    }
+    m_rigidPlot->setTimeMarkerVisible(m_followCurveMarker->isChecked());
+    seekRigidTime(run.result.frames.front().seconds);
+    openDock(m_animationDock);
+    if (m_rigidPlot->hasVisibleCurves()) openDock(m_curveDock);
+    updatePlaybackControls();
 }
 
 void MotionWindow::seekRigidTime(double seconds)
 {
     const auto it = m_results.find(m_resultScenario);
-    if (it == m_results.end()) return;
+    if (!m_animationActive || it == m_results.end()) return;
     const auto& run = *it->second;
     const auto& frames = run.result.frames;
-    seconds = std::clamp(seconds, 0.0, frames.back().seconds);
-    const auto right = std::lower_bound(frames.begin(), frames.end(), seconds,
-        [](const RigidFrame& frame, double time) { return frame.seconds < time; });
-    const auto& b = right == frames.end() ? frames.back() : *right;
-    const auto& a = right == frames.begin() || right == frames.end() ? b : *std::prev(right);
-    const float ratio = b.seconds > a.seconds ? float((seconds - a.seconds) / (b.seconds - a.seconds)) : 0.0f;
-    std::map<int, QMatrix4x4> poses;
-    for (std::size_t i = 0; i < run.input.bodies.size(); ++i) {
-        const auto& body = run.input.bodies[i];
-        if (body.body.fixed) continue;
-        const QVector3D pos = vector3(a.bodies[i].positionMm) * (1.0f - ratio) + vector3(b.bodies[i].positionMm) * ratio;
-        QMatrix4x4 pose;
-        pose.translate(pos);
-        pose.rotate(QQuaternion::slerp(quaternion(a.bodies[i].rotation), quaternion(b.bodies[i].rotation), ratio));
-        pose.translate(-vector3(body.properties.centerMm));
-        poses.emplace(body.body.partId, pose);
+    RigidPlaybackSample sample;
+    QString error;
+    if (!sampleRigidPlayback(run.input, run.result, seconds, sample, error)) {
+        setPlayback(false);
+        setNotice(error, true);
+        return;
     }
-    m_viewport->setPartPoses(poses);
-    m_playbackTime = seconds;
+    m_viewport->setPartPoses(sample.partPoses);
+    m_playbackTime = sample.seconds;
     const QSignalBlocker block(m_timeline);
-    m_timeline->setValue(frames.back().seconds > 0 ? qRound(ticks * seconds / frames.back().seconds) : 0);
-    m_timeLabel->setText(QStringLiteral("%1 / %2 s").arg(seconds, 0, 'f', 3).arg(frames.back().seconds, 0, 'f', 3));
-    m_rigidPlot->setTime(seconds);
+    m_timeline->setValue(sample.frameIndex);
+    m_timeLabel->setText(tr("时间: %1 s / %2 s").arg(sample.seconds, 0, 'f', 3).arg(frames.back().seconds, 0, 'f', 3));
+    if (m_followCurveMarker->isChecked()) m_rigidPlot->setTime(sample.seconds);
 }
 
 void MotionWindow::setPlayback(bool play)
 {
+    if (!m_playbackTimer) return;
     if (play) {
         const auto it = m_results.find(m_resultScenario);
-        if (it == m_results.end()) return;
-        m_playbackStart = m_playbackTime >= it->second->result.frames.back().seconds ? 0.0 : m_playbackTime;
+        if (!m_animationActive || motionBusy() || m_jobPart >= 0 || it == m_results.end()
+            || it->second->result.frames.size() < 2) return;
+        const auto& frames = it->second->result.frames;
+        if (frames.back().seconds <= frames.front().seconds) return;
+        if (m_playbackTime >= frames.back().seconds) seekRigidTime(frames.front().seconds);
         m_playbackClock.restart();
         m_playbackTimer->start();
     } else m_playbackTimer->stop();
-    m_playToggle->setText(play ? tr("暂停") : tr("播放"));
+    updatePlaybackControls();
+}
+
+void MotionWindow::stopRigidPlayback()
+{
+    setPlayback(false);
+    const auto it = m_results.find(m_resultScenario);
+    if (m_animationActive && it != m_results.end() && !it->second->result.frames.empty())
+        seekRigidTime(it->second->result.frames.front().seconds);
+}
+
+void MotionWindow::leaveRigidAnimation()
+{
+    setPlayback(false);
+    if (m_animationActive) {
+        const auto it = m_results.find(m_resultScenario);
+        if (it != m_results.end() && !it->second->result.frames.empty()) {
+            const auto& frames = it->second->result.frames;
+            m_playbackTime = frames.front().seconds;
+            const QSignalBlocker blocker(m_timeline);
+            m_timeline->setValue(0);
+            m_timeLabel->setText(tr("时间: %1 s / %2 s").arg(m_playbackTime, 0, 'f', 3).arg(frames.back().seconds, 0, 'f', 3));
+        }
+    }
+    m_animationActive = false;
+    if (m_viewport) m_viewport->clearPartPoses();
+    if (m_rigidPlot) m_rigidPlot->setTimeMarkerVisible(false);
+    if (m_animationDock && !m_animationDock->isClosed()) m_animationDock->closeDockWidget();
+    updatePlaybackControls();
+}
+
+void MotionWindow::updatePlaybackControls()
+{
+    if (!m_playToggle) return;
+    const auto it = m_results.find(m_resultScenario);
+    const bool available = m_animationActive && !motionBusy() && m_jobPart < 0
+        && it != m_results.end() && !it->second->result.frames.empty();
+    const bool playing = available && m_playbackTimer && m_playbackTimer->isActive();
+    const bool multiple = available && it->second->result.frames.size() > 1;
+    m_playToggle->setEnabled(multiple && !playing);
+    m_pausePlayback->setEnabled(playing);
+    m_stopPlayback->setEnabled(available);
+    m_timeline->setEnabled(multiple);
+    m_playbackSpeed->setEnabled(available);
+    m_loopPlayback->setEnabled(multiple);
+    m_followCurveMarker->setEnabled(available);
+    m_clickCurveJump->setEnabled(available);
 }
 
 void MotionWindow::saveProject(bool choosePath)

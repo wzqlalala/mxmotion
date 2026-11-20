@@ -25,13 +25,37 @@ build-occ\bin\MxMotion.exe
 
 默认测试不需要桌面。要验证 Qt/ADS、OpenGL、网格、求解与 Qwt，请在可用桌面的会话里设置 `MX_TEST_DESKTOP=ON` 再运行脚本（直接使用 CMake 时设 `-DMX_TEST_DESKTOP=ON`）。测试日志和图片保存在构建目录的 `desktop-smoke/`。不构建桌面版、只测试 CAD/网格/刚体后端可设 `-DMX_BUILD_GUI=OFF`。
 
+## Linux / 云端构建与验证
+
+同一套 OCC 界面现在支持 Linux x64；使用仓库锁定的 MotionEngine，并链接真实 OCCT、Netgen 和 Qwt。Windows/MSVC 构建方式保持不变。已验证的 Linux 依赖组合为 Debian 13、GCC 14、Qt 5.15.15、OCCT 7.8.1、Netgen 6.2.2501、Qwt 6.1.4 与锁定版本的 Qt ADS。
+
+Debian 13 安装依赖后执行：
+
+```sh
+sudo apt-get install cmake ninja-build g++ qtbase5-dev qtbase5-private-dev libqt5svg5-dev \
+    libqt5opengl5-dev libocct-data-exchange-dev libnglib-dev libqwt-qt5-dev \
+    libxcb1-dev libx11-dev xvfb xauth libgl1-mesa-dri fonts-noto-cjk
+git submodule update --init --recursive
+MX_TEST_DESKTOP=ON tools/build-occ.sh
+build-occ/bin/MxMotion
+```
+
+`motionengine` 子模块需要当前 GitHub 账号对该仓库有读取权限。缺少子模块时构建会报错，不会换成示例数据或虚拟求解器。非系统 SDK 可通过 `CMAKE_PREFIX_PATH` 或 `-DMX_OCCT_ROOT=...`、`-DMX_NETGEN_ROOT=...`、`-DMX_QWT_ROOT=...` 指定。
+
+无桌面的服务器设置 `MX_TEST_DESKTOP=ON` 时，脚本通过 Xvfb 和 Mesa 软件 OpenGL 运行真实窗口测试；测试截图和报告在 `build-occ/desktop-smoke/`。这用于验证界面及动画、曲线交互，不代表服务器软件渲染的性能等同于本机显卡。`MX_BUILD_DIR` 与 `MX_BUILD_JOBS` 可覆盖构建目录和并行度。
+
+Linux 构建仅在构建目录内复制并适配锁定引擎的编译兼容性（MSVC 编译参数、非 Windows 计时器的标准库名称等），具体变更见 `cmake/PrepareMotionEngine.cmake`；不修改子模块源码，也不改变求解模型或算法。
+
 ## 操作
 
 - **主页 → 导入几何模型**，或右击模型树的 **部件 → 导入**。支持 STEP、IGES、BREP；长度统一以毫米显示，BREP 文件本身不含单位，本构建按毫米解释。**打开／保存**支持 `.mxmotion`：保存精确 CAD 几何和刚体配置，网格和结果不入项目；不是原生 `.mxcae`。
 - **几何 → 实体**：创建立方体（可分别输入三个尺寸）、圆柱体、球体。
 - 视口左键拖动旋转、中键或右键平移、滚轮缩放；左键点选部件与模型树同步。**自适应视图**（`F`）用于适配模型。
 - 右击树中的具体部件 → **生成网格**，在 **参数** 区选三角形面网格或四面体体网格、设置单元尺寸，然后点 **生成**。四面体需要适合体划分的闭合几何。单次网格上限为 4,000 节点、每种单元 20,000 个；超限时请增大单元尺寸。网格模式显示实际有限元网格；CAD 轮廓/线框使用单独的 OCC 展示数据。部件右键可导出 `.vtk`；体网格导出四面体，面网格导出三角形。网格不会随 CAD 文件保存。
-- **求解 → 刚体示例 → 求解**可直接运行一个恒速铰链算例。自己的模型走 **体定义 → 运动体**（选择 CAD 实体，指定质量或密度）→ **运动副与约束**（旋转、移动或固定副）→ **驱动**（恒定速度或从零线性到达末时刻位移）→ **新建求解方案／求解**。几何与线位移用 mm，旋转用 °，时间用 s，重力用 m/s²。模型树的「动画／结果导出／运动曲线」分别打开播放控制、写出 CSV 或打开 **Qwt** 曲线；点击曲线可跳转到对应时刻。
+- **求解 → 刚体示例 → 求解**可直接运行一个恒速铰链算例。自己的模型走 **体定义 → 运动体**（选择 CAD 实体，指定质量或密度）→ **运动副与约束**（旋转、移动或固定副）→ **驱动**（恒定速度或从零线性到达末时刻位移）→ **新建求解方案／求解**。几何与线位移用 mm，旋转用 °，时间用 s，重力用 m/s²。求解完成后，由用户选择方案下的「动画／结果导出／运动曲线」。
+- **运动曲线**：在参数栏选择源类型、对象、变量分量及名称，点击 **添加曲线**。支持多曲线、颜色、显隐、删除、时间范围与可见曲线 CSV 导出；配置按方案随项目保存。质心位置是世界坐标，位移增量相对第一帧；关节标量明确区分相对转角/行程及其速度。没有结果的通道不会用演示数值代替。
+- **动画**：在参数列中使用独立的播放、暂停、停止、倍速与循环控制，滑条对应真实采样帧。停止回到第一帧；关闭动画、选择其他建模内容或切回参数标签时，恢复 CAD 初始位置。只有进入动画并启用对应开关时，曲线时间标记及点击曲线跳转才生效；两个开关可分别控制。
+- **可打开的验证项目**：[examples/rigid_results.mxmotion](examples/rigid_results.mxmotion) 包含偏置斜轴旋转与三条已保存曲线请求，操作步骤和应有结果见 [examples/README.md](examples/README.md)。
 - 不带 CGM／专有 CAD 转换、完整草图/特征系统、柔性体、接触、高级约束或原版后处理。原功能区页签仍保留，不可用的命令置灰。
 
 ## motionengine 子模块
@@ -48,3 +72,5 @@ git submodule update --init --recursive
 - `ModelData/src/MotionOcc/`：OCC 几何、Netgen 网格与 VTK、刚体模型与 MotionEngine 适配、项目与 CSV。CAD／显示／网格实现沿用同机 `Motion` 项目的对应实现思路，未引入供体主窗口或 Chrono。
 - `tests/MotionOccBackendSmoke.cpp`：几何读写、错误回退和实际网格的自动测试。
 - `tests/MotionOccRigidSmoke.cpp` 和桌面测试：核对 MotionEngine 的真实运动时程以及播放与 Qwt 联动。
+- `tests/MotionOccPlaybackSmoke.cpp`、`MotionOccCurveSmoke.cpp`、`MotionOccPlotSmoke.cpp`：动画坐标和编号、曲线数值语义，以及按方案配置曲线的实际交互回归。
+- [原界面逻辑对照与云端验证](docs/lite-occ-restoration-review.md)：修复依据、行为差异、测试范围及完整 SDK 的剩余边界。

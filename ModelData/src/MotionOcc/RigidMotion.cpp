@@ -16,6 +16,8 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Iterator.hxx>
 
+#include <QColor>
+
 #include "motion/functions/Function_Const.h"
 #include "motion/functions/Function_Ramp.h"
 #include "motion/physics/Body.h"
@@ -254,10 +256,50 @@ const RigidScenario* checkScenarios(const RigidModel& model, int selectedId)
         fail(QStringLiteral("Too many rigid scenarios."));
     const RigidScenario* selected = nullptr;
     std::unordered_set<int> ids;
+    std::unordered_set<int> bodyIds;
+    std::unordered_map<int, JointKind> jointKinds;
+    for (const auto& body : model.bodies) bodyIds.insert(body.id);
+    for (const auto& joint : model.joints) jointKinds.emplace(joint.id, joint.kind);
+    std::size_t totalRequests = 0;
     for (const auto& scenario : model.scenarios) {
         checkScenario(scenario, model.bodies.size(), model.joints.size(), model.drives.size());
         if (!ids.insert(scenario.id).second)
             fail(QStringLiteral("Duplicate scenario ID %1.").arg(scenario.id));
+        totalRequests += scenario.curveRequests.size();
+        if (scenario.curveRequests.size() > 256 || totalRequests > 20000)
+            fail(QStringLiteral("Too many curve requests (256 per scenario, 20000 per project)."));
+        std::unordered_set<int> requestIds;
+        for (const auto& request : scenario.curveRequests) {
+            const auto context = QStringLiteral("Curve %1 in scenario %2").arg(request.id).arg(scenario.id);
+            if (request.id <= 0 || !requestIds.insert(request.id).second)
+                fail(context + QStringLiteral(" needs a unique positive ID."));
+            checkName(request.name, context);
+            if (!request.color.isEmpty() && (request.color.size() > 64 || !QColor(request.color).isValid()))
+                fail(context + QStringLiteral(" has an invalid color."));
+            const bool jointMetric = request.metric == RigidCurveMetric::JointCoordinate ||
+                                     request.metric == RigidCurveMetric::JointRate;
+            int maxComponent = 3;
+            switch (request.metric) {
+            case RigidCurveMetric::BodyPosition:
+            case RigidCurveMetric::BodyDisplacement:
+            case RigidCurveMetric::BodyVelocity:
+            case RigidCurveMetric::BodyAngularVelocity:
+                break;
+            case RigidCurveMetric::BodyRotation: maxComponent = 2; break;
+            case RigidCurveMetric::JointCoordinate:
+            case RigidCurveMetric::JointRate: maxComponent = 0; break;
+            default: fail(context + QStringLiteral(" has an unknown metric."));
+            }
+            if (request.component < 0 || request.component > maxComponent)
+                fail(context + QStringLiteral(" has an invalid component."));
+            if (jointMetric) {
+                const auto joint = jointKinds.find(request.sourceId);
+                if (joint == jointKinds.end() || joint->second == JointKind::Fixed)
+                    fail(context + QStringLiteral(" needs an existing revolute or prismatic joint."));
+            } else if (bodyIds.count(request.sourceId) == 0) {
+                fail(context + QStringLiteral(" refers to a missing motion body."));
+            }
+        }
         if (scenario.id == selectedId)
             selected = &scenario;
     }

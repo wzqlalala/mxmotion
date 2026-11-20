@@ -46,12 +46,30 @@ struct RigidDrive {
     double value = 0.0;
 };
 
+// Presentation requests belong to the scenario, as in the original Motion
+// curve manager. They do not change the dynamics or invalidate solved samples.
+enum class RigidCurveMetric {
+    BodyPosition, BodyDisplacement, BodyVelocity, BodyRotation,
+    BodyAngularVelocity, JointCoordinate, JointRate
+};
+
+struct RigidCurveRequest {
+    int id = 0;
+    RigidCurveMetric metric = RigidCurveMetric::BodyPosition;
+    int sourceId = 0;
+    int component = 0; // X/Y/Z = 0/1/2, vector magnitude = 3; scalar joint = 0.
+    QString name;
+    QString color;
+    bool visible = true;
+};
+
 struct RigidScenario {
     int id = 0;
     QString name;
     double duration = 1.0;
     double step = 0.01;
     Vector3d gravityMS2{0, 0, -9.80665};
+    std::vector<RigidCurveRequest> curveRequests;
 };
 
 struct RigidModel {

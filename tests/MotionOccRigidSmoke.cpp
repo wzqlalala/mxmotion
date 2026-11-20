@@ -274,6 +274,14 @@ void sameModel(const RigidModel& a, const RigidModel& b)
             QStringLiteral("Project changed the drive definition"));
     require(s.id == t.id && s.name == t.name && s.duration == t.duration && s.step == t.step &&
             s.gravityMS2 == t.gravityMS2, QStringLiteral("Project changed the scenario definition"));
+    require(s.curveRequests.size() == t.curveRequests.size(), QStringLiteral("Project lost curve requests"));
+    for (std::size_t i = 0; i < s.curveRequests.size(); ++i) {
+        const auto& c = s.curveRequests[i];
+        const auto& d = t.curveRequests[i];
+        require(c.id == d.id && c.metric == d.metric && c.sourceId == d.sourceId && c.component == d.component &&
+            c.name == d.name && c.color == d.color && c.visible == d.visible,
+            QStringLiteral("Project changed a scenario's curve request"));
+    }
 }
 
 QByteArray readFile(const QString& path)
@@ -335,6 +343,53 @@ void checkProject(const CadDocument& cad, const RigidModel& model, int lastPartI
             part->display.triangles == before.display.triangles && part->display.edges == before.display.edges,
             QStringLiteral("Loading corrupt data changed existing CAD"));
     require(addBox(loaded) == lastPartId + 1, QStringLiteral("Project did not preserve the next CAD part ID"));
+}
+
+void checkCurvePersistence(const CadDocument& cad, const RigidModel& model, const QTemporaryDir& temporary)
+{
+    auto configured = model;
+    configured.scenarios[0].curveRequests = {
+        {3, RigidCurveMetric::BodyPosition, model.bodies[0].id, 0, QStringLiteral("质心绝对坐标 X"), QStringLiteral("#1769aa"), true},
+        {17, RigidCurveMetric::JointCoordinate, model.joints[0].id, 0, QStringLiteral("旋转副相对转角"), QStringLiteral("#d84a39"), false}
+    };
+    auto second = configured.scenarios[0];
+    second.id += 1;
+    second.name = QStringLiteral("独立曲线的第二方案");
+    second.curveRequests = {
+        {3, RigidCurveMetric::BodyDisplacement, model.bodies[0].id, 3, QStringLiteral("位移模"), {}, true}
+    };
+    configured.scenarios.push_back(second);
+    const auto path = temporary.filePath(QStringLiteral("curve-requests.mxmotion"));
+    QString error;
+    checked(saveRigidProject(path, cad, configured, error), QStringLiteral("Save scenario curve requests"), error);
+    const auto validBytes = readFile(path);
+    CadDocument loaded;
+    RigidModel restored;
+    checked(loadRigidProject(path, loaded, restored, error), QStringLiteral("Restore scenario curve requests"), error);
+    require(restored.scenarios.size() == 2 && restored.scenarios[0].curveRequests.size() == 2 &&
+        restored.scenarios[1].curveRequests.size() == 1, QStringLiteral("Curve requests crossed scenario boundaries"));
+    auto firstOnly = restored;
+    firstOnly.scenarios.resize(1);
+    auto expected = configured;
+    expected.scenarios.resize(1);
+    sameModel(firstOnly, expected);
+    const auto& restoredSecond = restored.scenarios[1].curveRequests[0];
+    require(restoredSecond.id == 3 && restoredSecond.metric == RigidCurveMetric::BodyDisplacement &&
+        restoredSecond.component == 3 && restoredSecond.color.isEmpty(), QStringLiteral("Second scenario curve changed"));
+
+    auto invalid = configured;
+    invalid.scenarios[0].curveRequests[0].sourceId = 999999;
+    require(!saveRigidProject(path, cad, invalid, error) && !error.isEmpty() && readFile(path) == validBytes,
+        QStringLiteral("Dangling curve source overwrote a valid project"));
+    invalid = configured;
+    invalid.scenarios[0].curveRequests.push_back(invalid.scenarios[0].curveRequests[0]);
+    require(!validateRigidModel(cad, invalid, error), QStringLiteral("Duplicate scenario-local curve IDs accepted"));
+    invalid = configured;
+    invalid.scenarios[0].curveRequests[1].component = 3;
+    require(!validateRigidModel(cad, invalid, error), QStringLiteral("Scalar joint curve accepted a vector component"));
+    invalid = configured;
+    invalid.scenarios[0].curveRequests[0].color = QStringLiteral("not-a-color");
+    require(!validateRigidModel(cad, invalid, error), QStringLiteral("Invalid curve color accepted"));
 }
 
 void checkCsv(const RigidInput& input, const RigidResult& result, const QString& path, bool revolute)
@@ -464,6 +519,7 @@ void smoke(const QTemporaryDir& temporary, const QString& example)
 
     checkFailures(cad, hingeModel, hingeInput, slideResult, temporary);
     checkProject(cad, hingeModel, lastPartId, temporary);
+    checkCurvePersistence(cad, hingeModel, temporary);
     checkCsv(hingeInput, hingeResult, temporary.filePath(QStringLiteral("角度.csv")), true);
     checkCsv(sliderInput, slideResult, temporary.filePath(QStringLiteral("行程.csv")), false);
     if (!example.isEmpty()) writeExample(example, cad, hingeModel);
