@@ -44,6 +44,7 @@
 #include <XSControl_TransferWriter.hxx>
 #include <XSControl_WorkSession.hxx>
 
+#include <QBuffer>
 #include <QByteArray>
 #include <QFileInfo>
 #include <QSaveFile>
@@ -53,7 +54,10 @@
 #include <cstddef>
 #include <exception>
 #include <fstream>
+#include <istream>
+#include <iterator>
 #include <limits>
+#include <locale>
 #include <mutex>
 #include <new>
 #include <ostream>
@@ -413,11 +417,10 @@ DisplayMesh makeDisplay(const TopoDS_Shape& shape, DisplayBudget& budget)
     return display;
 }
 
-// Qt supplies a Unicode destination and an atomic replacement. Stream into
-// it directly, with no full-file string or narrow-character output pathname.
+// Stream into an atomic file or an in-memory BREP payload with a byte cap.
 class SaveBuffer final : public std::streambuf {
 public:
-    explicit SaveBuffer(QSaveFile& file) : m_file(file) {}
+    explicit SaveBuffer(QIODevice& device, qint64 limit = kMaxFileBytes) : m_device(device), m_limit(limit) {}
     bool tooLarge() const { return m_tooLarge; }
     qint64 written() const { return m_written; }
 
@@ -425,11 +428,11 @@ protected:
     std::streamsize xsputn(const char* data, std::streamsize size) override
     {
         if (size <= 0) return 0;
-        if (size > kMaxFileBytes - m_written) {
+        if (size > m_limit - m_written) {
             m_tooLarge = true;
             return 0;
         }
-        const qint64 count = m_file.write(data, qint64(size));
+        const qint64 count = m_device.write(data, qint64(size));
         if (count > 0) m_written += count;
         return count > 0 ? std::streamsize(count) : 0;
     }
@@ -442,10 +445,63 @@ protected:
     }
 
 private:
-    QSaveFile& m_file;
+    QIODevice& m_device;
+    qint64 m_limit;
     qint64 m_written = 0;
     bool m_tooLarge = false;
 };
+
+class BrepInputBuffer final : public std::streambuf {
+public:
+    explicit BrepInputBuffer(const QByteArray& bytes)
+    {
+        // std::streambuf's get area requires char*, but the input is never modified.
+        auto* begin = const_cast<char*>(bytes.constData());
+        setg(begin, begin, begin + bytes.size());
+    }
+};
+
+// The project accepts only the v3, exact-geometry stream that it writes. Check
+// the native framing, sizes and token lengths before handing the bytes to OCCT.
+void checkProjectBrep(const QByteArray& bytes)
+{
+    static const QByteArray header("\nCASCADE Topology V3, (c) Open Cascade\n");
+    if (!bytes.startsWith(header)) fail(QStringLiteral("不是受支持的 OCCT V3 BREP 数据。"));
+
+    struct Table { const char* label; bool mesh; };
+    const Table tables[] = {{"Locations", false}, {"Curve2ds", false}, {"Curves", false},
+        {"Polygon3D", true}, {"PolygonOnTriangulations", true}, {"Surfaces", false},
+        {"Triangulations", true}, {"TShapes", false}};
+    int nextTable = 0;
+    int tokenLength = 0;
+    int lineStart = header.size();
+    const auto* text = bytes.constData();
+    for (int i = lineStart; i < bytes.size(); ++i) {
+        const unsigned char c = text[i];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            tokenLength = 0;
+        } else if (c < 0x21 || c > 0x7e || ++tokenLength > 128) {
+            fail(QStringLiteral("BREP 含有无效或超长的文本字段。"));
+        }
+        if (c != '\n') continue;
+        if (nextTable < int(std::size(tables))) {
+            const auto& table = tables[nextTable];
+            const int labelSize = int(std::char_traits<char>::length(table.label));
+            if (i - lineStart > labelSize && text[lineStart + labelSize] == ' ' &&
+                std::char_traits<char>::compare(text + lineStart, table.label, labelSize) == 0) {
+                bool ok = false;
+                const auto count = QByteArray::fromRawData(text + lineStart + labelSize + 1,
+                    i - lineStart - labelSize - 1).toInt(&ok);
+                if (!ok || count < 0 || count > int(kMaxTopology) || (table.mesh && count != 0) ||
+                    (nextTable == int(std::size(tables)) - 1 && count == 0))
+                    fail(QStringLiteral("BREP 表计数无效、超出上限或包含网格。"));
+                ++nextTable;
+            }
+        }
+        lineStart = i + 1;
+    }
+    if (nextTable != int(std::size(tables))) fail(QStringLiteral("BREP 缺少必需的数据表。"));
+}
 
 bool writeShape(const TopoDS_Shape& shape, Format format, std::ostream& output)
 {
@@ -650,6 +706,75 @@ bool CadDocument::exportFile(const QString& path, int partId, QString& error) co
         if (!written || !output || buffer.written() == 0)
             fail(QStringLiteral("未能写入完整的几何文件。"));
         if (!file.commit()) fail(file.errorString());
+    });
+}
+
+bool CadDocument::encodeProjectPart(const CadPart& part, QByteArray& brep, int maxBytes, QString& error)
+{
+    return runCad(QStringLiteral("编码 CAD 零件 %1 失败").arg(part.id), error, [&] {
+        if (part.shape.IsNull()) fail(QStringLiteral("零件没有精确几何。"));
+        if (maxBytes <= 0) fail(QStringLiteral("项目已达到 BREP 大小上限。"));
+        QByteArray bytes;
+        QBuffer device(&bytes);
+        if (!device.open(QIODevice::WriteOnly)) fail(device.errorString());
+        SaveBuffer buffer(device, maxBytes);
+        std::ostream output(&buffer);
+        output.imbue(std::locale::classic());
+        bool written;
+        {
+            const std::lock_guard<std::mutex> lock(exchangeMutex);
+            // Standalone stream preserves the location and orientation of the part.
+            written = writeShape(part.shape, Format::Brep, output);
+        }
+        if (buffer.tooLarge()) fail(QStringLiteral("BREP 超过项目大小上限。"));
+        if (!written || bytes.isEmpty()) fail(QStringLiteral("未能写入完整的 BREP 数据。"));
+        checkProjectBrep(bytes);
+        brep.swap(bytes);
+    });
+}
+
+bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error)
+{
+    return runCad(QStringLiteral("恢复项目 CAD 几何失败"), error, [&] {
+        if (parts.size() > kMaxParts || nextId == 0 || nextId > std::uint64_t((std::numeric_limits<int>::max)()) + 1)
+            fail(QStringLiteral("项目零件数量或下一编号无效。"));
+
+        std::vector<const ProjectPart*> sorted;
+        sorted.reserve(parts.size());
+        for (const auto& part : parts) sorted.push_back(&part);
+        std::sort(sorted.begin(), sorted.end(), [](const auto* a, const auto* b) { return a->id < b->id; });
+        int lastId = 0;
+        for (const auto* part : sorted) {
+            if (part->id <= lastId || std::uint64_t(part->id) >= nextId)
+                fail(QStringLiteral("无效或重复的项目零件编号：%1。" ).arg(part->id));
+            lastId = part->id;
+        }
+
+        DisplayBudget budget;
+        std::vector<CadPart> staged;
+        staged.reserve(parts.size());
+        for (const auto* part : sorted) {
+            try {
+                checkProjectBrep(part->brep);
+                BrepInputBuffer buffer(part->brep);
+                std::istream input(&buffer);
+                input.imbue(std::locale::classic());
+                input.exceptions(std::ios::failbit | std::ios::badbit);
+                TopoDS_Shape shape;
+                {
+                    const std::lock_guard<std::mutex> lock(exchangeMutex);
+                    BRepTools::Read(shape, input, BRep_Builder());
+                }
+                if (shape.IsNull() || (!input.eof() && !(input >> std::ws).eof()))
+                    fail(QStringLiteral("无法读取单个完整的 BREP 形状。"));
+                // A single budget covers the entire project, as in CAD import.
+                staged.push_back({part->id, part->name, shape, makeDisplay(shape, budget)});
+            } catch (const CadError& failure) {
+                fail(QStringLiteral("零件 %1：%2").arg(part->id).arg(failure.message));
+            }
+        }
+        m_parts.swap(staged);
+        m_nextId = nextId;
     });
 }
 

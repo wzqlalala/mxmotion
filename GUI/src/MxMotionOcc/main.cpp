@@ -52,7 +52,7 @@ int main(int argc, char* argv[])
     args.setApplicationDescription(QStringLiteral("MxSim.Motion — OCC / OpenGL / Netgen"));
     args.addHelpOption();
     args.addVersionOption();
-    args.addPositionalArgument(QStringLiteral("CAD"), QStringLiteral("STEP, IGES or BREP file to import."), QStringLiteral("[CAD]"));
+    args.addPositionalArgument(QStringLiteral("CAD"), QStringLiteral("MxMotion project, STEP, IGES or BREP."), QStringLiteral("[CAD]"));
 #ifdef MX_OCC_DESKTOP_SMOKE
     const QCommandLineOption smoke(QStringLiteral("desktop-smoke"), QStringLiteral("Run the local desktop smoke test."), QStringLiteral("directory"));
     args.addOption(smoke);
@@ -63,7 +63,11 @@ int main(int argc, char* argv[])
 #endif
 
     MotionOcc::MotionWindow window;
-    if (!args.positionalArguments().isEmpty()) window.importCad(args.positionalArguments().first());
+    if (!args.positionalArguments().isEmpty()) {
+        const auto path = args.positionalArguments().first();
+        if (path.endsWith(QStringLiteral(".mxmotion"), Qt::CaseInsensitive)) window.openRigidProject(path);
+        else window.importCad(path);
+    }
     window.showMaximized();
     return app.exec();
 }

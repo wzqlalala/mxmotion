@@ -133,21 +133,23 @@ void buildGeometry(RibbonPage* page, MotionWindow& window)
     disabledButtons(group(page, "共享拓扑"), { { "共享", "geometry/共享拓扑_小@3x.png" } });
 }
 
-void buildMotionPages(const QList<RibbonPage*>& pages)
+void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
 {
-    // Keep the original resident Motion pages and groups. The SDK-dependent
-    // commands are present for orientation, but never claim to run a solve.
-    disabledButtons(group(pages[2], "体"), {
-        { "一键生成运动体", "xuanzequanbu.png" }, { "批量定义运动体", "Motion/bodyBatch.png" },
-        { "运动体", "Motion/movingBody.png" }, { "自动柔性体", "Motion/mnf.png" },
+    // Keep the original Motion pages and group order. Unsupported SDK commands stay disabled.
+    auto* bodies = group(pages[2], "体");
+    actionButton(bodies, window, Command::BatchBodies);
+    actionButton(bodies, window, Command::AddBody);
+    disabledButtons(bodies, {
+        { "自动柔性体", "Motion/mnf.png" },
         { "标记点", "caotu/dian.png" }
     });
     disabledButtons(group(pages[2], "飞机专用模块 ▼"), { { "飞机报告", "Motion/aircraftReport.png" } });
     disabledButtons(group(pages[2], "系统建模工具 ▼"), { { "汽车报告", "Motion/automobileReport.png" } });
-    disabledButtons(group(pages[3], "基本运动副 ▼"), {
-        { "旋转副", "Motion/joint_revolute.png" }, { "移动副", "Motion/joint_prismatic.png" },
+    auto* joints = group(pages[3], "基本运动副 ▼");
+    for (const auto id : {Command::AddRevolute, Command::AddPrismatic, Command::AddFixed}) actionButton(joints, window, id);
+    disabledButtons(joints, {
         { "圆柱副", "Motion/joint_cylindrical.png" }, { "球副", "Motion/joint_spherical.png" },
-        { "固定副", "Motion/joint_fixed.png" }, { "万向副", "Motion/joint_universal.png" }
+        { "万向副", "Motion/joint_universal.png" }
     });
     disabledButtons(group(pages[3], "几何约束 ▼"), {
         { "点面约束", "Motion/joint_pointPlane.png" }, { "平行约束", "Motion/joint_parallel.png" },
@@ -156,9 +158,10 @@ void buildMotionPages(const QList<RibbonPage*>& pages)
     disabledButtons(group(pages[3], "耦合副 ▼"), {
         { "耦合副", "Motion/joint_coupling.png" }, { "齿轮副", "Motion/joint_gear.png" }
     });
-    disabledButtons(group(pages[4], "运动副驱动"), {
-        { "位移驱动", "Motion/drive.png" }, { "速度驱动", "Motion/drive.png" }, { "加速度驱动", "Motion/drive.png" }
-    });
+    auto* drives = group(pages[4], "运动副驱动");
+    actionButton(drives, window, Command::AddPositionDrive);
+    actionButton(drives, window, Command::AddSpeedDrive);
+    disabledButtons(drives, { { "加速度驱动", "Motion/drive.png" } });
     disabledButtons(group(pages[4], "运动体驱动"), {
         { "平动驱动", "Motion/drive.png" }, { "转动驱动", "Motion/drive.png" }
     });
@@ -177,9 +180,9 @@ void buildMotionPages(const QList<RibbonPage*>& pages)
     disabledButtons(group(pages[6], "控制器"), { { "控制器", "Motion/controlCalculation.png" } });
     disabledButtons(group(pages[6], "控制模块 ▼"), { { "控制输入", "Motion/controlInput.png" },
         { "机电耦合", "Motion/electromechanicalCoupling.png" } }, false);
-    disabledButtons(group(pages[7], "求解"), {
-        { "新建求解方案", "Motion/drive.png" }, { "求解", "Motion/solve.png" }
-    });
+    auto* solve = group(pages[7], "求解");
+    for (const auto id : {Command::NewScenario, Command::Solve, Command::StopSolve, Command::LoadRigidExample})
+        actionButton(solve, window, id);
 }
 
 void buildDisplay(RibbonPage* page, MotionWindow& window)
@@ -309,7 +312,7 @@ QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent)
     QObject::connect(tabs, &QTabBar::currentChanged, stack, &QStackedWidget::setCurrentIndex);
     buildHome(pages[0], window);
     buildGeometry(pages[1], window);
-    buildMotionPages(pages);
+    buildMotionPages(pages, window);
     buildDisplay(pages[8], window);
     auto* selection = group(pages[9], "选择");
     actionButton(selection, window, Command::PickPart);

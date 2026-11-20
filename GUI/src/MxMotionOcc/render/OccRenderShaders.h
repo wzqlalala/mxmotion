@@ -11,6 +11,9 @@ layout(location=1) in vec3 aNormal;
 uniform mat4 uView;
 uniform mat4 uProjection;
 uniform vec3 uPivot;
+uniform vec3 uPartOrigin;
+uniform mat4 uPartToPivot;
+uniform bool uPosed;
 uniform mat3 uNormal;
 uniform bool uOutline;
 uniform vec2 uViewportPixels;
@@ -19,11 +22,19 @@ out vec3 vNormal;
 out vec3 vFlatPosition;
 void main() {
     vec3 local = aPosition - uPivot;
+    vec3 normal = aNormal;
+    vec3 flatPosition = local;
+    if (uPosed) {
+        mat3 rotation = mat3(uPartToPivot);
+        flatPosition = rotation * (aPosition - uPartOrigin);
+        local = flatPosition + uPartToPivot[3].xyz;
+        normal = rotation * normal;
+    }
     vec4 clip = uProjection * uView * vec4(local, 1.0);
-    vNormal = uNormal * aNormal;
-    // A common scale preserves the flat normal while keeping derivatives in
-    // a useful range when the model's dimensions are large or small.
-    vFlatPosition = (uNormal * local) * uProjection[1][1];
+    vNormal = uNormal * normal;
+    // For posed parts, omit the constant translation from the flat normal's
+    // derivatives. Preserve the common scale for very large or small models.
+    vFlatPosition = (uNormal * flatPosition) * uProjection[1][1];
     if (uOutline) {
         vec2 direction = (uProjection * vec4(vNormal, 0.0)).xy * uViewportPixels;
         float span = length(direction);
@@ -65,8 +76,13 @@ layout(location=0) in vec3 aPosition;
 uniform mat4 uView;
 uniform mat4 uProjection;
 uniform vec3 uPivot;
+uniform vec3 uPartOrigin;
+uniform mat4 uPartToPivot;
+uniform bool uPosed;
 void main() {
-    gl_Position = uProjection * uView * vec4(aPosition - uPivot, 1.0);
+    vec3 local = aPosition - uPivot;
+    if (uPosed) local = mat3(uPartToPivot) * (aPosition - uPartOrigin) + uPartToPivot[3].xyz;
+    gl_Position = uProjection * uView * vec4(local, 1.0);
 }
 )GLSL";
 

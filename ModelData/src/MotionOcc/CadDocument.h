@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QString>
 #include <QVector3D>
 #include <TopoDS_Shape.hxx>
@@ -9,6 +10,8 @@
 #include <vector>
 
 namespace MotionOcc {
+
+struct RigidModel;
 
 enum class Primitive { Box, Cylinder, Sphere };
 
@@ -45,6 +48,18 @@ public:
     bool exportFile(const QString& path, int partId, QString& error) const;
 
 private:
+    // Project-only access: native placed shapes, no CAD interchange or ID reallocation.
+    friend bool saveRigidProject(const QString&, const CadDocument&, const RigidModel&, QString&);
+    friend bool loadRigidProject(const QString&, CadDocument&, RigidModel&, QString&);
+
+    struct ProjectPart {
+        int id;
+        QString name;
+        QByteArray brep;
+    };
+    static bool encodeProjectPart(const CadPart&, QByteArray& brep, int maxBytes, QString& error);
+    bool restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error);
+
     std::vector<CadPart> m_parts;
     std::uint64_t m_nextId = 1;
 };

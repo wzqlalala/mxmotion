@@ -3,6 +3,10 @@
 
 #include <DockManager.h>
 #include <DockWidget.h>
+#include <qwt_plot.h>
+#include <qwt_plot_curve.h>
+#include <QDoubleSpinBox>
+#include <QSlider>
 
 #include <QAction>
 #include <QApplication>
@@ -151,6 +155,41 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         require(mesh.save(output.filePath(QStringLiteral("mesh-viewport.png"))), QStringLiteral("Mesh frame could not be saved"));
         require(window.grab().save(output.filePath(QStringLiteral("mxmotion.png"))), QStringLiteral("Window image could not be saved"));
         line(summary->text());
+        auto applyForm = [&] {
+            const auto buttons = window.findChildren<QPushButton*>(QStringLiteral("motionApplyButton"));
+            for (auto* button : buttons) if (button->isVisible()) { button->click(); return; }
+            require(false, QStringLiteral("Motion parameter editor not visible"));
+        };
+        window.command(Command::AddBody)->trigger();
+        applyForm();
+        require(window.command(Command::AddRevolute)->isEnabled(), QStringLiteral("Motion body not created"));
+        window.command(Command::AddRevolute)->trigger();
+        applyForm();
+        require(window.command(Command::AddSpeedDrive)->isEnabled(), QStringLiteral("Revolute joint not created"));
+        window.command(Command::AddSpeedDrive)->trigger();
+        for (auto* value : window.findChildren<QDoubleSpinBox*>())
+            if (value->isVisible() && value->suffix().contains(QStringLiteral("°/s"))) value->setValue(90);
+        applyForm();
+        window.command(Command::NewScenario)->trigger();
+        applyForm();
+        window.command(Command::Solve)->trigger();
+        auto* curveDock = panes.value(QStringLiteral("Curve"));
+        auto* plot = curveDock ? curveDock->widget()->findChild<QwtPlot*>() : nullptr;
+        require(plot, QStringLiteral("QwtPlot object not created"));
+        require(waitFor([&] { return plot->isVisible() && !plot->itemList(QwtPlotItem::Rtti_PlotCurve).isEmpty(); }, 20000),
+            QStringLiteral("No solved series in the ADS Qwt dock"));
+        auto* curve = static_cast<QwtPlotCurve*>(plot->itemList(QwtPlotItem::Rtti_PlotCurve).front());
+        require(curve->dataSize() > 10 && curve->sample(curve->dataSize() - 1).x() >= 0.99,
+            QStringLiteral("Qwt is missing the physical time series"));
+        auto* timeline = window.findChild<QSlider*>(QStringLiteral("motionTimeline"));
+        require(timeline, QStringLiteral("No playback slider"));
+        const auto rest = frame(*viewport);
+        timeline->setValue(timeline->maximum());
+        require(frame(*viewport) != rest, QStringLiteral("Playback did not animate the real CAD/mesh frame"));
+        require(window.grab().save(output.filePath(QStringLiteral("motion-qwt.png"))), QStringLiteral("Could not save Qwt screenshot"));
+        timeline->setValue(0);
+        require(frame(*viewport) == rest, QStringLiteral("Playback did not restore frame zero"));
+        line(QStringLiteral("MotionEngine solve, Qwt real samples, and viewport playback passed"));
         line(QStringLiteral("Desktop smoke test passed"));
         return 0;
     } catch (const std::exception& e) {

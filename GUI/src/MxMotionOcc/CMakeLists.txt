@@ -7,6 +7,8 @@ add_executable(MxMotion WIN32
     main.cpp
     MotionWindow.cpp MotionWindow.h
     MotionRibbon.cpp
+    RigidMotionUi.cpp
+    RigidPlot.cpp RigidPlot.h
     OccViewport.cpp OccViewport.h
     compat/RibbonControls.cpp compat/mUiMenu.h
     "${common_dir}/mWindowTitleBar.cpp"
@@ -36,12 +38,14 @@ add_dependencies(MxMotion MotionOccResources)
 # The shared chrome is compiled in this executable, not imported from MechCommon.dll.
 target_compile_definitions(MxMotion PRIVATE BUILD_STATIC NOMINMAX _HAS_STD_BYTE=0)
 target_compile_options(MxMotion PRIVATE /utf-8 /bigobj)
-target_link_libraries(MxMotion PRIVATE MotionOccData Qt5::Widgets Qt5::Svg
-    OpenGL::GL ads::qtadvanceddocking-qt5 dwmapi)
-add_dependencies(MxMotion MxMotionMeshWorker)
+target_link_libraries(MxMotion PRIVATE MotionOccRigid Qt5::Widgets Qt5::Svg Qt5::PrintSupport
+    OpenGL::GL ads::qtadvanceddocking-qt5 Qwt::Qwt dwmapi)
+add_dependencies(MxMotion MxMotionMeshWorker MotionEngineRuntime)
 add_custom_command(TARGET MxMotion POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:ads::qtadvanceddocking-qt5>" "$<TARGET_FILE_DIR:MxMotion>"
+            "$<TARGET_FILE:ads::qtadvanceddocking-qt5>" "$<TARGET_FILE:Qwt::Qwt>"
+            "$<TARGET_FILE:Qt5::PrintSupport>" "$<TARGET_FILE:Qt5::Concurrent>" "$<TARGET_FILE:Qt5::OpenGL>"
+            "$<TARGET_FILE_DIR:MxMotion>"
     VERBATIM)
 
 if(MX_DEPLOY_QT)

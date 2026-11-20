@@ -26,10 +26,18 @@ if not defined MX_NETGEN_ROOT (
 if not defined MX_BUILD_DIR set "MX_BUILD_DIR=build-occ"
 if not defined MX_BUILD_JOBS set "MX_BUILD_JOBS=4"
 if not defined MX_TEST_DESKTOP set "MX_TEST_DESKTOP=OFF"
+if not defined MX_ENGINE_BUILD_JOBS set "MX_ENGINE_BUILD_JOBS=%MX_BUILD_JOBS%"
+if not defined MX_QWT_ROOT set "MX_QWT_ROOT=%CD%\.local\qwt-sdk"
+if not exist "%MX_QWT_ROOT%\include\qwt_plot.h" (
+    cmake -P tools/build-qwt.cmake
+    if errorlevel 1 goto :failed
+)
 
 cmake -S . -B "%MX_BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DMX_TEST_DESKTOP=%MX_TEST_DESKTOP%" ^
     "-DCMAKE_PREFIX_PATH=%MX_QT_ROOT%" "-DMX_OCCT_ROOT=%MX_OCCT_ROOT%" ^
-    "-DMX_NETGEN_ROOT=%MX_NETGEN_ROOT%" "-DMX_QTADS_SOURCE_DIR=%MX_QTADS_SOURCE_DIR%"
+    "-DMX_NETGEN_ROOT=%MX_NETGEN_ROOT%" "-DMX_QTADS_SOURCE_DIR=%MX_QTADS_SOURCE_DIR%" ^
+    "-DMX_QWT_ROOT=%MX_QWT_ROOT%" "-DMX_MOTIONENGINE_BUILD_DIR=%MX_MOTIONENGINE_BUILD_DIR%" ^
+    "-DMX_ENGINE_BUILD_JOBS=%MX_ENGINE_BUILD_JOBS%"
 if errorlevel 1 goto :failed
 cmake --build "%MX_BUILD_DIR%" --parallel %MX_BUILD_JOBS%
 if errorlevel 1 goto :failed

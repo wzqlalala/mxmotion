@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMatrix4x4>
 #include <QOpenGLWidget>
 #include <QString>
 #include <map>
@@ -27,8 +28,14 @@ public:
     Q_ENUM(DisplayMode)
 
     // Snapshot of visible geometry; does not fit, recenter or reset the view.
+    // Retains poses for IDs still in the document, including hidden parts.
     void setScene(const CadDocument& document, const std::map<int, FemMesh>& meshes,
                   const std::set<int>& hidden = {});
+    // Replaces the transient poses for the current document. Rigid matrices map
+    // rest CAD world to animated world in mm. Missing or invalid poses mean
+    // identity; unknown part IDs are ignored. Does not refit or modify geometry.
+    void setPartPoses(const std::map<int, QMatrix4x4>& poses);
+    void clearPartPoses();
     void selectPart(int id);
     void setDisplayMode(DisplayMode mode);
     void setPickEnabled(bool enabled);

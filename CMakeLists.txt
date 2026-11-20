@@ -27,6 +27,10 @@ option(MX_TEST_DESKTOP "Exercise the real Qt/ADS and OpenGL window (requires an 
 set(MX_OCCT_ROOT "" CACHE PATH "OCCT 7.8.x x64 SDK (include/opencascade, lib, bin)")
 set(MX_NETGEN_ROOT "" CACHE PATH "Netgen 6.2.2505 x64 SDK, built with OCC")
 set(MX_QTADS_SOURCE_DIR "" CACHE PATH "Optional local checkout of Qt Advanced Docking System 4.4.1")
+set(MX_QWT_ROOT "${PROJECT_SOURCE_DIR}/.local/qwt-sdk" CACHE PATH "Qwt 6.2.0 Qt 5.15 MSVC x64 SDK")
+set(MX_MOTIONENGINE_BUILD_DIR "" CACHE PATH "Optional matching Release Ninja build of the pinned motionengine")
+set(MX_ENGINE_BUILD_JOBS "4" CACHE STRING "Parallel jobs for the isolated MotionEngine build")
+include(cmake/MotionOccDependencies.cmake)
 option(MX_DEPLOY_QT "Deploy the Qt runtime beside MxMotion.exe" ON)
 
 if(NOT EXISTS "${MX_OCCT_ROOT}/include/opencascade/STEPControl_Reader.hxx" OR
@@ -87,10 +91,27 @@ add_custom_target(MotionOccRuntime
             "$<TARGET_FILE:Qt5::Core>" "$<TARGET_FILE:Qt5::Gui>" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     VERBATIM)
 add_dependencies(MxMotionMeshWorker MotionOccRuntime)
+mx_import_motionengine()
+add_library(MotionOccRigid STATIC "${model_dir}/RigidMotion.cpp" "${model_dir}/RigidProject.cpp")
+target_link_libraries(MotionOccRigid PUBLIC MotionOccData PRIVATE MotionEngine::Core)
+target_compile_options(MotionOccRigid PRIVATE /utf-8)
+target_compile_definitions(MotionOccRigid PRIVATE _HAS_STD_BYTE=0)
+if(TARGET MotionEngineBuild)
+    add_dependencies(MotionOccRigid MotionEngineBuild)
+endif()
+add_custom_target(MotionEngineRuntime
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "$<TARGET_FILE:MotionEngine::Core>" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    VERBATIM)
+if(TARGET MotionEngineBuild)
+    add_dependencies(MotionEngineRuntime MotionEngineBuild)
+endif()
 if(MX_BUILD_GUI)
-    find_package(Qt5 5.15 REQUIRED COMPONENTS Widgets Svg)
+    find_package(Qt5 5.15 REQUIRED COMPONENTS Widgets Svg PrintSupport Concurrent OpenGL)
     find_package(OpenGL REQUIRED)
     mx_add_docking()
+    mx_import_qwt()
     add_subdirectory(GUI/src/MxMotionOcc)
 endif()
 
@@ -101,4 +122,11 @@ if(BUILD_TESTING)
     add_dependencies(MotionOccBackendSmoke MxMotionMeshWorker)
     add_test(NAME MotionOcc.CadMesh COMMAND MotionOccBackendSmoke "$<TARGET_FILE:MxMotionMeshWorker>")
     set_tests_properties(MotionOcc.CadMesh PROPERTIES TIMEOUT 120)
+
+    add_executable(MotionOccRigidSmoke tests/MotionOccRigidSmoke.cpp)
+    target_link_libraries(MotionOccRigidSmoke PRIVATE MotionOccRigid)
+    target_compile_options(MotionOccRigidSmoke PRIVATE /utf-8)
+    add_dependencies(MotionOccRigidSmoke MotionOccRuntime MotionEngineRuntime)
+    add_test(NAME MotionOcc.Rigid COMMAND MotionOccRigidSmoke)
+    set_tests_properties(MotionOcc.Rigid PROPERTIES TIMEOUT 120)
 endif()

@@ -2,8 +2,12 @@
 
 #include "CadDocument.h"
 #include "FemMesh.h"
+#include "RigidMotion.h"
 
+#include <QElapsedTimer>
 #include <QMainWindow>
+#include <atomic>
+#include <thread>
 #include <map>
 #include <memory>
 #include <set>
@@ -21,7 +25,10 @@ class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QComboBox;
+class QCheckBox;
 class QCloseEvent;
+class QSlider;
+class QVBoxLayout;
 
 namespace ads {
 class CDockManager;
@@ -32,6 +39,12 @@ class CDockAreaWidget;
 namespace MotionOcc {
 
 class OccViewport;
+class RigidPlot;
+
+struct ModelNode {
+    enum Kind { None, Part, Body, Joint, Drive, Scenario, Animation, Export, Curves } kind = None;
+    int id = 0;
+};
 
 enum class Command {
     New, Open, Save, SaveAs, Import, Export, Remove,
@@ -40,6 +53,8 @@ enum class Command {
     ShadedEdges, Shaded, Wireframe, MeshDisplay,
     PickPart, ClearSelection, ShowAll, HideSelected, HideOthers, InvertVisibility,
     GenerateMesh, RemoveMesh, ExportMesh,
+    AddBody, BatchBodies, AddRevolute, AddPrismatic, AddFixed, AddSpeedDrive, AddPositionDrive,
+    NewScenario, Solve, StopSolve, LoadRigidExample,
     ResetLayout, ManageLayout, QuickShot, About, Exit
 };
 
@@ -51,6 +66,7 @@ public:
 
     QAction* command(Command id) const;
     bool importCad(const QString& path);
+    bool openRigidProject(const QString& path);
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, long* result) override;
@@ -76,7 +92,7 @@ private:
     void setNotice(const QString& message, bool error = false);
     void addPrimitive(Primitive primitive);
     void openCadDialog(bool addToModel);
-    void saveCad(bool all, bool choosePath);
+    void saveCad(bool all);
     void newModel();
     bool confirmReplace();
     void beginMeshSetup();
@@ -84,12 +100,58 @@ private:
     void endMesh(int exitCode, const QString& processError = {});
     void cancelMesh();
     void saveMesh();
+    void saveProject(bool choosePath);
+    void createRigidControls();
+    void createRigidDocks(ads::CDockAreaWidget* bottom);
+    void createRigidCommands();
+    void updateRigidActions();
+    void appendRigidNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups);
+    void selectRigidNode(ModelNode node);
+    void showRigidMenu(ModelNode node, const QPoint& globalPosition);
+    void editBody(int id = 0);
+    void batchBodies();
+    void editJoint(JointKind kind, int id = 0);
+    void editDrive(DriveKind kind, int id = 0);
+    void editScenario(int id = 0);
+    void showEditor(QWidget* editor);
+    void closeEditor();
+    void removeRigidNode(ModelNode node);
+    void commitRigid(RigidModel model, ModelNode selection);
+    void clearResults();
+    void startRigidSolve(int scenarioId, bool showCurves);
+    void pollRigidSolve();
+    void showRigidResult(ModelNode node);
+    void seekRigidTime(double seconds);
+    void setPlayback(bool play);
+    void loadRigidExample();
+    bool motionBusy() const;
+    bool canRemovePart(int id) const;
+
+    struct RigidRun {
+        RigidInput input;
+        RigidResult result;
+        QString error;
+        SolveStatus status = SolveStatus::Failed;
+        std::atomic_bool stop{false};
+        std::atomic_bool done{false};
+        std::atomic<double> progress{0};
+        bool showCurves = false;
+    };
 
     CadDocument m_document;
+    RigidModel m_model;
+    ModelNode m_selectionNode;
+    std::map<int, std::shared_ptr<RigidRun>> m_results;
+    std::shared_ptr<RigidRun> m_running;
+    std::thread m_solverThread;
+    int m_resultScenario = 0;
+    double m_playbackTime = 0.0;
+    double m_playbackStart = 0.0;
+    QElapsedTimer m_playbackClock;
     std::map<Command, QAction*> m_commands;
     std::map<int, FemMesh> m_meshes;
     std::set<int> m_hidden;
-    QString m_savePath;
+    QString m_projectPath;
     int m_partId = -1;
     int m_modelNumber = 1;
     bool m_modified = false;
@@ -109,6 +171,17 @@ private:
     QComboBox* m_sortType = nullptr;
     QLabel* m_parameterTitle = nullptr;
     QLabel* m_parameterDetails = nullptr;
+    QVBoxLayout* m_parameterLayout = nullptr;
+    QWidget* m_editor = nullptr;
+    ads::CDockWidget* m_curveDock = nullptr;
+    ads::CDockWidget* m_animationDock = nullptr;
+    RigidPlot* m_rigidPlot = nullptr;
+    QSlider* m_timeline = nullptr;
+    QPushButton* m_playToggle = nullptr;
+    QLabel* m_timeLabel = nullptr;
+    QCheckBox* m_loopPlayback = nullptr;
+    QTimer* m_rigidPoll = nullptr;
+    QTimer* m_playbackTimer = nullptr;
     QByteArray m_defaultLayout;
     QWidget* m_meshForm = nullptr;
     QComboBox* m_meshKind = nullptr;

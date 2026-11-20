@@ -4,7 +4,6 @@
 #include "render/OccRenderShaders.h"
 
 #include <QApplication>
-#include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -73,6 +72,60 @@ struct Bounds {
     Vec radius() const { return {(max[0]-min[0])*0.5, (max[1]-min[1])*0.5, (max[2]-min[2])*0.5}; }
 };
 
+struct PartPose {
+    QMatrix4x4 restToWorld;
+    std::array<Vec, 3> rows, inverseRows;
+    Vec translation;
+
+    Vec relativePoint(const Vec& point, const Vec& worldOrigin) const
+    {
+        const Vec offset = subtract(translation, worldOrigin);
+        return {dot(rows[0], point) + offset[0], dot(rows[1], point) + offset[1],
+                dot(rows[2], point) + offset[2]};
+    }
+};
+
+bool makePartPose(const QMatrix4x4& matrix, PartPose& pose)
+{
+    if (matrix.isIdentity() || !matrix.isAffine()) return false;
+    constexpr double rigidTolerance = 1e-5; // allow roundoff in float rotation matrices
+    for (int i = 0; i < 3; ++i) {
+        pose.translation[i] = matrix(i, 3);
+        if (!(std::abs(pose.translation[i]) <= maxSpan)) return false;
+        for (int j = 0; j < 3; ++j) pose.rows[i][j] = matrix(i, j);
+        for (int j = 0; j <= i; ++j) {
+            const double expected = i == j ? 1.0 : 0.0;
+            if (!(std::abs(dot(pose.rows[i], pose.rows[j]) - expected) <= rigidTolerance)) return false;
+        }
+    }
+    const auto& r = pose.rows;
+    const std::array<Vec, 3> cofactors{cross(r[1], r[2]), cross(r[2], r[0]), cross(r[0], r[1])};
+    const double determinant = dot(r[0], cofactors[0]);
+    if (!(determinant > 0.0)) return false;
+    // Invert the submitted float coefficients in double precision for picking.
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) pose.inverseRows[i][j] = cofactors[j][i] / determinant;
+    }
+    pose.restToWorld = matrix;
+    return true;
+}
+
+Bounds posedBounds(const Bounds& rest, const PartPose& pose)
+{
+    if (!rest.valid) return {};
+    const Vec center = pose.relativePoint(rest.center(), {}), radius = rest.radius();
+    // Transform the rest AABB conservatively, without visiting any vertices.
+    Bounds bounds;
+    bounds.valid = true;
+    for (int i = 0; i < 3; ++i) {
+        const Vec& row = pose.rows[i];
+        const double extent = dot({std::abs(row[0]), std::abs(row[1]), std::abs(row[2])}, radius);
+        bounds.min[i] = center[i] - extent;
+        bounds.max[i] = center[i] + extent;
+    }
+    return bounds;
+}
+
 struct Vertex {
     float position[3];
     float normal[3]{};
@@ -95,6 +148,7 @@ struct Part {
     int id;
     Geometry cad;
     Geometry mesh;
+    QVector3D origin; // shared rest-space origin for CAD and FEM rendering
 
     bool usesMesh(OccViewport::DisplayMode mode) const
     {
@@ -285,6 +339,16 @@ QVector3D trackball(const QPointF& position, const QPointF& center, double radiu
 
 struct Ray { Vec origin, direction; };
 
+Ray restRay(const Ray& ray, const PartPose* pose)
+{
+    if (!pose) return ray;
+    const Vec origin = subtract(ray.origin, pose->translation);
+    const auto& r = pose->inverseRows;
+    // Do not renormalize: the ray parameter is shared by all parts in world space.
+    return {{dot(r[0], origin), dot(r[1], origin), dot(r[2], origin)},
+            {dot(r[0], ray.direction), dot(r[1], ray.direction), dot(r[2], ray.direction)}};
+}
+
 // Slab broad phase and double-sided triangle intersection adapted from
 // E:/codex/Motion/src/ui/cad/CadPicking.cpp:30–61. No OCC/Chrono picking calls.
 bool intersectsBounds(const Ray& ray, const Bounds& bounds, double limit, double padding)
@@ -387,6 +451,8 @@ const QVector3D backdropBottom = rgb(242, 247, 252);
 
 struct OccViewport::State {
     std::vector<Part> parts;
+    std::set<int> partIds; // includes hidden document parts
+    std::map<int, PartPose> poses; // only non-identity poses
     Bounds bounds;
     Camera camera;
     DisplayMode mode = DisplayMode::ShadedEdges;
@@ -407,6 +473,22 @@ struct OccViewport::State {
     std::vector<PartBuffers> buffers;
     bool ready = false, sceneDirty = true, uploadFailed = false;
     QString lastError;
+
+    const PartPose* poseFor(int id) const
+    {
+        const auto found = poses.find(id);
+        return found == poses.end() ? nullptr : &found->second;
+    }
+
+    void updateBounds()
+    {
+        bounds = {};
+        for (const auto& part : parts) {
+            const auto* pose = poseFor(part.id);
+            bounds.merge(pose ? posedBounds(part.cad.bounds, *pose) : part.cad.bounds);
+            bounds.merge(pose ? posedBounds(part.mesh.bounds, *pose) : part.mesh.bounds);
+        }
+    }
 
     void dragTo(const QPointF& position, const QSize& size)
     {
@@ -444,13 +526,15 @@ OccViewport::~OccViewport() { cleanupGL(); }
 void OccViewport::setScene(const CadDocument& document, const std::map<int, FemMesh>& meshes,
                            const std::set<int>& hidden)
 {
+    auto& s = *m_state;
     std::vector<Part> parts;
+    std::set<int> partIds;
     const auto& source = document.parts();
     parts.reserve(source.size());
-    Bounds bounds;
     for (const auto& part : source) {
+        partIds.insert(part.id);
         if (hidden.find(part.id) != hidden.end()) continue;
-        Part copy{part.id, {}, {}};
+        Part copy{part.id, {}, {}, {}};
         const auto& cad = part.display;
         copy.cad = snapshot(cad.vertices.size(), cad.triangles, cad.edges, false,
                             [&](Index i) { return vec(cad.vertices[i]); });
@@ -460,13 +544,47 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
             copy.mesh = snapshot(fem.nodes.size(), fem.surface, {}, true,
                                  [&](Index i) { return fem.nodes[i]; });
         }
-        bounds.merge(copy.cad.bounds);
-        bounds.merge(copy.mesh.bounds);
+        Bounds rest = copy.cad.bounds;
+        rest.merge(copy.mesh.bounds);
+        const Vec origin = rest.center();
+        copy.origin = QVector3D(float(origin[0]), float(origin[1]), float(origin[2]));
         parts.push_back(std::move(copy));
     }
-    m_state->parts = std::move(parts);
-    m_state->bounds = bounds;
-    m_state->sceneDirty = true;
+    s.parts = std::move(parts);
+    s.partIds = std::move(partIds);
+    for (auto it = s.poses.begin(); it != s.poses.end();) {
+        if (s.partIds.count(it->first)) ++it;
+        else it = s.poses.erase(it);
+    }
+    s.updateBounds();
+    s.sceneDirty = true;
+    update();
+}
+
+void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
+{
+    auto& s = *m_state;
+    std::map<int, PartPose> next;
+    for (const auto& [id, matrix] : poses) {
+        if (!s.partIds.count(id)) continue;
+        PartPose pose{};
+        if (makePartPose(matrix, pose)) next.emplace_hint(next.end(), id, std::move(pose));
+    }
+    if (next.empty()) {
+        clearPartPoses();
+        return;
+    }
+    s.poses = std::move(next);
+    s.updateBounds();
+    update();
+}
+
+void OccViewport::clearPartPoses()
+{
+    auto& s = *m_state;
+    if (s.poses.empty()) return;
+    s.poses.clear();
+    s.updateBounds();
     update();
 }
 
@@ -690,6 +808,19 @@ void OccViewport::paintGL()
         program.setUniformValue("uPivot", s.camera.pivot);
         program.setUniformValue("uViewportPixels", pixels);
     };
+    const Vec pivot = vec(s.camera.pivot);
+    const auto setPose = [&](QOpenGLShaderProgram& program, const Part& part) {
+        const auto* pose = s.poseFor(part.id);
+        program.setUniformValue("uPosed", pose != nullptr);
+        if (!pose) return;
+        // Rebase around the part's rest origin and the camera pivot before
+        // narrowing the translation, so the shader avoids subtracting large world positions.
+        const Vec offset = pose->relativePoint(vec(part.origin), pivot);
+        QMatrix4x4 toPivot = pose->restToWorld;
+        toPivot.setColumn(3, QVector4D(float(offset[0]), float(offset[1]), float(offset[2]), 1.0f));
+        program.setUniformValue("uPartOrigin", part.origin);
+        program.setUniformValue("uPartToPivot", toPivot);
+    };
     const bool wireframe = s.mode == DisplayMode::Wireframe;
     gl.glEnable(GL_DEPTH_TEST);
     gl.glDepthFunc(GL_LESS);
@@ -714,11 +845,13 @@ void OccViewport::paintGL()
         gl.glEnable(GL_POLYGON_OFFSET_FILL);
         gl.glPolygonOffset(1.0f, 1.0f);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
-            const bool meshed = s.parts[i].usesMesh(s.mode);
+            const auto& part = s.parts[i];
+            const bool meshed = part.usesMesh(s.mode);
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
             if (!gpu.triangleCount) continue;
-            const auto color = s.parts[i].id == s.selected ? rgb(63, 137, 216) :
+            const auto color = part.id == s.selected ? rgb(63, 137, 216) :
                                meshed ? rgb(138, 166, 189) : rgb(110, 129, 151);
+            setPose(*s.surface, part);
             s.surface->setUniformValue("uFlat", meshed);
             s.surface->setUniformValue("uColor", color);
             gl.glBindVertexArray(gpu.vao);
@@ -738,7 +871,9 @@ void OccViewport::paintGL()
             for (std::size_t i = 0; i < s.buffers.size(); ++i) {
                 const auto& gpu = s.buffers[i].cad;
                 if (!gpu.triangleCount) continue;
-                s.surface->setUniformValue("uColor", s.parts[i].id == s.selected ? rgb(21, 94, 170) : rgb(57, 72, 89));
+                const auto& part = s.parts[i];
+                setPose(*s.surface, part);
+                s.surface->setUniformValue("uColor", part.id == s.selected ? rgb(21, 94, 170) : rgb(57, 72, 89));
                 gl.glBindVertexArray(gpu.vao);
                 gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.triangles);
                 gl.glDrawElements(GL_TRIANGLES, gpu.triangleCount, GL_UNSIGNED_INT, nullptr);
@@ -763,6 +898,7 @@ void OccViewport::paintGL()
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
             if (!gpu.edgeCount || !showsEdges(s.mode, geometry)) continue;
             const auto color = selected ? rgb(15, 78, 150) : (meshed ? rgb(31, 67, 95) : rgb(42, 57, 75));
+            setPose(*s.edge, part);
             s.edge->setUniformValue("uColor", QVector4D(color, meshed ? 0.8f : 0.94f));
             s.edge->setUniformValue("uWidthPixels", (selected ? 1.75f : (meshed ? 1.0f : 1.25f)) * dpr);
             gl.glBindVertexArray(gpu.vao);
@@ -838,11 +974,12 @@ int OccViewport::pickPart(const QPointF& position) const
     if (!wireframe) {
         for (const auto& part : s.parts) {
             const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
-            if (!intersectsBounds(ray, geometry.bounds, nearest, unit * 0.01)) continue;
+            const Ray localRay = restRay(ray, s.poseFor(part.id));
+            if (!intersectsBounds(localRay, geometry.bounds, nearest, unit * 0.01)) continue;
             const auto& triangles = geometry.triangles;
             for (std::size_t i = 0; i < triangles.size(); i += 3) {
                 double distance = 0;
-                if (intersectsTriangle(ray, geometry.position(triangles[i]), geometry.position(triangles[i+1]),
+                if (intersectsTriangle(localRay, geometry.position(triangles[i]), geometry.position(triangles[i+1]),
                                        geometry.position(triangles[i+2]), distance) && distance < nearest) {
                     nearest = distance;
                     best = part.id;
@@ -857,11 +994,16 @@ int OccViewport::pickPart(const QPointF& position) const
     const bool hitFace = best != -1;
     for (const auto& part : s.parts) {
         const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
-        if (!showsEdges(s.mode, geometry) || (hitFace && !geometry.triangles.empty()) ||
-            !intersectsBounds(ray, geometry.bounds, nearest, tolerance)) continue;
+        if (!showsEdges(s.mode, geometry) || (hitFace && !geometry.triangles.empty())) continue;
+        const auto* pose = s.poseFor(part.id);
+        if (!intersectsBounds(restRay(ray, pose), geometry.bounds, nearest, tolerance)) continue;
+        const auto relativePoint = [&](Index i) {
+            const Vec point = geometry.position(i);
+            return pose ? pose->relativePoint(point, pivot) : subtract(point, pivot);
+        };
         for (std::size_t i = 0; i < geometry.edges.size(); i += 2) {
-            const Vec a = subtract(geometry.position(geometry.edges[i]), pivot);
-            const Vec b = subtract(geometry.position(geometry.edges[i+1]), pivot);
+            const Vec a = relativePoint(geometry.edges[i]);
+            const Vec b = relativePoint(geometry.edges[i+1]);
             const QPointF p0(dot(frame.rows[0], a), dot(frame.rows[1], a));
             const QPointF p1(dot(frame.rows[0], b), dot(frame.rows[1], b));
             const auto delta = p1 - p0;

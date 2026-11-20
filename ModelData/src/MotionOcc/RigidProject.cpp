@@ -1,0 +1,538 @@
+#include "RigidProject.h"
+#include "CadDocument.h"
+
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <exception>
+#include <initializer_list>
+#include <limits>
+#include <map>
+#include <new>
+#include <utility>
+
+namespace MotionOcc {
+namespace {
+
+constexpr int kVersion = 1;
+constexpr qint64 kMaxProjectBytes = 128ll * 1024 * 1024;
+constexpr int kMaxPartBytes = 32 * 1024 * 1024;
+constexpr int kMaxBrepBytes = 80 * 1024 * 1024;
+constexpr int kMaxParts = 20000;
+constexpr int kMaxName = 1024; // UTF-16 code units, as in rigid model validation.
+// Bound collections before allocating. The solver's semantic checks still apply.
+constexpr int kMaxBodies = 256;
+constexpr int kMaxJoints = 1024;
+constexpr int kMaxScenarios = 256;
+// More than enough for the largest valid v1 project; prevents a large flat
+// array or object of tiny values from expanding out of proportion during parse.
+constexpr qint64 kMaxJsonSeparators = 200000;
+constexpr int kMaxId = (std::numeric_limits<int>::max)();
+constexpr std::uint64_t kExhaustedPartId = std::uint64_t(kMaxId) + 1;
+
+struct ProjectError { QString message; };
+
+[[noreturn]] void fail(const QString& message) { throw ProjectError{message}; }
+
+void require(bool valid, const QString& message)
+{
+    if (!valid) fail(message);
+}
+
+template<class Operation>
+bool run(const QString& context, QString& error, const Operation& operation)
+{
+    try {
+        operation();
+        error.clear();
+        return true;
+    } catch (const ProjectError& failure) {
+        error = context + QStringLiteral(": ") + failure.message;
+    } catch (const std::bad_alloc&) {
+        error = context + QStringLiteral(": not enough memory.");
+    } catch (const std::exception& failure) {
+        error = context + QStringLiteral(": ") + QString::fromUtf8(failure.what());
+    } catch (...) {
+        error = context + QStringLiteral(": unexpected error.");
+    }
+    return false;
+}
+
+void checkPath(const QString& path)
+{
+    require(!path.isEmpty() && !path.contains(QChar::Null), QStringLiteral("Invalid file path."));
+}
+
+void checkProjectPath(const QString& path)
+{
+    checkPath(path);
+    require(QFileInfo(path).suffix().compare(QStringLiteral("mxmotion"), Qt::CaseInsensitive) == 0,
+            QStringLiteral("Expected an .mxmotion project path."));
+}
+
+void openOutput(QSaveFile& file)
+{
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
+}
+
+void writeBytes(QSaveFile& file, const QByteArray& bytes)
+{
+    if (file.write(bytes) != bytes.size()) fail(file.errorString());
+}
+
+// Qt validates UTF-8 and the overall structure, but its parser collapses duplicate
+// object keys and accepts some non-JSON string escapes. Count original members
+// and bound nesting before asking Qt to allocate a document.
+qint64 countSourceMembers(const QByteArray& bytes)
+{
+    qint64 members = 0;
+    qint64 commas = 0;
+    int depth = 0;
+    bool inString = false;
+    for (int i = 0; i < bytes.size(); ++i) {
+        const unsigned char c = bytes[i];
+        if (inString) {
+            if (c == '\\') {
+                require(++i < bytes.size(), QStringLiteral("Truncated JSON escape."));
+                switch (bytes[i]) {
+                case '"': case '\\': case '/': case 'b': case 'f': case 'n': case 'r': case 't': case 'u':
+                    break; // Qt checks the four hexadecimal digits of a Unicode escape.
+                default: fail(QStringLiteral("Invalid JSON escape."));
+                }
+            } else if (c == '"') {
+                inString = false;
+            } else if (c < 0x20) {
+                fail(QStringLiteral("Unescaped control character in a JSON string."));
+            }
+        } else if (c == '"') {
+            inString = true;
+        } else if (c == '{' || c == '[') {
+            if (++depth > 5) fail(QStringLiteral("Project JSON is nested too deeply."));
+        } else if (c == '}' || c == ']') {
+            if (--depth < 0) fail(QStringLiteral("Unbalanced project JSON."));
+        } else if (c == ':') {
+            if (++members > kMaxJsonSeparators) fail(QStringLiteral("Project has too many JSON fields."));
+        } else if (c == ',') {
+            if (++commas > kMaxJsonSeparators) fail(QStringLiteral("Project has too many JSON values."));
+        }
+    }
+    return members;
+}
+
+qint64 countParsedMembers(const QJsonValue& value)
+{
+    qint64 members = 0;
+    if (value.isObject()) {
+        const auto object = value.toObject();
+        members = object.size();
+        for (auto it = object.constBegin(); it != object.constEnd(); ++it)
+            members += countParsedMembers(it.value());
+    } else if (value.isArray()) {
+        for (const auto& item : value.toArray()) members += countParsedMembers(item);
+    }
+    return members;
+}
+
+QJsonObject readProject(const QString& path)
+{
+    checkProjectPath(path);
+    require(QFileInfo(path).isFile(), QStringLiteral("Project is not a regular file."));
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) fail(file.errorString());
+    require(file.size() <= kMaxProjectBytes, QStringLiteral("Project exceeds 128 MiB."));
+    const QByteArray bytes = file.read(kMaxProjectBytes + 1);
+    if (file.error() != QFileDevice::NoError) fail(file.errorString());
+    require(bytes.size() <= kMaxProjectBytes && file.atEnd(), QStringLiteral("Project exceeds 128 MiB."));
+
+    const auto originalMembers = countSourceMembers(bytes);
+    QJsonParseError parseError{};
+    const auto document = QJsonDocument::fromJson(bytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError)
+        fail(QStringLiteral("Invalid UTF-8 JSON at byte %1: %2").arg(parseError.offset).arg(parseError.errorString()));
+    require(document.isObject(), QStringLiteral("Expected a project object."));
+    const auto root = document.object();
+    require(originalMembers == countParsedMembers(root), QStringLiteral("Duplicate JSON object key."));
+    return root;
+}
+
+QJsonObject record(const QJsonValue& value, std::initializer_list<const char*> fields, const char* label)
+{
+    const auto object = value.toObject();
+    bool valid = value.isObject() && object.size() == static_cast<int>(fields.size());
+    for (const auto* field : fields) valid = valid && object.contains(QLatin1String(field));
+    require(valid, QStringLiteral("Missing or unexpected fields in %1.").arg(QLatin1String(label)));
+    return object;
+}
+
+QJsonArray array(const QJsonValue& value, int max, const char* field)
+{
+    const auto items = value.toArray();
+    require(value.isArray() && items.size() <= max,
+            QStringLiteral("Expected an array of at most %1 items for %2.").arg(max).arg(QLatin1String(field)));
+    return items;
+}
+
+double number(const QJsonValue& value, const char* field)
+{
+    const double result = value.toDouble();
+    require(value.isDouble() && std::isfinite(result),
+            QStringLiteral("Expected a finite JSON number for %1.").arg(QLatin1String(field)));
+    return result;
+}
+
+std::uint64_t integer(const QJsonValue& value, int min, std::uint64_t max, const char* field)
+{
+    const double result = number(value, field);
+    require(result >= min && result <= static_cast<double>(max) && std::trunc(result) == result,
+            QStringLiteral("Invalid integer for %1.").arg(QLatin1String(field)));
+    return static_cast<std::uint64_t>(result);
+}
+
+int id(const QJsonObject& object, const char* field = "id", int min = 1)
+{
+    return static_cast<int>(integer(object.value(QLatin1String(field)), min, kMaxId, field));
+}
+
+bool boolean(const QJsonValue& value, const char* field)
+{
+    require(value.isBool(), QStringLiteral("Expected a JSON boolean for %1.").arg(QLatin1String(field)));
+    return value.toBool();
+}
+
+QString checkedName(const QString& name)
+{
+    if (name.size() > kMaxName || name.contains(QChar::Null) || !name.isValidUtf16())
+        fail(QStringLiteral("Invalid name (maximum 1024 characters, valid Unicode, no NUL)."));
+    return name;
+}
+
+QString name(const QJsonObject& object)
+{
+    const auto value = object.value(QStringLiteral("name"));
+    require(value.isString(), QStringLiteral("Expected a JSON string for name."));
+    return checkedName(value.toString());
+}
+
+Vector3d readVector(const QJsonValue& value, const char* field)
+{
+    const auto items = array(value, 3, field);
+    require(items.size() == 3, QStringLiteral("Expected three coordinates for %1.").arg(QLatin1String(field)));
+    return {number(items[0], field), number(items[1], field), number(items[2], field)};
+}
+
+QJsonArray writeVector(const Vector3d& v) { return {v[0], v[1], v[2]}; }
+
+const char* jointKind(JointKind kind)
+{
+    switch (kind) {
+    case JointKind::Revolute: return "revolute";
+    case JointKind::Prismatic: return "prismatic";
+    case JointKind::Fixed: return "fixed";
+    }
+    fail(QStringLiteral("Unknown joint kind."));
+}
+
+const char* driveKind(DriveKind kind)
+{
+    switch (kind) {
+    case DriveKind::Speed: return "speed";
+    case DriveKind::Displacement: return "displacement";
+    }
+    fail(QStringLiteral("Unknown drive kind."));
+}
+
+JointKind readJointKind(const QJsonValue& value)
+{
+    const auto kind = value.toString();
+    for (const auto type : {JointKind::Revolute, JointKind::Prismatic, JointKind::Fixed})
+        if (kind == QLatin1String(jointKind(type))) return type;
+    fail(QStringLiteral("Invalid joint kind."));
+}
+
+DriveKind readDriveKind(const QJsonValue& value)
+{
+    const auto kind = value.toString();
+    for (const auto type : {DriveKind::Speed, DriveKind::Displacement})
+        if (kind == QLatin1String(driveKind(type))) return type;
+    fail(QStringLiteral("Invalid drive kind."));
+}
+
+QJsonObject writeModel(const RigidModel& model)
+{
+    QJsonArray bodies, joints, drives, scenarios;
+    for (const auto& body : model.bodies) {
+        bodies.append(QJsonObject{
+            {QStringLiteral("id"), body.id}, {QStringLiteral("name"), checkedName(body.name)},
+            {QStringLiteral("partId"), body.partId}, {QStringLiteral("fixed"), body.fixed},
+            {QStringLiteral("massKg"), body.massKg}, {QStringLiteral("densityKgM3"), body.densityKgM3}});
+    }
+    for (const auto& joint : model.joints) {
+        joints.append(QJsonObject{
+            {QStringLiteral("id"), joint.id}, {QStringLiteral("name"), checkedName(joint.name)},
+            {QStringLiteral("kind"), QString::fromLatin1(jointKind(joint.kind))},
+            {QStringLiteral("movingBodyId"), joint.movingBodyId}, {QStringLiteral("baseBodyId"), joint.baseBodyId},
+            {QStringLiteral("originMm"), writeVector(joint.originMm)}, {QStringLiteral("axis"), writeVector(joint.axis)}});
+    }
+    for (const auto& drive : model.drives) {
+        drives.append(QJsonObject{
+            {QStringLiteral("id"), drive.id}, {QStringLiteral("name"), checkedName(drive.name)},
+            {QStringLiteral("jointId"), drive.jointId}, {QStringLiteral("kind"), QString::fromLatin1(driveKind(drive.kind))},
+            {QStringLiteral("value"), drive.value}});
+    }
+    for (const auto& scenario : model.scenarios) {
+        scenarios.append(QJsonObject{
+            {QStringLiteral("id"), scenario.id}, {QStringLiteral("name"), checkedName(scenario.name)},
+            {QStringLiteral("duration"), scenario.duration}, {QStringLiteral("step"), scenario.step},
+            {QStringLiteral("gravityMS2"), writeVector(scenario.gravityMS2)}});
+    }
+    return {{QStringLiteral("bodies"), bodies}, {QStringLiteral("joints"), joints},
+            {QStringLiteral("drives"), drives}, {QStringLiteral("scenarios"), scenarios}};
+}
+
+RigidModel readModel(const QJsonValue& value)
+{
+    const auto object = record(value, {"bodies", "joints", "drives", "scenarios"}, "model");
+    RigidModel model;
+    for (const auto& item : array(object.value(QStringLiteral("bodies")), kMaxBodies, "bodies")) {
+        const auto row = record(item, {"id", "name", "partId", "fixed", "massKg", "densityKgM3"}, "body");
+        model.bodies.push_back({id(row), name(row), id(row, "partId"),
+            boolean(row.value(QStringLiteral("fixed")), "fixed"), number(row.value(QStringLiteral("massKg")), "massKg"),
+            number(row.value(QStringLiteral("densityKgM3")), "densityKgM3")});
+    }
+    for (const auto& item : array(object.value(QStringLiteral("joints")), kMaxJoints, "joints")) {
+        const auto row = record(item, {"id", "name", "kind", "movingBodyId", "baseBodyId", "originMm", "axis"}, "joint");
+        model.joints.push_back({id(row), name(row), readJointKind(row.value(QStringLiteral("kind"))),
+            id(row, "movingBodyId"), id(row, "baseBodyId", 0),
+            readVector(row.value(QStringLiteral("originMm")), "originMm"), readVector(row.value(QStringLiteral("axis")), "axis")});
+    }
+    for (const auto& item : array(object.value(QStringLiteral("drives")), kMaxJoints, "drives")) {
+        const auto row = record(item, {"id", "name", "jointId", "kind", "value"}, "drive");
+        model.drives.push_back({id(row), name(row), id(row, "jointId"), readDriveKind(row.value(QStringLiteral("kind"))),
+            number(row.value(QStringLiteral("value")), "value")});
+    }
+    for (const auto& item : array(object.value(QStringLiteral("scenarios")), kMaxScenarios, "scenarios")) {
+        const auto row = record(item, {"id", "name", "duration", "step", "gravityMS2"}, "scenario");
+        model.scenarios.push_back({id(row), name(row), number(row.value(QStringLiteral("duration")), "duration"),
+            number(row.value(QStringLiteral("step")), "step"), readVector(row.value(QStringLiteral("gravityMS2")), "gravityMS2")});
+    }
+    return model;
+}
+
+QByteArray readBrep(const QJsonValue& value, int& remaining)
+{
+    require(value.isString(), QStringLiteral("Expected embedded Base64 BREP text."));
+    const auto text = value.toString();
+    require(!text.isEmpty() && text.size() <= ((kMaxPartBytes + 2) / 3) * 4 && text.size() % 4 == 0,
+            QStringLiteral("Invalid or oversized embedded BREP."));
+    const int size = (text.size() / 4) * 3 - (text.endsWith(QLatin1Char('=')) ? 1 : 0)
+        - (text.endsWith(QLatin1String("==")) ? 1 : 0);
+    require(size > 0 && size <= kMaxPartBytes && size <= remaining, QStringLiteral("Embedded BREP exceeds project limits."));
+    const QByteArray encoded = text.toLatin1(); // Non-Latin-1 converts to '?' and is rejected by the decoder.
+    auto decoded = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
+    require(decoded && decoded.decoded.size() == size && decoded.decoded.toBase64() == encoded,
+            QStringLiteral("Invalid or noncanonical Base64 BREP."));
+    remaining -= size;
+    return std::move(decoded.decoded);
+}
+
+void checkModel(const CadDocument& cad, const RigidModel& model)
+{
+    QString error;
+    if (!validateRigidModel(cad, model, error))
+        fail(error.isEmpty() ? QStringLiteral("Invalid rigid model.") : error);
+}
+
+constexpr char kCsvHeader[] = "time_s,entity_type,entity_id,name,joint_kind,"
+    "position_x_mm,position_y_mm,position_z_mm,displacement_x_mm,displacement_y_mm,displacement_z_mm,"
+    "velocity_x_mm_s,velocity_y_mm_s,velocity_z_mm_s,speed_mm_s,"
+    "angular_velocity_x_deg_s,angular_velocity_y_deg_s,angular_velocity_z_deg_s,angular_speed_deg_s,"
+    "joint_coordinate_mm,joint_rate_mm_s,joint_coordinate_deg,joint_rate_deg_s\r\n";
+
+QByteArray quoteCsvName(const QString& name)
+{
+    auto bytes = checkedName(name).toUtf8();
+    const QString trimmed = name.trimmed();
+    // Keep names as text even when a spreadsheet opens an untrusted project's CSV.
+    if (!trimmed.isEmpty() && QStringLiteral("=+-@＝＋－＠").contains(trimmed.front())) bytes.prepend('\'');
+    return QByteArray(1, '"') + bytes.replace("\"", "\"\"") + '"';
+}
+
+QByteArray csvNumber(double value)
+{
+    if (!std::isfinite(value)) fail(QStringLiteral("Result contains a non-finite value."));
+    return QByteArray::number(value, 'g', std::numeric_limits<double>::max_digits10);
+}
+
+void appendNumber(QByteArray& row, double value) { row += ','; row += csvNumber(value); }
+
+void appendVector(QByteArray& row, const Vector3d& vector)
+{
+    for (const auto coordinate : vector) appendNumber(row, coordinate);
+}
+
+QByteArray rowPrefix(const QByteArray& time, const char* type, int id, const QByteArray& name)
+{
+    return time + ',' + type + ',' + QByteArray::number(id) + ',' + name + ',';
+}
+
+template<class State>
+std::map<int, const State*> indexedStates(const std::vector<State>& states, int State::*stateId, std::size_t expected)
+{
+    require(states.size() == expected, QStringLiteral("Frame entity count does not match the rigid input."));
+    std::map<int, const State*> indexed;
+    for (const auto& state : states)
+        if (!indexed.emplace(state.*stateId, &state).second) fail(QStringLiteral("Frame contains duplicate entity IDs."));
+    return indexed;
+}
+
+} // namespace
+
+bool saveRigidProject(const QString& path, const CadDocument& cad, const RigidModel& model, QString& error)
+{
+    return run(QStringLiteral("Could not save rigid project"), error, [&] {
+        checkProjectPath(path);
+        checkModel(cad, model);
+        const auto modelObject = writeModel(model);
+        require(cad.parts().size() <= kMaxParts, QStringLiteral("Too many CAD parts."));
+        QJsonArray parts;
+        int remaining = kMaxBrepBytes;
+        for (const auto& part : cad.parts()) {
+            const auto partName = checkedName(part.name);
+            QByteArray brep;
+            QString detail;
+            if (!CadDocument::encodeProjectPart(part, brep, (std::min)(remaining, kMaxPartBytes), detail)) fail(detail);
+            remaining -= brep.size();
+            const auto encoded = brep.toBase64();
+            parts.append(QJsonObject{{QStringLiteral("id"), part.id}, {QStringLiteral("name"), partName},
+                {QStringLiteral("brep"), QString::fromLatin1(encoded)}});
+        }
+        const QJsonObject root{{QStringLiteral("format"), QStringLiteral("mxmotion")}, {QStringLiteral("version"), kVersion},
+            {QStringLiteral("nextPartId"), static_cast<double>(cad.m_nextId)},
+            {QStringLiteral("parts"), parts}, {QStringLiteral("model"), modelObject}};
+        const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+        require(bytes.size() <= kMaxProjectBytes, QStringLiteral("Project exceeds 128 MiB."));
+        QSaveFile file(path);
+        openOutput(file);
+        writeBytes(file, bytes);
+        if (!file.commit()) fail(file.errorString());
+    });
+}
+
+bool loadRigidProject(const QString& path, CadDocument& cad, RigidModel& model, QString& error)
+{
+    return run(QStringLiteral("Could not load rigid project"), error, [&] {
+        RigidModel restoredModel;
+        std::uint64_t nextId;
+        std::vector<CadDocument::ProjectPart> parts;
+        {
+            const auto root = readProject(path);
+            require(root.value(QStringLiteral("format")).toString() == QStringLiteral("mxmotion"),
+                    QStringLiteral("Not an MxMotion project."));
+            require(number(root.value(QStringLiteral("version")), "version") == kVersion,
+                    QStringLiteral("Unsupported MxMotion project version."));
+            record(root, {"format", "version", "nextPartId", "parts", "model"}, "project");
+            nextId = integer(root.value(QStringLiteral("nextPartId")), 1, kExhaustedPartId, "nextPartId");
+            restoredModel = readModel(root.value(QStringLiteral("model")));
+            const auto items = array(root.value(QStringLiteral("parts")), kMaxParts, "parts");
+            parts.reserve(static_cast<std::size_t>(items.size()));
+            int remaining = kMaxBrepBytes;
+            for (const auto& item : items) {
+                const auto row = record(item, {"id", "name", "brep"}, "CAD part");
+                parts.push_back({id(row), name(row), readBrep(row.value(QStringLiteral("brep")), remaining)});
+            }
+        }
+        CadDocument restoredCad;
+        QString detail;
+        if (!restoredCad.restoreProjectParts(parts, nextId, detail)) fail(detail);
+        checkModel(restoredCad, restoredModel);
+        // Both assignments move standard-allocator vectors and cannot allocate.
+        cad = std::move(restoredCad);
+        model = std::move(restoredModel);
+    });
+}
+
+bool exportRigidCsv(const QString& path, const RigidInput& input, const RigidResult& result, QString& error)
+{
+    return run(QStringLiteral("Could not export rigid results"), error, [&] {
+        checkPath(path);
+        require(result.scenarioId == input.scenario.id && !result.frames.empty(),
+                QStringLiteral("No results for the input scenario."));
+        require(!input.bodies.empty() || !input.joints.empty(), QStringLiteral("No entities to export."));
+
+        std::map<int, QByteArray> bodyNames;
+        for (const auto& item : input.bodies)
+            require(item.body.id > 0 && bodyNames.emplace(item.body.id, quoteCsvName(item.body.name)).second,
+                    QStringLiteral("Invalid or duplicate body ID in the rigid input."));
+        struct JointInfo { JointKind kind; QByteArray name; };
+        std::map<int, JointInfo> jointInfo;
+        for (const auto& joint : input.joints)
+            require(joint.id > 0 && jointInfo.emplace(joint.id, JointInfo{joint.kind, quoteCsvName(joint.name)}).second,
+                    QStringLiteral("Invalid or duplicate joint ID in the rigid input."));
+        const auto initial = indexedStates(result.frames.front().bodies, &BodyState::bodyId, bodyNames.size());
+
+        QSaveFile file(path);
+        openOutput(file);
+        writeBytes(file, QByteArray::fromRawData(kCsvHeader, sizeof(kCsvHeader) - 1));
+        double previous = -1.0;
+        for (const auto& frame : result.frames) {
+            require(std::isfinite(frame.seconds) && frame.seconds >= 0.0 && frame.seconds > previous,
+                    QStringLiteral("Frame times must be finite and strictly increasing."));
+            previous = frame.seconds;
+            const auto time = csvNumber(frame.seconds);
+            const auto bodies = indexedStates(frame.bodies, &BodyState::bodyId, bodyNames.size());
+            const auto joints = indexedStates(frame.joints, &JointState::jointId, jointInfo.size());
+            for (const auto& entry : bodies) {
+                const auto label = bodyNames.find(entry.first);
+                const auto start = initial.find(entry.first);
+                require(label != bodyNames.end() && start != initial.end(), QStringLiteral("Frame refers to an unknown body."));
+                const auto& state = *entry.second;
+                Vector3d displacement{};
+                for (std::size_t i = 0; i < displacement.size(); ++i)
+                    displacement[i] = state.positionMm[i] - start->second->positionMm[i];
+                auto row = rowPrefix(time, "body", entry.first, label->second);
+                appendVector(row, state.positionMm);
+                appendVector(row, displacement);
+                appendVector(row, state.velocityMmS);
+                const auto& v = state.velocityMmS;
+                appendNumber(row, std::hypot(v[0], v[1], v[2]));
+                appendVector(row, state.angularVelocityDegS);
+                const auto& w = state.angularVelocityDegS;
+                appendNumber(row, std::hypot(w[0], w[1], w[2]));
+                row += ",,,,\r\n";
+                writeBytes(file, row);
+            }
+            for (const auto& entry : joints) {
+                const auto label = jointInfo.find(entry.first);
+                require(label != jointInfo.end(), QStringLiteral("Frame refers to an unknown joint."));
+                const auto kind = label->second.kind;
+                auto row = rowPrefix(time, "joint", entry.first, label->second.name);
+                row += jointKind(kind);
+                row.append(14, ','); // Empty body columns, from position_x_mm through angular_speed_deg_s.
+                if (kind == JointKind::Prismatic) {
+                    appendNumber(row, entry.second->position);
+                    appendNumber(row, entry.second->speed);
+                    row += ",,";
+                } else if (kind == JointKind::Revolute) {
+                    row += ",,";
+                    appendNumber(row, entry.second->position);
+                    appendNumber(row, entry.second->speed);
+                } else {
+                    row += ",,,,";
+                }
+                row += "\r\n";
+                writeBytes(file, row);
+            }
+        }
+        if (!file.commit()) fail(file.errorString());
+    });
+}
+
+} // namespace MotionOcc

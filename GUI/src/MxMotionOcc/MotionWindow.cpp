@@ -1,5 +1,6 @@
 #include "MotionWindow.h"
 #include "OccViewport.h"
+#include "RigidProject.h"
 
 #include "ThemeManager.h"
 #include "UiMetrics.h"
@@ -55,8 +56,16 @@ using MxFunctions::mUiMenu;
 namespace MotionOcc {
 namespace {
 constexpr int partRole = Qt::UserRole;
+constexpr int nodeKindRole = Qt::UserRole + 1;
 const auto cadFilters = QStringLiteral("CAD 几何 (*.step *.stp *.iges *.igs *.brep *.brp);;STEP (*.step *.stp);;IGES (*.iges *.igs);;BREP (*.brep *.brp)");
 const auto exportFilters = QStringLiteral("STEP (*.step);;IGES (*.iges);;BREP (*.brep)");
+const auto projectFilter = QStringLiteral("MxMotion 刚体项目 (*.mxmotion)");
+
+ModelNode treeNode(const QTreeWidgetItem* item)
+{
+    if (!item) return {};
+    return { static_cast<ModelNode::Kind>(item->data(0, nodeKindRole).toInt()), item->data(0, partRole).toInt() };
+}
 
 QIcon icon(const QString& name)
 {
@@ -90,8 +99,10 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
     setMinimumSize(870, 520);
     MechMainWindow::FramelessWindowHelper::installFrameless(this);
     createCommands();
+    createRigidCommands();
     createWorkspace();
     createStatusBar();
+    createRigidControls();
 
     // Original mMechMainWindow composition: title and ribbon share a menu wrapper.
     auto* wrapper = new QWidget(this);
@@ -132,7 +143,7 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
     updateTree();
     updateParameters();
     updateActions();
-    setNotice(tr("就绪 · OCC / OpenGL / Netgen"));
+    setNotice(tr("就绪 · OCC / Netgen / MotionEngine / Qwt"));
     QTimer::singleShot(0, this, [this] {
         resetLayout(false);
         m_viewport->fitAll();
@@ -142,6 +153,8 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
 MotionWindow::~MotionWindow()
 {
     ThemeManager::registerDockThemeApplier({});
+    if (m_running) m_running->stop.store(true, std::memory_order_relaxed);
+    if (m_solverThread.joinable()) m_solverThread.join();
     if (m_worker && m_worker->state() != QProcess::NotRunning) {
         m_worker->disconnect(this);
         m_worker->kill();
@@ -187,13 +200,13 @@ void MotionWindow::createCommands()
     const auto view = QStringLiteral("CenterMainWindow/");
     add(Command::New, tr("新建"), home + "xinjian3x.png", [this] { newModel(); }, QKeySequence::New);
     add(Command::Open, tr("打开"), home + "dakai3x.png", [this] { openCadDialog(false); }, QKeySequence::Open);
-    add(Command::Save, tr("保存"), home + "baocun3x.png", [this] { saveCad(true, false); }, QKeySequence::Save);
-    add(Command::SaveAs, tr("另存为"), home + "lingcunwei3x.png", [this] { saveCad(true, true); }, QKeySequence::SaveAs);
+    add(Command::Save, tr("保存"), home + "baocun3x.png", [this] { saveProject(false); }, QKeySequence::Save);
+    add(Command::SaveAs, tr("另存为"), home + "lingcunwei3x.png", [this] { saveProject(true); }, QKeySequence::SaveAs);
     add(Command::Import, tr("导入几何模型"), home + "daoru3x.png", [this] { openCadDialog(true); });
-    add(Command::Export, tr("导出几何模型"), home + "daochu3x.png", [this] { saveCad(false, true); });
+    add(Command::Export, tr("导出几何模型"), home + "daochu3x.png", [this] { saveCad(false); });
     add(Command::Remove, tr("删除部件"), "BrowserTree/shanchu.png", [this] {
         const auto* part = m_document.part(m_partId);
-        if (!part || QMessageBox::question(this, tr("删除部件"), tr("删除“%1”？").arg(part->name)) != QMessageBox::Yes)
+        if (!part || !canRemovePart(m_partId) || QMessageBox::question(this, tr("删除部件"), tr("删除“%1”？").arg(part->name)) != QMessageBox::Yes)
             return;
         m_document.remove(m_partId);
         m_meshes.erase(m_partId);
@@ -283,7 +296,7 @@ void MotionWindow::createCommands()
             tr("MxSim.Motion V1.0 · OCC 构建\n\n"
                "保留 MxMotion 界面，使用 OpenCASCADE、OpenGL 和 Netgen。\n"
                "支持几何文件、基础体和有限元网格。\n"
-               "本构建不包含 CGM、原生项目文件和多体求解。"));
+               "刚体求解使用 MotionEngine，结果绘图使用 Qwt。不包含 CGM、原版 .mxcae、柔性体或接触。"));
     });
     add(Command::Exit, tr("退出"), "close3x.png", [this] { close(); }, QKeySequence::Quit);
 }
@@ -331,6 +344,7 @@ void MotionWindow::createWorkspace()
     m_output->setMaximumBlockCount(200);
     m_outputDock = addPane("Output", tr("信息输出"), m_output);
     m_docks->addDockWidgetTabToArea(m_outputDock, bottom);
+    createRigidDocks(bottom);
     m_selectionDock->closeDockWidget();
     m_outputDock->closeDockWidget();
     m_defaultLayout = m_docks->saveState();
@@ -480,18 +494,24 @@ QWidget* MotionWindow::createModelBrowser()
     connect(m_sortType, qOverload<int>(&QComboBox::currentIndexChanged), this, &MotionWindow::updateTree);
     connect(m_tree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
         if (m_syncingTree) return;
-        const QVariant id = item ? item->data(0, partRole) : QVariant();
-        selectPart(id.isValid() ? id.toInt() : -1);
+        const auto node = treeNode(item);
+        if (node.kind == ModelNode::Part || node.kind == ModelNode::None) selectPart(node.id);
+        else selectRigidNode(node);
     });
     connect(m_tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
-        const auto id = item ? item->data(0, partRole) : QVariant();
-        if (m_syncingTree || column != 0 || !id.isValid()) return;
-        if (item->checkState(0) == Qt::Checked) m_hidden.erase(id.toInt());
-        else m_hidden.insert(id.toInt());
+        const auto node = treeNode(item);
+        if (m_syncingTree || column != 0 || node.kind != ModelNode::Part) return;
+        if (item->checkState(0) == Qt::Checked) m_hidden.erase(node.id);
+        else m_hidden.insert(node.id);
         filterTree();
         syncViewport();
         updateParameters();
         updateActions();
+    });
+    connect(m_tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) {
+        const auto node = treeNode(item);
+        if (node.kind == ModelNode::Animation || node.kind == ModelNode::Curves || node.kind == ModelNode::Export)
+            showRigidResult(node);
     });
     connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &MotionWindow::showPartMenu);
     return panel;
@@ -501,6 +521,7 @@ QWidget* MotionWindow::createParameterPage()
 {
     auto* panel = new QWidget;
     auto* layout = new QVBoxLayout(panel);
+    m_parameterLayout = layout;
     layout->setContentsMargins(8, 7, 8, 7);
     layout->setSpacing(6);
     m_parameterTitle = new QLabel(tr("参数设置"), panel);
@@ -573,8 +594,10 @@ void MotionWindow::updateTree()
     root->setIcon(0, icon(QStringLiteral("BrowserTree/moxing3x.png")));
     const QStringList groups = { tr("部件"), tr("运动体"), tr("柔性体"), tr("运动副"), tr("耦合副"), tr("驱动"),
         tr("弹簧"), tr("力元"), tr("传感器"), tr("控制器"), tr("标记点"), tr("接触"), tr("控制输入") };
+    std::map<QString, QTreeWidgetItem*> groupItems;
     for (const auto& name : groups) {
         auto* group = new QTreeWidgetItem(root, { name });
+        groupItems.emplace(name, group);
         group->setIcon(0, icon(QStringLiteral("BrowserTree/genericPart.png")));
         if (name == groups.front()) m_partsItem = group;
     }
@@ -587,11 +610,13 @@ void MotionWindow::updateTree()
     for (const auto* part : sorted) {
         auto* item = new QTreeWidgetItem(m_partsItem, { part->name });
         item->setData(0, partRole, part->id);
+        item->setData(0, nodeKindRole, int(ModelNode::Part));
         item->setIcon(0, icon(QStringLiteral("BrowserTree/genericPart.png")));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(0, m_hidden.count(part->id) ? Qt::Unchecked : Qt::Checked);
         if (part->id == m_partId) m_tree->setCurrentItem(item);
     }
+    appendRigidNodes(root, groupItems);
     root->setExpanded(true);
     m_partsItem->setExpanded(true);
     filterTree();
@@ -612,6 +637,7 @@ void MotionWindow::filterTree()
 
 void MotionWindow::updateParameters()
 {
+    if (m_editor) return;
     const auto* part = m_document.part(m_partId);
     QString summary = part ? tr("部件编号：%1\n几何状态：%2").arg(part->id).arg(m_hidden.count(m_partId) ? tr("隐藏") : tr("显示"))
                            : tr("尚未选择部件。");
@@ -634,13 +660,15 @@ void MotionWindow::updateActions()
     const bool hasPart = m_document.part(m_partId) != nullptr;
     const bool anyPart = !m_document.parts().empty();
     const bool hasMesh = m_meshes.count(m_partId) > 0;
-    const bool busy = m_jobPart != -1;
-    for (const auto id : { Command::Save, Command::SaveAs, Command::Export, Command::InvertVisibility })
+    const bool busy = m_jobPart != -1 || motionBusy();
+    for (const auto id : { Command::Export, Command::InvertVisibility })
         command(id)->setEnabled(anyPart);
+    for (const auto id : { Command::Save, Command::SaveAs })
+        command(id)->setEnabled(!busy && (anyPart || !m_model.scenarios.empty()));
     command(Command::ShowAll)->setEnabled(!m_hidden.empty());
     command(Command::HideSelected)->setEnabled(hasPart && m_hidden.count(m_partId) == 0);
     command(Command::HideOthers)->setEnabled(hasPart && m_document.parts().size() > 1);
-    command(Command::Remove)->setEnabled(hasPart && !busy);
+    command(Command::Remove)->setEnabled(hasPart && !busy && canRemovePart(m_partId));
     command(Command::GenerateMesh)->setEnabled(hasPart && !busy);
     command(Command::RemoveMesh)->setEnabled(hasMesh && !busy);
     command(Command::ExportMesh)->setEnabled(hasMesh);
@@ -650,6 +678,7 @@ void MotionWindow::updateActions()
     m_meshSize->setEnabled(!busy);
     for (const auto id : { Command::New, Command::Open, Command::Import, Command::Box, Command::Cylinder, Command::Sphere })
         command(id)->setEnabled(!busy);
+    updateRigidActions();
 }
 
 void MotionWindow::syncViewport(bool fit)
@@ -663,6 +692,8 @@ void MotionWindow::selectPart(int id)
 {
     const int previous = m_partId;
     m_partId = m_document.part(id) ? id : -1;
+    m_selectionNode = m_partId > 0 ? ModelNode{ModelNode::Part, m_partId} : ModelNode{};
+    if (m_partId != previous || m_partId <= 0) closeEditor();
     if (m_jobPart == -1 && m_partId != previous) m_meshForm->hide();
     m_viewport->selectPart(m_partId);
     m_syncingTree = true;
@@ -686,16 +717,21 @@ void MotionWindow::showPartMenu(const QPoint& position)
 {
     auto* item = m_tree->itemAt(position);
     if (!item) return;
+    const auto node = treeNode(item);
+    if (node.kind != ModelNode::None && node.kind != ModelNode::Part) {
+        showRigidMenu(node, m_tree->viewport()->mapToGlobal(position));
+        return;
+    }
     mUiMenu menu(this);
     if (item == m_partsItem) {
         menu.addAction(command(Command::Import));
         auto* exportAll = menu.addAction(command(Command::Export)->icon(), tr("导出全部部件"));
         exportAll->setEnabled(!m_document.parts().empty());
-        connect(exportAll, &QAction::triggered, this, [this] { saveCad(true, true); });
+        connect(exportAll, &QAction::triggered, this, [this] { saveCad(true); });
         menu.addSeparator();
         menu.addAction(command(Command::ShowAll));
-    } else if (item->data(0, partRole).isValid()) {
-        selectPart(item->data(0, partRole).toInt());
+    } else if (node.kind == ModelNode::Part) {
+        selectPart(node.id);
         menu.addAction(command(Command::Export));
         if (m_hidden.count(m_partId)) {
             auto* show = menu.addAction(tr("显示部件"));
@@ -727,6 +763,7 @@ void MotionWindow::setNotice(const QString& message, bool error)
 
 bool MotionWindow::importCad(const QString& path)
 {
+    if (motionBusy()) return false;
     std::vector<int> ids;
     QString error;
     if (!m_document.importFile(path, ids, error)) {
@@ -744,10 +781,15 @@ bool MotionWindow::importCad(const QString& path)
 
 void MotionWindow::openCadDialog(bool addToModel)
 {
-    const auto path = QFileDialog::getOpenFileName(this, addToModel ? tr("导入几何模型") : tr("打开 CAD 几何"), {}, cadFilters);
+    const auto path = QFileDialog::getOpenFileName(this, addToModel ? tr("导入几何模型") : tr("打开项目或 CAD 几何"), {},
+        addToModel ? cadFilters : projectFilter + QStringLiteral(";;") + cadFilters);
     if (path.isEmpty()) return;
     if (addToModel) {
         importCad(path);
+        return;
+    }
+    if (QFileInfo(path).suffix().compare(QStringLiteral("mxmotion"), Qt::CaseInsensitive) == 0) {
+        openRigidProject(path);
         return;
     }
     if (!confirmReplace()) return;
@@ -758,12 +800,16 @@ void MotionWindow::openCadDialog(bool addToModel)
         setNotice(error, true);
         return;
     }
+    closeEditor();
+    clearResults();
+    m_model = {};
+    m_selectionNode = {};
     m_document = std::move(next);
     m_meshes.clear();
     m_hidden.clear();
     m_meshForm->hide();
     command(Command::ShadedEdges)->trigger();
-    m_savePath = path;
+    m_projectPath.clear();
     m_modified = false;
     m_partId = ids.front();
     updateTree();
@@ -772,15 +818,15 @@ void MotionWindow::openCadDialog(bool addToModel)
     setNotice(tr("已打开 %1 · %2 个部件").arg(QFileInfo(path).fileName()).arg(ids.size()));
 }
 
-void MotionWindow::saveCad(bool all, bool choosePath)
+void MotionWindow::saveCad(bool all)
 {
     if (m_document.parts().empty()) return;
     const int id = all ? -1 : m_partId;
     const auto* part = m_document.part(id);
-    QString path = m_savePath;
-    if (choosePath || path.isEmpty()) {
+    QString path;
+    {
         auto filter = exportFilters.section(QStringLiteral(";;"), 0, 0);
-        const auto initial = all ? (path.isEmpty() ? tr("多体动力学-%1.step").arg(m_modelNumber) : path)
+        const auto initial = all ? tr("多体动力学-%1.step").arg(m_modelNumber)
                                  : (part ? part->name + QStringLiteral(".step") : QString());
         path = QFileDialog::getSaveFileName(this, all ? tr("保存 CAD 几何") : tr("导出几何模型"), initial, exportFilters, &filter);
         const auto suffix = filter.startsWith("IGES") ? QStringLiteral("iges")
@@ -793,29 +839,30 @@ void MotionWindow::saveCad(bool all, bool choosePath)
         setNotice(error, true);
         return;
     }
-    if (all) {
-        m_savePath = path;
-        m_modified = false;
-    }
     setNotice(tr("已保存几何：%1").arg(QFileInfo(path).fileName()));
 }
 
 bool MotionWindow::confirmReplace()
 {
+    if (motionBusy()) return false;
     if (!m_modified) return true;
-    return QMessageBox::question(this, tr("未保存的几何"), tr("放弃当前未保存的几何更改？"),
+    return QMessageBox::question(this, tr("未保存的项目"), tr("放弃当前未保存的项目更改？"),
         QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
 }
 
 void MotionWindow::newModel()
 {
     if (!confirmReplace()) return;
+    closeEditor();
+    clearResults();
+    m_model = {};
+    m_selectionNode = {};
     m_document.clear();
     m_meshes.clear();
     m_hidden.clear();
     m_meshForm->hide();
     command(Command::ShadedEdges)->trigger();
-    m_savePath.clear();
+    m_projectPath.clear();
     m_modified = false;
     m_partId = -1;
     ++m_modelNumber;
@@ -863,6 +910,7 @@ void MotionWindow::addPrimitive(Primitive primitive)
 
 void MotionWindow::beginMeshSetup()
 {
+    closeEditor();
     const auto* part = m_document.part(m_partId);
     if (!part || m_jobPart != -1) return;
     const auto& verts = part->display.vertices;
