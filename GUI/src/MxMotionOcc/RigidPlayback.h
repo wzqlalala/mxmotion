@@ -26,6 +26,45 @@ struct RigidPlaybackSample {
     std::set<int> flexHiddenParts;
 };
 
+// Standalone construction curves are legitimate global CAD references. The
+// solver converts their coordinates into the selected body's local frame, so
+// their display must use that same body's transform. Physical CAD ownership
+// always takes precedence over these display-only reference associations.
+inline bool nativePlaybackCurveReferences(const RigidInput& input, std::map<int,int>& references,
+                                          QString& error)
+{
+    std::map<int,int> next;
+    if (!input.nativeInput) { references=std::move(next); return true; }
+    const auto& document=input.nativeInput->document;
+    std::set<int> owned, bodies;
+    for (const auto& parts : document.bodyPartBindings) for (int part : parts) owned.insert(part);
+    for (const auto& body : input.bodies) bodies.insert(body.body.id);
+    const auto add=[&](const QJsonObject& joint, const char* field, const char* bodyField) {
+        const int bodyId=joint.value(bodyField).toInt(-1);
+        for (const auto& value : joint.value(field).toArray()) {
+            const int partId=value.toObject().value("partId").toInt(-1);
+            if (partId<1) { error=QStringLiteral("独立曲线动画引用的 CAD 部件编号无效。"); return false; }
+            if (owned.count(partId)) continue;
+            if (bodyId!=-1 && !bodies.count(bodyId)) {
+                error=QStringLiteral("独立曲线部件 %1 引用的运动体 %2 没有动画状态。").arg(partId).arg(bodyId); return false;
+            }
+            const auto inserted=next.emplace(partId,bodyId);
+            if (!inserted.second && inserted.first->second!=bodyId) {
+                error=QStringLiteral("独立曲线部件 %1 同时引用运动体 %2 与 %3，无法确定唯一动画姿态；请使用分别绑定的曲线部件。")
+                    .arg(partId).arg(inserted.first->second).arg(bodyId); return false;
+            }
+        }
+        return true;
+    };
+    for (const auto& value : document.collection("joints")) {
+        const auto joint=value.toObject(); const auto type=joint.value("jointType").toString();
+        if (type=="PointOnCurve" && !add(joint,"occCurveEdges","baseBodyId")) return false;
+        if (type=="CurveOnCurve" && (!add(joint,"occCurveIEdges","actionBodyId")
+            || !add(joint,"occCurveJEdges","baseBodyId"))) return false;
+    }
+    references=std::move(next); return true;
+}
+
 // Validate a result once when entering animation. Keeping this scan out of the
 // per-frame sampler avoids an O(frameCount) pass on every 16 ms timer tick.
 inline bool validateRigidPlayback(const RigidInput& input, const RigidResult& result,
@@ -46,6 +85,8 @@ inline bool validateRigidPlayback(const RigidInput& input, const RigidResult& re
             return false;
         }
     }
+    std::map<int,int> curveReferences;
+    if (!nativePlaybackCurveReferences(input,curveReferences,error)) return false;
     for (const auto& flex : result.flexBodies) {
         if (!input.nativeInput || flex.referenceNodes.empty() || flex.referenceNodes.size() % 3
             || flex.surfaceTriangles.empty() || flex.surfaceTriangles.size() % 3
@@ -113,6 +154,9 @@ inline bool sampleRigidPlayback(const RigidInput& input, const RigidResult& resu
     const auto rotation = [](const Quaterniond& q) {
         return QQuaternion(float(q[0]), float(q[1]), float(q[2]), float(q[3]));
     };
+    std::map<int,int> curveReferences;
+    if (!nativePlaybackCurveReferences(input,curveReferences,error)) return false;
+    std::map<int,QMatrix4x4> bodyPoses;
     for (const auto& body : input.bodies) {
         const auto a = leftBodies.find(body.body.id), b = rightBodies.find(body.body.id);
         if (a == leftBodies.end() || b == rightBodies.end())
@@ -141,6 +185,7 @@ inline bool sampleRigidPlayback(const RigidInput& input, const RigidResult& resu
             for (int column = 0; column < 4; ++column)
                 if (!std::isfinite(pose(row, column)))
                     return fail(QStringLiteral("运动体 %1 的动画位姿超出渲染范围。").arg(body.body.id));
+        bodyPoses.emplace(body.body.id,pose);
         const auto parts = input.nativeInput ? input.nativeInput->document.bodyPartBindings.value(body.body.id)
             : QVector<int>{body.body.partId};
         if (parts.isEmpty()) {
@@ -154,6 +199,8 @@ inline bool sampleRigidPlayback(const RigidInput& input, const RigidResult& resu
             if (!next.partPoses.emplace(part, pose).second)
                 return fail(QStringLiteral("动画结果中一个部件关联了多个运动体。"));
     }
+    for (const auto& reference : curveReferences)
+        next.partPoses.emplace(reference.first,reference.second==-1 ? QMatrix4x4{} : bodyPoses.at(reference.second));
     const auto leftIndex = std::size_t(std::distance(frames.begin(), first));
     const auto rightIndex = std::size_t(std::distance(frames.begin(), second));
     for (const auto& flex : result.flexBodies) {

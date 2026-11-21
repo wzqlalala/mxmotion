@@ -8,6 +8,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <gp_Mat.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 #include <math_Jacobi.hxx>
 #include <math_Matrix.hxx>
 
@@ -463,6 +464,10 @@ struct ShapeSignature {
     double volume = 0;
     std::array<double, 3> center{};
     std::array<double, 6> inertia{}; // Unit-density centroid tensor: xx, yy, zz, xy, xz, yz.
+    QString sourceOccurrence;
+    gp_Trsf sourcePlacement;
+    std::array<double, 3> sourceCenter{};
+    bool hasSourceFrame = false;
 };
 
 std::array<double, 3> principalMoments(const std::array<double, 6>& tensor)
@@ -494,6 +499,21 @@ ShapeSignature signature(const CadPart& part)
             inertia.Value(1, 2), inertia.Value(1, 3), inertia.Value(2, 3)};
         for (double x : out.center) if (!std::isfinite(x)) return {};
         for (double x : out.inertia) if (!std::isfinite(x)) return {};
+        // Some original automatic mass calculations exported a definition-local
+        // centroid while the STEP assembly placed that definition in world
+        // space. Only an actual retained STEP occurrence placement can prove
+        // this alternative; a guessed translation or a source numeric ID cannot.
+        const int separator = part.instancePath.lastIndexOf(QLatin1Char('/'));
+        if (separator > 0 && !part.shape.Location().IsIdentity()) {
+            out.sourcePlacement = part.shape.Location().Transformation();
+            if (std::abs(out.sourcePlacement.ScaleFactor() - 1.0) <= 1e-12) {
+                const auto local = center.Transformed(out.sourcePlacement.Inverted());
+                out.sourceCenter = {local.X(), local.Y(), local.Z()};
+                out.sourceOccurrence = part.instancePath.left(separator);
+                out.hasSourceFrame = true;
+                for (double x : out.sourceCenter) if (!std::isfinite(x)) out.hasSourceFrame = false;
+            }
+        }
     } catch (const Standard_Failure&) { return {}; }
     return out;
 }
@@ -522,20 +542,50 @@ ShapeSignature combine(const QVector<int>& partIds, const std::map<int, ShapeSig
         out.inertia[4] += item.inertia[4] - item.volume * dx * dz;
         out.inertia[5] += item.inertia[5] - item.volume * dy * dz;
     }
+    if (!partIds.isEmpty()) {
+        const auto& first = signatures.at(partIds.front());
+        out.hasSourceFrame = first.hasSourceFrame;
+        out.sourceOccurrence = first.sourceOccurrence;
+        out.sourcePlacement = first.sourcePlacement;
+        for (int id : partIds) {
+            const auto& item = signatures.at(id);
+            if (!item.hasSourceFrame || item.sourceOccurrence != first.sourceOccurrence) out.hasSourceFrame = false;
+            for (int row = 1; row <= 3; ++row)
+                for (int column = 1; column <= 4; ++column)
+                    if (std::abs(item.sourcePlacement.Value(row, column) - first.sourcePlacement.Value(row, column)) > 1e-12)
+                        out.hasSourceFrame = false;
+        }
+        if (out.hasSourceFrame) {
+            const auto local = gp_Pnt(out.center[0], out.center[1], out.center[2]).Transformed(out.sourcePlacement.Inverted());
+            out.sourceCenter = {local.X(), local.Y(), local.Z()};
+            for (double x : out.sourceCenter) if (!std::isfinite(x)) out.hasSourceFrame = false;
+        }
+    }
     return out;
 }
 
-bool matchesBody(const ShapeSignature& shape, const QJsonObject& body, bool verifyInertia = true)
+bool matchesBody(const ShapeSignature& shape, const QJsonObject& body, bool verifyInertia = true, bool sourceFrame = false)
 {
     if (shape.volume <= 0 || !body.value("centerOfMass").isObject()) return false;
+    if (sourceFrame && (!shape.hasSourceFrame || body.value("isCustomMassProps").toBool())) return false;
     const auto center = body.value("centerOfMass").toObject();
     double extent = 1;
     for (int axis = 0; axis < 3; ++axis) extent = std::max(extent, std::sqrt(std::max(0.0, shape.inertia[axis] / shape.volume)));
-    const double tolerance = std::max(1e-3, extent * 2e-5);
-    for (int axis = 0; axis < 3; ++axis)
-        if (std::abs(shape.center[axis] - center.value(QString(QChar('x' + axis))).toDouble()) > tolerance) return false;
+    const double tolerance = sourceFrame ? std::max(1e-5, extent * 2e-7) : std::max(1e-3, extent * 2e-5);
+    const auto& candidateCenter = sourceFrame ? shape.sourceCenter : shape.center;
+    for (int axis = 0; axis < 3; ++axis) {
+        const auto coordinate = center.value(QString(QChar('x' + axis)));
+        if (sourceFrame && (!coordinate.isDouble() || !std::isfinite(coordinate.toDouble()))) return false;
+        if (std::abs(candidateCenter[axis] - coordinate.toDouble()) > tolerance) return false;
+    }
     const double mass = body.value("mass").toDouble();
     const auto inertia = body.value("inertia").toArray();
+    if (sourceFrame) {
+        if (!std::isfinite(mass) || mass <= 0 || inertia.size() != 6) return false;
+        for (int i = 0; i < 6; ++i)
+            if (!inertia[i].isDouble() || !std::isfinite(inertia[i].toDouble()) || (i < 3 && inertia[i].toDouble() <= 0)) return false;
+        verifyInertia = true;
+    }
     if (verifyInertia && mass > 0 && inertia.size() == 6 && inertia[0].toDouble() > 0 && inertia[1].toDouble() > 0 && inertia[2].toDouble() > 0) {
         // Historical native files contain both principal moments and global
         // diagonal moments with omitted products. Those representations differ
@@ -543,11 +593,13 @@ bool matchesBody(const ShapeSignature& shape, const QJsonObject& body, bool veri
         // when all products are zero; never alter the source dynamics here.
         std::array<double, 6> sourceTensor;
         for (int i = 0; i < 6; ++i) sourceTensor[i] = inertia[i].toDouble();
-        const auto sameMoment = [](double actual, double expected) {
+        const auto sameMoment = [sourceFrame](double actual, double expected) {
             return actual > 0 && expected > 0
-                && std::abs(actual - expected) <= std::max(1e-3, std::max(actual, expected) * 2e-3);
+                && std::abs(actual - expected) <= (sourceFrame
+                    ? std::max(actual, expected) * 1e-6
+                    : std::max(1e-3, std::max(actual, expected) * 2e-3));
         };
-        if (sourceTensor[3] == 0 && sourceTensor[4] == 0 && sourceTensor[5] == 0) {
+        if (!sourceFrame && sourceTensor[3] == 0 && sourceTensor[4] == 0 && sourceTensor[5] == 0) {
             bool globalDiagonalMatches = true;
             for (int axis = 0; axis < 3; ++axis)
                 globalDiagonalMatches &= sameMoment(shape.inertia[axis] / shape.volume, sourceTensor[axis] / mass);
@@ -685,7 +737,8 @@ bool validateNativeMotionBindings(const CadDocument& cad, const NativeMotionDocu
                 const auto reference = value.toObject();
                 int partId = -1, index = -1;
                 if (!value.isObject() || !integer(reference.value("partId"), 1, &partId)
-                    || !integer(reference.value("index"), 1, &index) || !bodyParts.contains(partId) || !cad.part(partId)) {
+                    || !integer(reference.value("index"), 1, &index) || !cad.part(partId)
+                    || (selector.kind == TopAbs_FACE && !bodyParts.contains(partId))) {
                     error = QStringLiteral("运动副 %1 的 %2 引用了不存在或不属于运动体 %3 的 CAD 部件。请重新选择约束几何。")
                         .arg(jointId).arg(QLatin1String(selector.field)).arg(bodyId);
                     return false;
@@ -742,16 +795,28 @@ bool autoBindNativeMotionBodies(const CadDocument& cad, NativeMotionDocument& do
             continue;
         }
         Pending item{body, {}, {}, false};
-        auto addCandidate = [&](QVector<int> ids, bool exactSourceIdentity = false) {
+        QVector<std::pair<QVector<int>, bool>> proposals;
+        auto addCandidate = [&](QVector<int> ids, bool exactSourceIdentity = false, bool sourceFrame = false) {
+            if (!sourceFrame) proposals.append({ids, exactSourceIdentity});
             if (item.exactIdentity && !exactSourceIdentity) return;
             std::sort(ids.begin(), ids.end());
             if (ids.isEmpty() || std::adjacent_find(ids.cbegin(), ids.cend()) != ids.cend()) return;
             for (int id : ids) if (occupied.contains(id) || !cad.part(id)) return;
             const bool customIdentity = exactSourceIdentity && body.value("isCustomMassProps").toBool();
-            if (!customIdentity && !matchesBody(combine(ids, signatures), body)) return;
+            const auto shape = combine(ids, signatures);
+            if (sourceFrame ? !matchesBody(shape, body, true, true) : (!customIdentity && !matchesBody(shape, body))) return;
             if (exactSourceIdentity) item.exactIdentity = true;
             if (!item.candidates.contains(ids)) item.candidates.append(ids);
-            if (exactSourceIdentity || !item.evidence.contains(ids)) item.evidence[ids] = customIdentity
+            if (sourceFrame) {
+                const auto savedCenter = body.value("centerOfMass").toObject();
+                double distanceSquared = 0;
+                for (int axis = 0; axis < 3; ++axis) {
+                    const double difference = shape.center[axis] - savedCenter.value(QString(QChar('x' + axis))).toDouble();
+                    distanceSquared += difference * difference;
+                }
+                item.evidence[ids] = QStringLiteral("原始局部质心及全部主惯量/质量比与 STEP 实例唯一匹配；装配变换后的 CAD 质心与原值偏差 %1 mm；仅恢复几何身份，保留原质量、质心和惯量，未移动 CAD")
+                    .arg(std::sqrt(distanceSquared), 0, 'g', 8);
+            } else if (exactSourceIdentity || !item.evidence.contains(ids)) item.evidence[ids] = customIdentity
                 ? QStringLiteral("原始几何名称逐项唯一匹配 STEP 实例；保留独立的自定义质量、质心和惯量")
                 : exactSourceIdentity ? QStringLiteral("原始几何名称逐项唯一匹配 STEP 实例，并通过质量几何验证")
                 : QStringLiteral("初始质心及可用惯量特征唯一匹配（含多部件聚合验证）");
@@ -821,6 +886,13 @@ bool autoBindNativeMotionBodies(const CadDocument& cad, NativeMotionDocument& do
         }
         for (const auto& occurrence : occurrences)
             if (occurrence.size() > 1) addCandidate(occurrence);
+        // World-frame matches keep their existing precedence. If none exist,
+        // recheck the same physical candidates in their actual STEP definition
+        // frame, requiring all principal moments as well as the local centroid.
+        // Repeated instances remain competing candidates; import order is never
+        // used to pick one of their identical local signatures.
+        if (item.candidates.isEmpty())
+            for (const auto& proposal : proposals) addCandidate(proposal.first, proposal.second, true);
         pending.append(std::move(item));
     }
 
@@ -917,7 +989,14 @@ bool autoBindNativeMotionBodies(const CadDocument& cad, NativeMotionDocument& do
         }
     }
     QString bindingError;
-    if (unresolved.isEmpty() && !validateNativeMotionBindings(cad, document, bindingError))
+    // Topology references are rebound separately after body identities. Their
+    // saved part/edge ordinals may be stale after CAD reimport and must not make
+    // an otherwise complete body binding fail before that topology pass runs.
+    auto bodyBindingsOnly = document;
+    auto bodyData = bodyBindingsOnly.root.value("motionData").toObject();
+    bodyData.remove("joints");
+    bodyBindingsOnly.root["motionData"] = bodyData;
+    if (unresolved.isEmpty() && !validateNativeMotionBindings(cad, bodyBindingsOnly, bindingError))
         unresolved.append({-1, bindingError, {}});
     return unresolved.isEmpty();
 }

@@ -3,6 +3,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QJsonObject>
+#include <TopAbs_ShapeEnum.hxx>
 
 namespace MotionOcc {
 
@@ -15,10 +17,17 @@ struct NativeTopologyBindingIssue {
     QString message;
 };
 
-// Recover only a unique, exact geometric association for an original single
-// edge/face constraint. Existing explicit OCC selectors are never overwritten.
-// The original topology IDs remain intact; this adds separate OCC references
-// to document.root and reports any ambiguous or unverifiable selector.
+// Store an OCC reference together with the exact placed geometry's fingerprint.
+// The fingerprint allows a later import to recover identity after enumeration
+// changes; partId/index alone are only valid inside their original CAD document.
+QJsonObject nativeTopologyReference(const CadDocument& cad, int partId, int index,
+                                    TopAbs_ShapeEnum kind);
+
+// Recover legacy references from validated import topology or unique geometry.
+// Curves may be standalone construction geometry, as in mMotionSolverThread;
+// their sampled world geometry is attached to the indicated body's frame.
+// Original source IDs are retained. Saved geometric fingerprints take priority
+// over current import ordinals, and ambiguous matches are reported explicitly.
 bool autoBindNativeMotionTopology(const CadDocument& cad, NativeMotionDocument& document,
                                   QVector<NativeTopologyBindingIssue>& unresolved,
                                   QStringList* bindingEvidence = nullptr);

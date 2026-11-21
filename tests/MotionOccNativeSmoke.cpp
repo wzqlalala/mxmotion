@@ -295,7 +295,30 @@ void geometryAndContact(){
     NativeMotionInput boundaryInput;QString boundaryError;require(prepareNativeMotion(f.cad,f.doc,0,boundaryInput,boundaryError),boundaryError);
     require(solveNativeMotion(boundaryInput,result,boundaryError)==SolveStatus::Completed,boundaryError);
     require(result.termination==ResultTermination::GeometryBoundary&&!result.diagnostics.empty(),"real curve-boundary stop lost its explicit reason");
-    require(result.frames.back().seconds>.5&&result.frames.back().seconds<1,"geometry boundary stop did not preserve actual partial timeline");
+    near(result.frames.back().seconds,.5,1e-10,"curve boundary result retained an out-of-domain trial frame");
+    require(result.frames.size()==51,"curve boundary result lost the last valid endpoint frame");
+    for(const auto& frame:result.frames)for(const auto& state:frame.bodies)if(state.bodyId==0)
+        require(state.positionMm[0]<=10.0+1e-8,"curve animation includes an already rejected endpoint overshoot");
+    for(const auto& c:result.channels)require(c.values.size()==result.frames.size()*c.components,"curve boundary channels include a rejected sample");
+    auto surfaceBoundary=j;surfaceBoundary["jointType"]="PointOnSurface";surfaceBoundary["origin"]=xyz(5,5,0);
+    surfaceBoundary.remove("occCurveEdges");surfaceBoundary["occSurfaceFaces"]=QJsonArray{QJsonObject{{"partId",fixed},{"index",selected}}};
+    collection(f.doc,"joints",{surfaceBoundary});
+    require(prepareNativeMotion(f.cad,f.doc,0,boundaryInput,boundaryError),boundaryError);
+    require(solveNativeMotion(boundaryInput,result,boundaryError)==SolveStatus::Completed,boundaryError);
+    require(result.termination==ResultTermination::GeometryBoundary,"surface endpoint did not terminate normally");
+    near(result.frames.back().seconds,.5,1e-10,"surface boundary result retained an out-of-domain trial frame");
+    require(result.frames.size()==51,"surface boundary result lost the last valid endpoint frame");
+    for(const auto& frame:result.frames)for(const auto& state:frame.bodies)if(state.bodyId==0)
+        require(state.positionMm[0]<=10.0+1e-8,"surface animation includes an already rejected endpoint overshoot");
+    for(const auto& c:result.channels)require(c.values.size()==result.frames.size()*c.components,"surface boundary channels include a rejected sample");
+    for(auto initiallyOutside:{j,surfaceBoundary}){
+        initiallyOutside["origin"]=initiallyOutside.value("jointType").toString()=="PointOnCurve"?xyz(10.05,0,0):xyz(10.05,5,0);
+        collection(f.doc,"joints",{initiallyOutside});
+        require(prepareNativeMotion(f.cad,f.doc,0,boundaryInput,boundaryError),boundaryError);
+        const auto previousFrames=result.frames.size();
+        require(solveNativeMotion(boundaryInput,result,boundaryError)==SolveStatus::Failed&&boundaryError.contains("初始")
+            &&result.frames.size()==previousFrames,"invalid initial finite-geometry state was recorded or replaced an existing result");
+    }
     moving["initialVelocity"]=xyz(0,0,0);collection(f.doc,"bodies",{moving,f.doc.entity("bodies",1)});f.scenario(.002,.001);
     collection(f.doc,"joints",{});auto s=f.doc.entity("scenarios",0);s["usePreset"]=true;s["presetMode"]="CONTACT";s["gravity"]=xyz(0,0,-9810);collection(f.doc,"scenarios",{s});
     collection(f.doc,"contacts",{QJsonObject{{"id",0},{"name","contact"},{"contactType","CADContact"},{"actionBodyId",0},{"baseBodyId",1},{"stiffness",1000.0},{"materialDamping",1.0},{"forceExponent",1.5},{"penetrationDepth",.0254},{"frictionEnabled",true},{"staticFriction",.3},{"dynamicFriction",.2},{"useConvexHullAction",true},{"useConvexHullBase",true}}});result=f.solve();require(result.frames.back().bodies.size()==2,"contact body data");
@@ -381,12 +404,27 @@ void flexReductionAndAutomaticMesh(){
         {"mesh",QJsonObject{{"nodes",QJsonArray{QJsonArray{0,0,0},QJsonArray{10,0,0},QJsonArray{10,10,0},QJsonArray{0,10,0},QJsonArray{0,0,10},QJsonArray{10,0,10},QJsonArray{10,10,10},QJsonArray{0,10,10}}},
                            {"tetrahedra",QJsonArray{QJsonArray{0,1,3,4},QJsonArray{1,2,3,6},QJsonArray{1,3,4,6},QJsonArray{1,4,5,6},QJsonArray{3,4,6,7}}}}},
         {"attachGroups",QJsonArray{QJsonArray{0,3,4,7}}}};
-    collection(f.doc,"autoFlexBodies",{flex});auto result=f.solve();
+    collection(f.doc,"autoFlexBodies",{flex});
+    NativeMotionInput prepared; QString preparationError;
+    require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
+    require(prepared.geometry->flexBodies.front().attachGroups.size()==1
+        && prepared.geometry->flexBodies.front().attachPositions.empty(),
+        "manual attachment patch was supplemented with automatic joint welds");
+    auto result=f.solve();
     require(result.flexBodies.size()==1&&result.flexBodies[0].nodePositions.size()==result.frames.size(),"actual flex playback frames missing");
     require(result.flexBodies[0].referenceNodes.size()==24&&!result.flexBodies[0].surfaceTriangles.empty(),"flex topology missing");
     require(channel(result,"autoFlexBodies",0,"ModalCoordinates").components==2,"modal coordinates missing");
     double displacement=0;const auto& moved=result.flexBodies[0].nodePositions.back();for(std::size_t i=0;i<moved.size();++i)displacement=std::max(displacement,std::abs(moved[i]-result.flexBodies[0].referenceNodes[i]));
     require(displacement>1e-10,"flex gravity produced no deformation");
+    auto referenced=flex; referenced.remove("material"); referenced["materialId"]=42;
+    collection(f.doc,"materials",{QJsonObject{{"id",42},{"name","explicit test material"},{"youngModulus",100.0},{"poissonRatio",.3},{"density",.001}}});
+    collection(f.doc,"autoFlexBodies",{referenced});
+    require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
+    near(prepared.geometry->flexBodies.front().youngModulus,100000.0,1e-9,"referenced material preserves MPa to internal mN/mm2 conversion");
+    near(prepared.geometry->flexBodies.front().density,.001,1e-15,"referenced density is not silently changed to steel");
+    auto stale=referenced; stale["attachmentMeshChanged"]=true; collection(f.doc,"autoFlexBodies",{stale});
+    require(!prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError) && preparationError.contains("旧附着节点"),
+        "a mesh replacement reused stale attachment IDs without explicit reselection");
     flex.remove("mesh");flex.remove("attachGroups");collection(f.doc,"autoFlexBodies",{flex});result=f.solve();
     require(result.flexBodies.size()==1&&result.flexBodies[0].referenceNodes.size()>24,"automatic OCC Netgen tetra mesh did not run");
 }

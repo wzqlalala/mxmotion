@@ -3,6 +3,15 @@
 #include "NativeTopologyBinding.h"
 #ifdef MX_NATIVE_SOLVE_CASES
 #include "NativeMotionSolver.h"
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRep_Builder.hxx>
+#include <Standard_Failure.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS_Compound.hxx>
+#include <gp_Quaternion.hxx>
+#include <gp_Trsf.hxx>
 #endif
 
 #include <BRepGProp.hxx>
@@ -128,7 +137,158 @@ Vec fromJson(const QJsonValue& value)
     return {object.value("x").toDouble(),object.value("y").toDouble(),object.value("z").toDouble()};
 }
 
-bool checkResult(const NativeMotionInput& input, const RigidResult& result, QJsonObject& report, QString& error)
+// The solver uses sampled curves/triangles. This check deliberately measures
+// accepted poses against the selected, trimmed CAD topology instead. Its 0.03 mm
+// limit allows the 0.02 mm geometry discretization plus 0.01 mm numerical margin;
+// the looser source-assembly capture tolerances are not result tolerances.
+constexpr double exactGeometryToleranceMm = 0.03;
+
+struct ExactJointGeometry {
+    int id = -1;
+    int actionBodyId = -1;
+    int baseBodyId = -1;
+    QString type;
+    gp_Pnt origin;
+    TopoDS_Compound shape;
+    QJsonArray selectedTopology;
+    std::size_t checkedFrames = 0;
+    std::size_t worstFrame = 0;
+    double maxDistance = -1;
+    double worstTime = 0;
+    double initialDistance = 0;
+    double lastDistance = 0;
+    double maxDistanceBeforeLast = 0;
+    std::size_t violatingFrames = 0;
+    int firstViolationFrame = -1;
+    double firstViolationTime = -1;
+    double firstViolationDistance = 0;
+    gp_Pnt worstPoint;
+    gp_Pnt nearestPoint;
+};
+
+bool exactJointGeometry(const CadDocument& cad, const NativeMotionDocument& document,
+                        std::vector<ExactJointGeometry>& checks, QString& error)
+{
+    try {
+        BRep_Builder builder;
+        for (const auto& value : document.collection("joints")) {
+            const auto joint = value.toObject();
+            const auto type = joint.value("jointType").toString();
+            if (type != "PointOnCurve" && type != "PointOnSurface") continue;
+            ExactJointGeometry check;
+            check.id = joint.value("id").toInt();
+            check.actionBodyId = joint.value("actionBodyId").toInt(-1);
+            check.baseBodyId = joint.value("baseBodyId").toInt(-1);
+            check.type = type;
+            const auto origin = fromJson(joint.value("origin"));
+            check.origin = gp_Pnt(origin[0], origin[1], origin[2]);
+            builder.MakeCompound(check.shape);
+            const bool surface = type == "PointOnSurface";
+            const auto kind = surface ? TopAbs_FACE : TopAbs_EDGE;
+            const auto field = surface ? "occSurfaceFaces" : "occCurveEdges";
+            auto references = joint.value(field).toArray();
+            // An empty original surface selection means all trimmed faces of
+            // the base body. Never add its solid: an interior point has zero
+            // distance to a solid but need not lie on any of its surfaces.
+            if (surface && references.isEmpty() && joint.value("surfaceFaceIds").toArray().isEmpty()) {
+                for (int partId : document.bodyPartBindings.value(check.baseBodyId)) {
+                    const auto* part = cad.part(partId);
+                    if (!part) { error = QStringLiteral("Exact geometry check cannot find base CAD part %1").arg(partId); return false; }
+                    TopTools_IndexedMapOfShape faces;
+                    TopExp::MapShapes(part->shape, TopAbs_FACE, faces);
+                    for (int index = 1; index <= faces.Extent(); ++index)
+                        references.append(QJsonObject{{"partId", partId}, {"index", index}});
+                }
+            }
+            for (const auto& reference : references) {
+                const auto ref = reference.toObject();
+                const int partId = ref.value("partId").toInt(-1), index = ref.value("index").toInt(-1);
+                const auto* part = cad.part(partId);
+                // Original construction curves are global references and may
+                // be independent of the base body's physical solid.
+                if (!part || (surface && !document.bodyPartBindings.value(check.baseBodyId).contains(partId))) {
+                    error = QStringLiteral("Joint %1 exact geometry check has an invalid %2 CAD reference").arg(check.id).arg(field);
+                    return false;
+                }
+                TopTools_IndexedMapOfShape shapes;
+                TopExp::MapShapes(part->shape, kind, shapes);
+                if (index < 1 || index > shapes.Extent()) {
+                    error = QStringLiteral("Joint %1 exact geometry check has invalid %2 index %3").arg(check.id).arg(field).arg(index);
+                    return false;
+                }
+                builder.Add(check.shape, shapes(index));
+                check.selectedTopology.append(QJsonObject{{"partId", partId}, {"index", index}});
+            }
+            if (check.selectedTopology.isEmpty()) {
+                error = QStringLiteral("Joint %1 has no real CAD geometry for the exact result check").arg(check.id);
+                return false;
+            }
+            checks.push_back(std::move(check));
+        }
+        return true;
+    } catch (const Standard_Failure& failure) {
+        error = QStringLiteral("Cannot prepare exact CAD result check: %1").arg(QString::fromUtf8(failure.GetMessageString()));
+        return false;
+    }
+}
+
+gp_Trsf bodyPose(const BodyState& state, const Vec& initialCenter)
+{
+    gp_Quaternion rotation(state.rotation[1], state.rotation[2], state.rotation[3], state.rotation[0]);
+    rotation.Normalize();
+    gp_Trsf pose;
+    pose.SetRotation(rotation);
+    const auto rotatedCenter = gp_Pnt(initialCenter[0], initialCenter[1], initialCenter[2]).Transformed(pose);
+    pose.SetTranslationPart(gp_Vec(rotatedCenter, gp_Pnt(state.positionMm[0], state.positionMm[1], state.positionMm[2])));
+    return pose;
+}
+
+bool checkExactGeometryFrame(std::vector<ExactJointGeometry>& checks, const std::map<int, const BodyState*>& states,
+                             const std::map<int, Vec>& centers, std::size_t frameIndex, double seconds, QString& error)
+{
+    try {
+        for (auto& check : checks) {
+            gp_Pnt point = check.origin;
+            if (check.actionBodyId >= 0)
+                point.Transform(bodyPose(*states.at(check.actionBodyId), centers.at(check.actionBodyId)));
+            // Undo the animated base pose to compare in the initial placed CAD
+            // world frame, including moving/rotating base bodies.
+            if (check.baseBodyId >= 0)
+                point.Transform(bodyPose(*states.at(check.baseBodyId), centers.at(check.baseBodyId)).Inverted());
+            BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Shape(), check.shape);
+            if (!distance.IsDone() || distance.NbSolution() < 1 || !std::isfinite(distance.Value()) || distance.Value() < 0) {
+                error = QStringLiteral("Joint %1 exact CAD distance failed at t=%2").arg(check.id).arg(seconds, 0, 'g', 17);
+                return false;
+            }
+            const double value = distance.Value();
+            if (check.checkedFrames == 0) check.initialDistance = value;
+            else check.maxDistanceBeforeLast = std::max(check.maxDistanceBeforeLast, check.lastDistance);
+            check.lastDistance = value;
+            ++check.checkedFrames;
+            if (value > exactGeometryToleranceMm) {
+                if (check.violatingFrames == 0) {
+                    check.firstViolationFrame = int(frameIndex);
+                    check.firstViolationTime = seconds;
+                    check.firstViolationDistance = value;
+                }
+                ++check.violatingFrames;
+            }
+            if (value > check.maxDistance) {
+                check.maxDistance = value;
+                check.worstTime = seconds;
+                check.worstFrame = frameIndex;
+                check.worstPoint = point;
+                check.nearestPoint = distance.PointOnShape2(1);
+            }
+        }
+        return true;
+    } catch (const Standard_Failure& failure) {
+        error = QStringLiteral("Exact CAD distance failed at t=%1: %2").arg(seconds, 0, 'g', 17).arg(QString::fromUtf8(failure.GetMessageString()));
+        return false;
+    }
+}
+
+bool checkResult(const CadDocument& cad, const NativeMotionInput& input, const RigidResult& result, QJsonObject& report, QString& error)
 {
     const auto fail = [&](const QString& message) { error = message; return false; };
     const bool boundary = result.termination == ResultTermination::GeometryBoundary;
@@ -150,6 +310,8 @@ bool checkResult(const NativeMotionInput& input, const RigidResult& result, QJso
         fixed[body.body.id] = body.body.fixed;
         scale = std::max(scale,norm(body.properties.centerMm));
     }
+    std::vector<ExactJointGeometry> exactChecks;
+    if (!exactJointGeometry(cad, input.document, exactChecks, error)) return false;
     double maxClosure = 0, maxFixedMotion = 0, maxDriveRateError = 0, closureTime = 0;
     int closureJointId = -1;
     int checkedDriveRates = 0;
@@ -168,6 +330,9 @@ bool checkResult(const NativeMotionInput& input, const RigidResult& result, QJso
             if(fixed[state.bodyId])maxFixedMotion=std::max(maxFixedMotion,norm(sub(state.positionMm,centers[state.bodyId])));
         }
         if(states.size()!=centers.size())return fail("A result frame omits a prepared body");
+        // result.frames contains only accepted states, including the final
+        // accepted prefix when the next trial step reaches a geometry boundary.
+        if (!checkExactGeometryFrame(exactChecks, states, centers, frameIndex, frame.seconds, error)) return false;
         const auto point = [&](int id,const Vec& origin){
             if(id<0)return origin;
             const auto* state=states.at(id);return add(state->positionMm,rotate(state->rotation,sub(origin,centers.at(id))));
@@ -216,6 +381,35 @@ bool checkResult(const NativeMotionInput& input, const RigidResult& result, QJso
     report["maxJointClosureJointId"] = closureJointId;report["maxJointClosureTime"] = closureTime;
     report["maxConstantDriveRateError"]=maxDriveRateError;report["checkedDriveRates"]=checkedDriveRates;
     report["frames"]=int(result.frames.size());report["resultChannels"]=int(result.channels.size());report["lastTime"]=result.frames.back().seconds;
+    QJsonArray exactReports;
+    const ExactJointGeometry* worstGeometry = nullptr;
+    std::size_t checkedExactFrames = 0;
+    for (const auto& check : exactChecks) {
+        if (!worstGeometry || check.maxDistance > worstGeometry->maxDistance) worstGeometry = &check;
+        checkedExactFrames += check.checkedFrames;
+        exactReports.append(QJsonObject{{"jointId", check.id}, {"jointType", check.type}, {"selectedTopology", check.selectedTopology},
+            {"checkedFrames", int(check.checkedFrames)}, {"availableAcceptedFrames", int(result.frames.size())},
+            {"maxExactGeometryDistanceMm", check.maxDistance}, {"worstTime", check.worstTime}, {"worstFrameIndex", int(check.worstFrame)},
+            {"initialDistanceMm", check.initialDistance}, {"lastDistanceMm", check.lastDistance},
+            {"maxDistanceBeforeLastMm", check.maxDistanceBeforeLast}, {"violatingFrames", int(check.violatingFrames)},
+            {"firstViolationFrameIndex", check.firstViolationFrame}, {"firstViolationTime", check.firstViolationTime},
+            {"firstViolationDistanceMm", check.firstViolationDistance},
+            {"worstPointInInitialCadWorldMm", vector(check.worstPoint.X(), check.worstPoint.Y(), check.worstPoint.Z())},
+            {"nearestPointOnCadMm", vector(check.nearestPoint.X(), check.nearestPoint.Y(), check.nearestPoint.Z())}});
+    }
+    report["exactGeometryChecks"] = exactReports;
+    report["exactGeometryDistanceToleranceMm"] = exactGeometryToleranceMm;
+    report["checkedExactGeometryFrames"] = double(checkedExactFrames);
+    report["checkedAllExactGeometryFrames"] = true;
+    report["maxExactGeometryDistanceMm"] = worstGeometry ? worstGeometry->maxDistance : 0;
+    report["maxExactGeometryJointId"] = worstGeometry ? worstGeometry->id : -1;
+    report["maxExactGeometryTime"] = worstGeometry ? worstGeometry->worstTime : 0;
+    report["maxExactGeometryFrameIndex"] = worstGeometry ? int(worstGeometry->worstFrame) : -1;
+    if (worstGeometry && worstGeometry->maxDistance > exactGeometryToleranceMm)
+        return fail(QStringLiteral("Joint %1 accepted frame %2 at t=%3 is %4 mm from its actual trimmed CAD %5 (limit %6 mm)")
+            .arg(worstGeometry->id).arg(worstGeometry->worstFrame).arg(worstGeometry->worstTime, 0, 'g', 17)
+            .arg(worstGeometry->maxDistance, 0, 'g', 17).arg(worstGeometry->type == "PointOnCurve" ? "curve" : "surface")
+            .arg(exactGeometryToleranceMm));
     if(maxClosure>std::max(0.05,scale*1e-4))return fail(QStringLiteral("Joint %1 anchor/radial closure residual %2 mm at t=%3 exceeds tolerance").arg(closureJointId).arg(maxClosure).arg(closureTime));
     if(maxFixedMotion>std::max(1e-5,scale*1e-7))return fail("A fixed body changed position");
     return true;
@@ -233,6 +427,7 @@ int main(int argc,char** argv)
     parser.addOption({"cases","Directory containing supplied CAD/JSON cases.","directory"});
     parser.addOption({"report","Write a detailed JSON report after every completed case.","file"});
     parser.addOption({"filter","Only JSON paths containing this substring.","substring"});
+    parser.addOption({"cad","Use this explicitly selected CAD file for one unique JSON case (e.g. a newer CAD containing construction geometry).","file"});
     parser.addOption({"bind-only","Import and bind geometry without solving."});
     parser.process(app);
     QTextStream output(stdout),errors(stderr);
@@ -248,6 +443,9 @@ int main(int argc,char** argv)
     }
     QStringList paths=unique.values();std::sort(paths.begin(),paths.end());
     if(paths.isEmpty()){errors<<"No case JSON found\n";return 2;}
+    if(parser.isSet("cad") && (paths.size()!=1 || !QFileInfo::exists(parser.value("cad")))) {
+        errors<<"--cad requires exactly one unique JSON case and an existing CAD file\n";return 2;
+    }
     QJsonArray reports;
     QString currentCad;
     QString currentCadError;
@@ -270,9 +468,11 @@ int main(int argc,char** argv)
             const QString expected=QFileInfo(path).fileName().chopped(QStringLiteral(".motion.json").size());
             for(const auto& file:candidates)if(QFileInfo(file).completeBaseName()==expected){selected=file;break;}
             if(selected.isEmpty()&&candidates.size()==1)selected=candidates.front();
+            if(parser.isSet("cad"))selected=QFileInfo(parser.value("cad")).absoluteFilePath();
             if(selected.isEmpty()){report["status"]="cad-pair-unresolved";report["error"]="No unique same-directory CAD match";report["cadCandidates"]=QJsonArray::fromStringList(candidates);}
             else{
-                const auto cadPath=directory.absoluteFilePath(selected);report["cad"]=root.relativeFilePath(cadPath);
+                const auto cadPath=QFileInfo(selected).isAbsolute()?selected:directory.absoluteFilePath(selected);report["cad"]=root.relativeFilePath(cadPath);
+                if(parser.isSet("cad"))report["cadPairEvidence"]="Explicit CAD input; source JSON unchanged";
                 if(currentCad!=cadPath){
                     cad=std::make_unique<CadDocument>();std::vector<int> imported;
                     output<<"  CAD "<<root.relativeFilePath(cadPath)<<Qt::endl;
@@ -324,7 +524,7 @@ int main(int argc,char** argv)
                                 };
                                 const auto status=solveNativeMotion(input,result,error,callbacks);
                                 if(status!=SolveStatus::Completed){scenario["status"]="solve-failed";scenario["error"]=error;allPassed=false;}
-                                else if(!checkResult(input,result,scenario,error)){scenario["status"]="result-check-failed";scenario["error"]=error;allPassed=false;}
+                                else if(!checkResult(*cad,input,result,scenario,error)){scenario["status"]="result-check-failed";scenario["error"]=error;allPassed=false;}
                                 else if (result.termination == ResultTermination::GeometryBoundary) {
                                     scenario["status"] = "boundary-stopped"; anyBoundary = true;
                                     output << "  Boundary stop: " << result.diagnostics.join("; ") << Qt::endl;

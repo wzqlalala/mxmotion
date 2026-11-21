@@ -5,6 +5,7 @@
 
 #include <QByteArray>
 #include <QFile>
+#include <QJsonArray>
 #include <QList>
 #include <QLocale>
 #include <QSaveFile>
@@ -14,7 +15,9 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <set>
+#include <type_traits>
 #include <utility>
 
 namespace MotionOcc {
@@ -286,6 +289,65 @@ bool readNetgenMesh(const QString& path, MeshKind kind, FemMesh& mesh, QString& 
     mesh = std::move(parsed);
     error.clear();
     return true;
+}
+
+QJsonObject femMeshJson(const FemMesh& mesh)
+{
+    QJsonArray nodes, tetrahedra, surface;
+    for (const auto& p : mesh.nodes) nodes.append(QJsonArray{p[0], p[1], p[2]});
+    for (const auto& t : mesh.tetrahedra) tetrahedra.append(QJsonArray{int(t[0]), int(t[1]), int(t[2]), int(t[3])});
+    for (const auto& t : mesh.surface) surface.append(QJsonArray{int(t[0]), int(t[1]), int(t[2])});
+    return {{"nodes", nodes}, {"tetrahedra", tetrahedra}, {"surfaceTriangles", surface}};
+}
+
+bool readFemMeshJson(const QJsonObject& object, FemMesh& mesh, QString& error)
+{
+    const auto fail = [&](const QString& message) { error = message; return false; };
+    const auto points = object.value("nodes").toArray();
+    const auto tets = object.value("tetrahedra").toArray();
+    if (points.isEmpty() || tets.isEmpty()) return fail(QStringLiteral("体网格缺少节点或四面体。"));
+    FemMesh parsed;
+    parsed.nodes.reserve(points.size());
+    for (const auto& value : points) {
+        const auto a = value.toArray(); const auto p = value.toObject();
+        const std::array<double,3> point = value.isArray() && a.size()==3
+            ? std::array<double,3>{a[0].toDouble(NAN), a[1].toDouble(NAN), a[2].toDouble(NAN)}
+            : std::array<double,3>{p.value("x").toDouble(NAN), p.value("y").toDouble(NAN), p.value("z").toDouble(NAN)};
+        if (!std::all_of(point.begin(), point.end(), [](double x) { return std::isfinite(x); }))
+            return fail(QStringLiteral("体网格节点坐标无效。"));
+        parsed.nodes.push_back(point);
+    }
+    const auto cells = [&](const QJsonArray& source, auto& target) {
+        using Cell = typename std::decay_t<decltype(target)>::value_type;
+        for (const auto& value : source) {
+            const auto indices = value.toArray(); Cell cell{};
+            if (indices.size()!=int(cell.size())) return false;
+            for (std::size_t i=0; i<cell.size(); ++i) {
+                const double index=indices[int(i)].toDouble(NAN);
+                if (!std::isfinite(index) || index<0 || index>=points.size() || std::trunc(index)!=index) return false;
+                cell[i]=static_cast<std::uint32_t>(index);
+            }
+            target.push_back(cell);
+        }
+        return true;
+    };
+    if (!cells(tets, parsed.tetrahedra) || !cells(object.value("surfaceTriangles").toArray(), parsed.surface))
+        return fail(QStringLiteral("体网格单元必须使用有效的零基节点索引（tet4 / tri3）。"));
+    if (!validateCells(parsed.tetrahedra, parsed.nodes.size(), QStringLiteral("Tetrahedron"), error)
+        || !validateCells(parsed.surface, parsed.nodes.size(), QStringLiteral("Triangle"), error)) return false;
+    orientTetrahedra(parsed);
+    if (parsed.surface.empty()) {
+        struct Face { std::array<std::uint32_t,3> nodes{}; int count=0; };
+        std::map<std::array<std::uint32_t,3>, Face> faces;
+        for (const auto& t : parsed.tetrahedra)
+            for (const auto& indices : std::array<std::array<int,3>,4>{{{0,2,1}, {0,1,3}, {0,3,2}, {1,2,3}}}) {
+                const std::array<std::uint32_t,3> face{t[indices[0]], t[indices[1]], t[indices[2]]};
+                auto key=face; std::sort(key.begin(), key.end());
+                auto& entry=faces[key]; entry.nodes=face; ++entry.count;
+            }
+        for (const auto& item : faces) if (item.second.count==1) parsed.surface.push_back(item.second.nodes);
+    }
+    mesh=std::move(parsed); error.clear(); return true;
 }
 
 bool exportMesh(const QString& path, const FemMesh& mesh, QString& error)

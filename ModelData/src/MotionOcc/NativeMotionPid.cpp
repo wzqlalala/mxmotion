@@ -148,6 +148,7 @@ void NativeMotionSystem::CustomEndOfStep()
     }
     const double time=GetMotionTime();
     if(projectPositions)projectAcceptedPositions();
+    if(acceptedStepSize>0)rejectNativeGeometryBoundary(*this);
     validateNativeAcceptedConstraints(*this);
     for(auto& controller:controllers)update(controller,*this,time);
 }

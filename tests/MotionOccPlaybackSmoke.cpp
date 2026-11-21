@@ -96,6 +96,37 @@ int main(int argc, char** argv)
         require(sampleRigidPlayback(input, result, 1, sample, error), "Native multi-part interpolation failed");
         require(sample.partPoses.size() == 3 && sample.partPoses.at(101) == sample.partPoses.at(109),
                 "A multi-part body lost an instance or received different transforms");
+        const auto edge=[](int part){return QJsonArray{QJsonObject{{"partId",part},{"index",1}}};};
+        QJsonArray curveJoints{
+            QJsonObject{{"id",1},{"jointType","PointOnCurve"},{"baseBodyId",0},{"occCurveEdges",edge(700)}},
+            QJsonObject{{"id",2},{"jointType","CurveOnCurve"},{"actionBodyId",0},{"baseBodyId",7},
+                {"occCurveIEdges",edge(701)},{"occCurveJEdges",edge(702)}},
+            QJsonObject{{"id",3},{"jointType","PointOnCurve"},{"baseBodyId",-1},{"occCurveEdges",edge(703)}},
+            QJsonObject{{"id",4},{"jointType","PointOnCurve"},{"baseBodyId",0},{"occCurveEdges",edge(42)}},
+            QJsonObject{{"id",5},{"jointType","PointOnCurve"},{"baseBodyId",0},{"occCurveEdges",edge(700)}}};
+        input.nativeInput->document.root={{"motionData",QJsonObject{{"joints",curveJoints}}}};
+        require(validateRigidPlayback(input,result,error) && sampleRigidPlayback(input,result,1,sample,error),
+                "Unique standalone curve references were rejected");
+        require(sample.partPoses.size()==7 && sample.partPoses.at(700)==sample.partPoses.at(101)
+                && sample.partPoses.at(701)==sample.partPoses.at(101) && sample.partPoses.at(702)==sample.partPoses.at(42),
+                "Standalone point/curve-pair references did not follow their base/action body poses");
+        near(sample.partPoses.at(700).map(QVector3D(1010,2000,3000)),
+             {float(1005+10*half),float(2010+10*half),3000},
+             "A global construction curve did not use the solver's COM-relative rotating frame");
+        near(sample.partPoses.at(42).map(QVector3D(-20,40,10)),{-20,40,10},
+             "A curve reference overwrote a CAD part's existing physical body ownership");
+        near(sample.partPoses.at(703).map(QVector3D(8,9,10)),{8,9,10},
+             "A ground-referenced construction curve must remain in world coordinates");
+        const auto acceptedCurvePoses=sample.partPoses;
+        curveJoints.append(QJsonObject{{"id",6},{"jointType","PointOnCurve"},{"baseBodyId",7},{"occCurveEdges",edge(700)}});
+        input.nativeInput->document.root={{"motionData",QJsonObject{{"joints",curveJoints}}}};
+        require(!validateRigidPlayback(input,result,error) && error.contains("唯一动画姿态")
+                && !sampleRigidPlayback(input,result,1,sample,error) && sample.partPoses==acceptedCurvePoses,
+                "An ambiguously shared standalone curve silently chose one body's animation pose");
+        curveJoints.removeLast();
+        curveJoints.append(QJsonObject{{"id",6},{"jointType","PointOnCurve"},{"baseBodyId",-1},{"occCurveEdges",edge(700)}});
+        input.nativeInput->document.root={{"motionData",QJsonObject{{"joints",curveJoints}}}};
+        require(!validateRigidPlayback(input,result,error),"A shared ground/moving curve reference was treated as unambiguous");
         PreparedBody virtualBody; virtualBody.body.id = 55; input.bodies.push_back(virtualBody);
         BodyState virtualState; virtualState.bodyId = 55;
         for (auto& frame : result.frames) frame.bodies.push_back(virtualState);
@@ -103,6 +134,14 @@ int main(int argc, char** argv)
             QJsonObject{{"id", 55}, {"geoEntityIds", QJsonArray{}}}}}}}};
         require(sampleRigidPlayback(input, result, 1, sample, error) && sample.partPoses.size() == 3,
                 "A virtual body with no CAD must not prevent other bodies from animating");
+        auto virtualData=input.nativeInput->document.root.value("motionData").toObject();
+        virtualData.insert("joints",QJsonArray{QJsonObject{{"id",8},{"jointType","PointOnCurve"},{"baseBodyId",55},{"occCurveEdges",edge(704)}}});
+        input.nativeInput->document.root.insert("motionData",virtualData);
+        for(auto& frame:result.frames)frame.bodies.back().positionMm={9,8,7};
+        require(sampleRigidPlayback(input,result,1,sample,error) && sample.partPoses.size()==4,
+                "A standalone curve could not follow a virtual reference body");
+        near(sample.partPoses.at(704).map(QVector3D(1,2,3)),{10,10,10},
+             "Virtual reference body pose was discarded before updating its independent curve");
         input.nativeInput->document.root = {{"motionData", QJsonObject{{"bodies", QJsonArray{
             QJsonObject{{"id", 55}, {"geoEntityIds", QJsonArray{901}}}}}}}};
         require(!sampleRigidPlayback(input, result, 1, sample, error),
@@ -146,7 +185,7 @@ int main(int argc, char** argv)
         require(originalPresentation.scenarios.front().curveRequests.size() == 2
                 && originalPresentation.nativeDocument->entity("scenarios", 0).value("curveRequests").toArray().size() == 2,
                 "Preparing deletion mutated the original model before physical dependency validation");
-        QTextStream(stdout) << "Playback regression passed: physical time, ID mapping, interpolation, invalid data.\n";
+        QTextStream(stdout) << "Playback regression passed: physical time, ID mapping, interpolation, independent curve frames, invalid data.\n";
         return 0;
     } catch (const std::exception& exception) {
         QTextStream(stderr) << exception.what() << '\n';

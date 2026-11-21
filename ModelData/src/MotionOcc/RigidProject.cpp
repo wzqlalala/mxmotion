@@ -406,6 +406,7 @@ RigidModel readModel(const QJsonValue& value)
             QStringLiteral("Invalid native document."));
         document->root = row.value(QStringLiteral("document")).toObject();
         document->baseDirectory = row.value(QStringLiteral("baseDirectory")).toString();
+        document->ownsTopologyCad = true;
         QString detail;
         if (!validateNativeMotionDocument(*document, detail)) fail(detail);
         for (const auto& binding : array(row.value(QStringLiteral("bindings")), kMaxParts, "bindings")) {

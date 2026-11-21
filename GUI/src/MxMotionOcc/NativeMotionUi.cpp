@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MotionTreeIcons.h"
 #include "OccViewport.h"
 #include "NativeMotionPresentation.h"
 #include "NativeTopologyBinding.h"
@@ -19,6 +20,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -31,6 +33,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSet>
 #include <QTableWidget>
 #include <QTreeWidget>
@@ -118,6 +121,10 @@ QString label(const QString& key)
         {"integratorAlpha", "积分参数 α"}, {"integratorBeta", "积分参数 β"}, {"trackedMarkerIds", "跟踪标记点编号"},
         {"material", "材料"}, {"youngModulus", "弹性模量 (MPa)"}, {"poissonRatio", "泊松比"},
         {"density", "密度 (kg/mm³)"}, {"elementSize", "单元尺寸 (mm)"}, {"modeCount", "模态数量"},
+        {"materialId", "材料"}, {"freqCutoff", "截止频率 (Hz，0 为不截断)"},
+        {"connectionRadius", "连接半径 (mm，0 为自动)"}, {"dampingType", "阻尼类型"},
+        {"modalDampingRatio", "模态阻尼比"}, {"rayleighMass", "瑞利质量系数"},
+        {"rayleighStiffness", "瑞利刚度系数"},
         {"meshFile", "四面体网格文件"}, {"attachPoints", "连接点编号"},
         {"occSurfaceFaces", "曲面绑定 (部件 / 面序号)"}, {"occCurveEdges", "曲线绑定 (部件 / 边序号)"},
         {"occCurveIEdges", "曲线 I 绑定"}, {"occCurveJEdges", "曲线 J 绑定"},
@@ -213,15 +220,19 @@ bool selectConstraintTopology(QWidget* parent, const CadDocument& cad, const Nat
     const auto body = document.entity("bodies", bodyId);
     QDialog dialog(parent); dialog.setWindowTitle(QStringLiteral("选择运动副的约束%1").arg(faces ? "面" : "边")); dialog.resize(850, 570);
     auto* layout = new QVBoxLayout(&dialog);
-    auto* help = new QLabel(QStringLiteral("%1 [%2] · %3 [%4]\n%5\n可多选同一运动体的完整约束几何。下列坐标为初始全局坐标，单位 mm。")
+    auto* help = new QLabel(QStringLiteral("%1 [%2] · %3 [%4]\n%5\n%6 下列坐标为初始全局坐标，单位 mm。")
         .arg(joint.value("name").toString()).arg(joint.value("id").toInt())
-        .arg(body.value("name").toString()).arg(bodyId).arg(reason));
+        .arg(body.value("name").toString()).arg(bodyId).arg(reason)
+        .arg(faces ? QStringLiteral("可多选该运动体的完整约束面。")
+                   : QStringLiteral("可选择实体边或独立构造曲线；曲线以所示运动体为参考，随该体运动。")));
     help->setWordWrap(true); layout->addWidget(help);
     auto* filter = new QLineEdit; filter->setPlaceholderText(QStringLiteral("筛选部件名称、边面类型或编号")); layout->addWidget(filter);
     auto* list = new QListWidget; list->setSelectionMode(QAbstractItemView::ExtendedSelection); layout->addWidget(list, 1);
     auto* problem = new QLabel; problem->setWordWrap(true); layout->addWidget(problem);
     try {
-        for (int partId : document.bodyPartBindings.value(bodyId)) {
+        QVector<int> candidates = document.bodyPartBindings.value(bodyId);
+        if (!faces) { candidates.clear(); for (const auto& part : cad.parts()) candidates.append(part.id); }
+        for (int partId : candidates) {
             const auto* part = cad.part(partId); if (!part) continue;
             TopTools_IndexedMapOfShape shapes; TopExp::MapShapes(part->shape, faces ? TopAbs_FACE : TopAbs_EDGE, shapes);
             for (int index = 1; index <= shapes.Extent(); ++index) {
@@ -272,8 +283,8 @@ bool selectConstraintTopology(QWidget* parent, const CadDocument& cad, const Nat
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
         if (list->selectedItems().isEmpty()) { problem->setText(QStringLiteral("请明确选择至少一项约束几何。")); return; }
         QJsonArray selected;
-        for (const auto* item : list->selectedItems()) selected.append(QJsonObject{
-            {"partId", item->data(Qt::UserRole).toInt()}, {"index", item->data(Qt::UserRole + 1).toInt()}});
+        for (const auto* item : list->selectedItems()) selected.append(nativeTopologyReference(cad,
+            item->data(Qt::UserRole).toInt(), item->data(Qt::UserRole + 1).toInt(), faces ? TopAbs_FACE : TopAbs_EDGE));
         selection = selected; dialog.accept();
     });
     return dialog.exec() == QDialog::Accepted;
@@ -383,7 +394,9 @@ QJsonObject templateRecord(const NativeMotionDocument& doc, const QString& colle
     } else if (collection == "autoFlexBodies") {
         merge({{"targetBodyId", body}, {"materialId", -1}, {"material", QJsonObject{{"youngModulus", 210000.0},
             {"poissonRatio", 0.3}, {"density", 7.85e-6}}}, {"elementSize", 5.0}, {"modeCount", 10},
-            {"meshFile", ""}, {"attachPoints", QJsonArray{}}});
+            {"meshFile", ""}, {"attachPoints", QJsonArray{}}, {"enabled", true}, {"connectionRadius", 0.0},
+            {"freqCutoff", 0.0}, {"dampingType", 2}, {"modalDampingRatio", 0.02},
+            {"rayleighMass", 10.0}, {"rayleighStiffness", 2e-4}});
     } else if (collection == "scenarios") {
         merge({{"endTime", 1.0}, {"stepSize", 0.001}, {"gravity", vec(0, 0, -9806.65)},
             {"usePreset", true}, {"presetMode", "FAST"}, {"solverType", "SPARSE_QR"},
@@ -555,7 +568,206 @@ QVector<int> selectedParts(const QListWidget* parts)
     return result;
 }
 
+QJsonObject collectFlexMesh(const QVector<int>& partIds, const std::map<int, FemMesh>& meshes)
+{
+    if (partIds.isEmpty()) return {};
+    FemMesh merged;
+    QJsonArray ranges;
+    for (int partId : partIds) {
+        const auto found=meshes.find(partId);
+        if (found==meshes.end() || found->second.tetrahedra.empty()) return {};
+        const auto& mesh=found->second;
+        const auto offset=std::uint32_t(merged.nodes.size());
+        ranges.append(QJsonObject{{"partId", partId}, {"firstNode", int(offset)}, {"nodeCount", int(mesh.nodes.size())},
+            {"firstTet", int(merged.tetrahedra.size())}, {"tetCount", int(mesh.tetrahedra.size())},
+            {"firstTriangle", int(merged.surface.size())}, {"triangleCount", int(mesh.surface.size())}});
+        merged.nodes.insert(merged.nodes.end(), mesh.nodes.begin(), mesh.nodes.end());
+        for (auto cell : mesh.tetrahedra) { for (auto& node : cell) node+=offset; merged.tetrahedra.push_back(cell); }
+        for (auto cell : mesh.surface) { for (auto& node : cell) node+=offset; merged.surface.push_back(cell); }
+    }
+    auto object=femMeshJson(merged);
+    object.insert("partRanges", ranges);
+    return object;
+}
+
+bool restoreFlexMesh(const QJsonObject& object, const QVector<int>& partIds, std::map<int, FemMesh>& meshes)
+{
+    FemMesh parsed; QString error;
+    if (!readFemMeshJson(object, parsed, error)) return false;
+    const auto ranges=object.value("partRanges").toArray();
+    if (ranges.isEmpty()) {
+        if (partIds.size()!=1) return false;
+        meshes[partIds.front()]=std::move(parsed); return true;
+    }
+    std::map<int, FemMesh> parts;
+    for (const auto& value : ranges) {
+        const auto range=value.toObject(); const int partId=range.value("partId").toInt(-1);
+        if (!partIds.contains(partId) || parts.count(partId)) return false;
+        const int first=range.value("firstNode").toInt(-1), count=range.value("nodeCount").toInt(-1);
+        if (first<0 || count<=0 || std::size_t(first)+std::size_t(count)>parsed.nodes.size()) return false;
+        FemMesh part; part.nodes.assign(parsed.nodes.begin()+first, parsed.nodes.begin()+first+count);
+        const auto extract = [&](const auto& source, auto& destination, const char* firstKey, const char* countKey) {
+            const int begin=range.value(firstKey).toInt(-1), size=range.value(countKey).toInt(-1);
+            if (begin<0 || size<0 || std::size_t(begin)+std::size_t(size)>source.size()) return false;
+            for (int i=0; i<size; ++i) {
+                auto cell=source[begin+i];
+                for (auto& node : cell) {
+                    if (node<std::uint32_t(first) || node>=std::uint32_t(first+count)) return false;
+                    node-=first;
+                }
+                destination.push_back(cell);
+            }
+            return true;
+        };
+        if (!extract(parsed.tetrahedra, part.tetrahedra, "firstTet", "tetCount")
+            || !extract(parsed.surface, part.surface, "firstTriangle", "triangleCount") || part.tetrahedra.empty()) return false;
+        parts.emplace(partId, std::move(part));
+    }
+    if (parts.size()!=std::size_t(partIds.size())) return false;
+    for (auto& part : parts) meshes[part.first]=std::move(part.second);
+    return true;
+}
+
+QString flexMeshSummary(const QJsonObject& mesh)
+{
+    const int nodes=mesh.value("nodes").toArray().size(), tets=mesh.value("tetrahedra").toArray().size();
+    return nodes && tets ? QStringLiteral("%1 节点 / %2 四面体；保存与求解复用此体网格。").arg(nodes).arg(tets)
+        : QStringLiteral("尚无体网格。保存后按单元尺寸自动划分并预览；已有体网格会直接复用。");
+}
+
+bool selectFlexNodes(QWidget* parent, QJsonObject& mesh, QJsonArray& selected)
+{
+    FemMesh parsed; QString error;
+    if (!readFemMeshJson(mesh, parsed, error)) return false;
+    auto nodeIds=mesh.value("nodeIds").toArray();
+    const bool mapped=nodeIds.size()==int(parsed.nodes.size());
+    if (!mapped) { nodeIds={}; for (int i=0; i<int(parsed.nodes.size()); ++i) nodeIds.append(i+1); }
+    QDialog dialog(parent); dialog.setWindowTitle(QStringLiteral("选择真实体网格的附着节点")); dialog.resize(470, 540);
+    auto* layout=new QVBoxLayout(&dialog);
+    auto* help=new QLabel(mapped || selected.isEmpty()
+        ? QStringLiteral("勾选节点作为附着接口；相邻节点自动组成同一接口。节点坐标为初始全局 mm。")
+        : QStringLiteral("原附着节点编号没有对应坐标。请在当前真实体网格上重新选择；不会按相同数字猜测旧节点。"));
+    help->setWordWrap(true); layout->addWidget(help);
+    auto* filter=new QLineEdit; filter->setPlaceholderText(QStringLiteral("筛选节点编号或坐标")); layout->addWidget(filter);
+    auto* list=new QListWidget; list->setObjectName("nativeFlexNodeList"); layout->addWidget(list, 1);
+    QSet<int> current; if (mapped) for (const auto& id : selected) current.insert(id.toInt());
+    for (int i=0; i<int(parsed.nodes.size()); ++i) {
+        const auto& p=parsed.nodes[i]; const int id=nodeIds[i].toInt();
+        auto* item=new QListWidgetItem(QStringLiteral("%1   (%2, %3, %4) mm").arg(id)
+            .arg(p[0],0,'g',9).arg(p[1],0,'g',9).arg(p[2],0,'g',9), list);
+        item->setData(Qt::UserRole, id); item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(current.contains(id) ? Qt::Checked : Qt::Unchecked);
+    }
+    QObject::connect(filter, &QLineEdit::textChanged, list, [list](const QString& text) {
+        for (int i=0; i<list->count(); ++i) list->item(i)->setHidden(!list->item(i)->text().contains(text, Qt::CaseInsensitive));
+    });
+    auto* buttons=new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec()!=QDialog::Accepted) return false;
+    selected={};
+    for (int i=0; i<list->count(); ++i) if (list->item(i)->checkState()==Qt::Checked) selected.append(list->item(i)->data(Qt::UserRole).toInt());
+    mesh.insert("nodeIds", nodeIds); return true;
+}
+
 } // namespace
+
+void MotionWindow::snapshotNativeFlexMeshes()
+{
+    if (!m_model.nativeDocument) return;
+    auto document=*m_model.nativeDocument; bool changed=false;
+    for (const auto& value : document.collection("autoFlexBodies")) {
+        auto flex=value.toObject();
+        if (!flex.value("meshFile").toString().isEmpty() || !flex.value("mesh").toObject().isEmpty()) continue;
+        const auto mesh=collectFlexMesh(document.bodyPartBindings.value(flex.value("targetBodyId").toInt(-1)), m_meshes);
+        if (mesh.isEmpty()) continue;
+        flex.insert("mesh", mesh); put(document, "autoFlexBodies", flex); changed=true;
+    }
+    if (changed) {
+        m_model.nativeDocument=std::make_shared<NativeMotionDocument>(std::move(document));
+        m_modified=true;
+    }
+}
+
+void MotionWindow::restoreNativeFlexMeshes()
+{
+    if (!m_model.nativeDocument) return;
+    const auto& document=*m_model.nativeDocument;
+    for (const auto& value : document.collection("autoFlexBodies")) {
+        const auto flex=value.toObject();
+        restoreFlexMesh(flex.value("mesh").toObject(), document.bodyPartBindings.value(flex.value("targetBodyId").toInt(-1)), m_meshes);
+    }
+}
+
+void MotionWindow::updateNativeFlexMeshForPart(int partId)
+{
+    if (!m_model.nativeDocument) return;
+    auto document=*m_model.nativeDocument; bool changed=false;
+    for (const auto& value : document.collection("autoFlexBodies")) {
+        auto flex=value.toObject();
+        const auto parts=document.bodyPartBindings.value(flex.value("targetBodyId").toInt(-1));
+        if (!parts.contains(partId) || !flex.value("meshFile").toString().isEmpty()) continue;
+        const auto old=flex.value("mesh").toObject();
+        auto mesh=collectFlexMesh(parts,m_meshes);
+        if (old.value("nodes")==mesh.value("nodes") && old.value("tetrahedra")==mesh.value("tetrahedra")) continue;
+        if (!flex.value("attachGroups").toArray().isEmpty() || !flex.value("attachPoints").toArray().isEmpty())
+            flex.insert("attachmentMeshChanged",true);
+        if (mesh.isEmpty()) flex.remove("mesh"); else flex.insert("mesh",mesh);
+        flex.remove("meshSourceFile");
+        put(document,"autoFlexBodies",flex); changed=true;
+    }
+    if (changed) {
+        m_model.nativeDocument=std::make_shared<NativeMotionDocument>(std::move(document)); m_modified=true;
+        clearResults(); updateTree();
+    }
+}
+
+void MotionWindow::ensureNativeFlexMesh(int flexId)
+{
+    if (!m_model.nativeDocument || m_jobPart>=0 || motionBusy()) return;
+    auto document=*m_model.nativeDocument;
+    auto flex=document.entity("autoFlexBodies", flexId);
+    if (flex.isEmpty()) return;
+    const auto partIds=document.bodyPartBindings.value(flex.value("targetBodyId").toInt(-1));
+    auto mesh=flex.value("mesh").toObject();
+    if (!flex.value("meshFile").toString().isEmpty()) {
+        const auto previousMesh=mesh;
+        FemMesh imported; QString error;
+        const auto path=QDir(document.baseDirectory).absoluteFilePath(flex.value("meshFile").toString());
+        if (!readNetgenMesh(path, MeshKind::Volume, imported, error)) { setNotice(error, true); return; }
+        mesh=femMeshJson(imported);
+        const bool changed=!previousMesh.isEmpty() && (previousMesh.value("nodes")!=mesh.value("nodes")
+            || previousMesh.value("tetrahedra")!=mesh.value("tetrahedra"));
+        if (changed && (!flex.value("attachGroups").toArray().isEmpty() || !flex.value("attachPoints").toArray().isEmpty()))
+            flex.insert("attachmentMeshChanged",true);
+        // Identical nodes/connectivity retain their known global-ID mapping.
+        // A first external mesh has no previous numbering to invalidate.
+        if (!changed && previousMesh.contains("nodeIds")) mesh.insert("nodeIds",previousMesh.value("nodeIds"));
+        // A successful import becomes self-contained, as does an automatically
+        // generated mesh. Keep the original filename as provenance only.
+        flex.insert("meshSourceFile", path); flex.insert("meshFile", "");
+    }
+    if (mesh.isEmpty()) {
+        if (partIds.isEmpty()) { setNotice(tr("目标体未绑定 CAD 实体，无法生成体网格。"), true); return; }
+        for (int partId : partIds) {
+            const auto existing=m_meshes.find(partId);
+            if (existing!=m_meshes.end() && !existing->second.tetrahedra.empty()) continue;
+            m_meshCompletion=[this, flexId](bool success) { if (success) ensureNativeFlexMesh(flexId); };
+            if (!beginPartMesh(partId, flex.value("elementSize").toDouble(5.0), MeshKind::Volume)) m_meshCompletion={};
+            return;
+        }
+        mesh=collectFlexMesh(partIds, m_meshes);
+    }
+    FemMesh checked; QString error;
+    if (!readFemMeshJson(mesh, checked, error)) { setNotice(error, true); return; }
+    flex.insert("mesh", mesh); put(document, "autoFlexBodies", flex);
+    if (!commitNativeDocument(std::move(document), {ModelNode::Native, flexId, "autoFlexBodies"})) return;
+    restoreNativeFlexMeshes();
+    command(Command::MeshDisplay)->setEnabled(true); command(Command::MeshDisplay)->trigger();
+    syncViewport();
+    editNativeEntity("autoFlexBodies",flexId);
+    setNotice(tr("自动柔性体已保存：%1").arg(flexMeshSummary(mesh)));
+}
 
 void MotionWindow::createNativeCommands()
 {
@@ -569,6 +781,7 @@ void MotionWindow::createNativeCommands()
     });
     add(Command::ExportMotionJson, tr("导出运动 JSON"), "movingBody.png", [this] {
         if (!ensureNativeModel()) return;
+        snapshotNativeFlexMeshes();
         for (const auto& scenario : m_model.scenarios) syncNativeScenarioCurves(m_model, scenario.id);
         auto path = QFileDialog::getSaveFileName(this, tr("导出运动数据"), "model.motion.json", tr("Motion 运动数据 (*.motion.json)"));
         if (path.isEmpty()) return;
@@ -707,6 +920,8 @@ bool MotionWindow::importMotionJson(const QString& path, bool interactiveBinding
     imported.nativeDocument = std::make_shared<NativeMotionDocument>(std::move(document));
     syncNativeMotionModel(imported); // A new source must not inherit old scenario requests with the same ID.
     commitRigid(std::move(imported), {});
+    restoreNativeFlexMeshes();
+    syncViewport();
     setNotice(tr("已导入 %1：%2 个运动体、%3 个运动副。几何绑定已核对，可选择求解方案运行。")
         .arg(QFileInfo(path).fileName()).arg(bodies).arg(joints)); return true;
 }
@@ -723,6 +938,7 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
         for (const auto& value : m_model.nativeDocument->collection(it.key())) {
             const auto row = value.toObject(); const int id = row.value("id").toInt();
             auto* item = new QTreeWidgetItem(group, {row.value("name").toString()});
+            item->setIcon(0, TreeIcons::entity(it.key(), row));
             item->setToolTip(0, label(it.key()) + QStringLiteral(" [%1]").arg(id));
             item->setData(0, Qt::UserRole, id); item->setData(0, Qt::UserRole + 1, int(ModelNode::Native)); item->setData(0, Qt::UserRole + 2, it.key());
             if (m_selectionNode.kind == ModelNode::Native && m_selectionNode.id == id && m_selectionNode.collection == it.key()) m_tree->setCurrentItem(item);
@@ -731,10 +947,13 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
     }
     for (const auto& scenario : m_model.scenarios) {
         auto* item = new QTreeWidgetItem(root, {scenario.name}); item->setData(0, Qt::UserRole, scenario.id);
+        item->setIcon(0, TreeIcons::item("scenarios"));
         item->setData(0, Qt::UserRole + 1, int(ModelNode::Scenario)); item->setExpanded(true);
         if (m_selectionNode.kind == ModelNode::Scenario && m_selectionNode.id == scenario.id) m_tree->setCurrentItem(item);
         for (const auto& child : {std::pair{tr("动画"), ModelNode::Animation}, {tr("结果导出"), ModelNode::Export}, {tr("运动曲线"), ModelNode::Curves}}) {
             auto* leaf = new QTreeWidgetItem(item, {child.first}); leaf->setData(0, Qt::UserRole, scenario.id);
+            leaf->setIcon(0, TreeIcons::item(child.second == ModelNode::Animation ? "animation" :
+                child.second == ModelNode::Curves ? "curves" : "export"));
             leaf->setData(0, Qt::UserRole + 1, int(child.second)); leaf->setDisabled(!m_results.count(scenario.id));
         }
     }
@@ -760,6 +979,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     if (motionBusy() || m_jobPart >= 0 || !m_model.nativeDocument) return;
     auto document = *m_model.nativeDocument;
     QJsonObject row = document.entity(collection, id);
+    const bool creating=row.isEmpty();
     QString type = requestedType;
     if (row.isEmpty()) {
         QStringList types;
@@ -789,8 +1009,36 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     for (const auto& key : {QStringLiteral("friction"), QStringLiteral("limit"), QStringLiteral("occSurfaceFaces"),
             QStringLiteral("occCurveEdges"), QStringLiteral("occCurveIEdges"), QStringLiteral("occCurveJEdges")})
         if (!row.contains(key) && defaults.contains(key)) row.insert(key, defaults.value(key));
-    const bool missingMaterial = collection == "autoFlexBodies" && !row.contains("material");
-    if (missingMaterial) row.insert("material", defaults.value("material"));
+    const bool autoFlex=collection=="autoFlexBodies";
+    QStringList missingFlexMaterialProperties;
+    const bool missingMaterial=autoFlex && row.value("material").toObject().isEmpty()
+        && document.entity("materials", row.value("materialId").toInt(-1)).isEmpty();
+    if (autoFlex) {
+        for (const auto& key : {"enabled", "elementSize", "modeCount", "meshFile", "attachPoints", "connectionRadius",
+                "freqCutoff", "dampingType", "modalDampingRatio", "rayleighMass", "rayleighStiffness"})
+            if (!row.contains(key)) row.insert(key, defaults.value(key));
+        auto material=row.value("material").toObject();
+        int materialId=row.value("materialId").toInt(-1);
+        const auto referenced=document.entity("materials", materialId);
+        if (creating && !document.collection("materials").isEmpty()) material={};
+        if (material.isEmpty()) material=referenced;
+        if (material.isEmpty() && !document.collection("materials").isEmpty()) {
+            material=document.collection("materials").first().toObject(); materialId=material.value("id").toInt();
+        }
+        if (material.isEmpty()) material=defaults.value("material").toObject();
+        if (document.entity("materials", materialId).isEmpty()) {
+            materialId=nextId(document, "materials"); material.insert("id", materialId);
+            if (!material.contains("name")) material.insert("name", missingMaterial || creating ? tr("默认钢（请核对）") : tr("本体材料（可编辑）"));
+            put(document, "materials", material);
+        }
+        row.insert("materialId", materialId);
+        QJsonObject properties;
+        for (const auto& key : {"youngModulus", "poissonRatio", "density"}) {
+            if (!material.value(key).isDouble()) missingFlexMaterialProperties.append(key);
+            properties.insert(key,material.value(key).toDouble());
+        }
+        row.insert("material", properties);
+    }
     if (collection == "bodies" && !row.contains("inertiaConvention")) row.insert("inertiaConvention", "auto");
     auto* panel = new QWidget; panel->setObjectName("nativeEditor_" + collection);
     auto* form = new QFormLayout(panel); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -803,8 +1051,8 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     }
     if (collection == "autoFlexBodies") {
         auto* help = new QLabel(missingMaterial
-            ? tr("原运动数据未包含材料参数。下面预填标准钢参数，请按实际材料核对后保存；留空网格文件时会由几何生成四面体网格。")
-            : tr("模态求解使用下列材料参数。留空网格文件时会由几何生成四面体网格。"));
+            ? tr("原运动数据未包含所引用的材料参数。请核对下面选中的材料与 E / ν / ρ 后保存；没有材料库时显示默认钢参数。保存后生成并显示真实体网格，已有体网格直接复用。")
+            : tr("材料参数写回所选材料。保存后生成并显示真实体网格，已有体网格直接复用；附着节点留空时按连接此体的运动副自动分组。"));
         help->setWordWrap(true); form->addRow(help);
     }
     if (collection == "softStops" || collection == "tensionCables") {
@@ -816,11 +1064,43 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     QListWidget* parts = nullptr;
     if (collection == "bodies") { parts = partList(m_document, document, id); form->addRow(tr("绑定几何 (可多选)"), parts); }
     QMap<QString, ReadValue> fields;
+    QComboBox* materialChoice=nullptr;
+    auto flexMesh=std::make_shared<QJsonObject>(row.value("mesh").toObject());
+    auto flexGroups=std::make_shared<QJsonArray>(row.value("attachGroups").toArray());
+    auto flexPositions=std::make_shared<QJsonArray>(row.value("attachPointPositions").toArray());
+    auto attachmentMeshChanged=std::make_shared<bool>(row.value("attachmentMeshChanged").toBool());
+    if (autoFlex) {
+        if (flexMesh->isEmpty() && row.value("meshFile").toString().isEmpty())
+            *flexMesh=collectFlexMesh(document.bodyPartBindings.value(row.value("targetBodyId").toInt(-1)), m_meshes);
+        materialChoice=new QComboBox; materialChoice->setObjectName("native_materialId");
+        for (const auto& value : document.collection("materials")) {
+            const auto material=value.toObject(); materialChoice->addItem(material.value("name").toString()+QStringLiteral(" [%1]").arg(material.value("id").toInt()), material.value("id").toInt());
+        }
+        materialChoice->setCurrentIndex(materialChoice->findData(row.value("materialId").toInt()));
+        form->addRow(tr("材料"), materialChoice);
+        fields.insert("materialId", [materialChoice] { return materialChoice->currentData().toInt(); });
+        fields.insert("mesh", [flexMesh] { return *flexMesh; });
+        fields.insert("attachGroups", [flexGroups] { return *flexGroups; });
+        fields.insert("attachPointPositions", [flexPositions] { return *flexPositions; });
+        fields.insert("attachmentMeshChanged", [attachmentMeshChanged] { return *attachmentMeshChanged; });
+        auto* meshState=new QLabel(flexMeshSummary(*flexMesh)); meshState->setObjectName("nativeFlexMeshStatus"); meshState->setWordWrap(true);
+        meshState->setMinimumWidth(160); // Let WrapLongRows put the summary below its label in a narrow dock.
+        form->addRow(tr("体网格"), meshState);
+    }
     const QStringList hidden{"id", "isUserRename", "geoEntityIds", "geoEntityNames", "currentCurveRequest", "curveNode", "curveRequests",
         "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds"};
     if (row.contains("name")) fields.insert("name", addField(form, "name", row.value("name"), document, collection));
     for (auto it = row.begin(); it != row.end(); ++it) {
         if (it.key() == "name" || hidden.contains(it.key())) continue;
+        if (autoFlex && QStringList{"mesh", "materialId", "meshSourceFile", "attachGroups", "attachPointPositions", "attachmentMeshChanged", "meshType", "minElementSize", "curvatureRefinement",
+                "solverType", "freqLower", "freqUpper", "rigidBodyModeFilter", "connectionType", "interfaceDofs",
+                "outputModeShapes", "outputStressStrain", "outputFormat"}.contains(it.key())) continue;
+        if (autoFlex && it.key()=="dampingType") {
+            auto* damping=new QComboBox; damping->setObjectName("native_dampingType");
+            damping->addItem(tr("无阻尼"), 0); damping->addItem(tr("模态阻尼比"), 1); damping->addItem(tr("瑞利阻尼"), 2);
+            damping->setCurrentIndex(damping->findData(it.value().toInt(2))); form->addRow(label(it.key()), damping);
+            fields.insert(it.key(), [damping] { return damping->currentData().toInt(); }); continue;
+        }
         if (collection == "joints" && isTopologyField(it.key())) {
             const auto field = it.key(); const bool faces = field == "occSurfaceFaces";
             auto selection = std::make_shared<QJsonArray>(it.value().toArray());
@@ -835,6 +1115,50 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             fields.insert(field, [selection] { return *selection; });
         } else fields.insert(it.key(), addField(form, it.key(), it.value(), document, collection));
     }
+    if (autoFlex) {
+        for (const auto& key : missingFlexMaterialProperties)
+            if (auto* input=panel->findChild<QLineEdit*>("native_"+key)) { input->clear(); input->setPlaceholderText(tr("必填材料参数")); }
+        auto* attachState=new QLabel(*attachmentMeshChanged ? tr("体网格或目标几何已经改变。旧节点编号尚未重新映射，请重新选择附着节点或明确改为自动附着后求解。")
+            : !flexGroups->isEmpty() ? tr("已读取 %1 个显式附着组；重新选择节点将替换这些组。").arg(flexGroups->size())
+            : !flexPositions->isEmpty() ? tr("已读取 %1 个附着位置；重新选择节点将替换这些位置。").arg(flexPositions->size())
+            : tr("附着节点留空时自动按运动副收组；原网格编号须有对应节点坐标。"));
+        attachState->setWordWrap(true); form->addRow(attachState);
+        auto* selectNodes=new QPushButton(tr("选择附着节点…")); selectNodes->setObjectName("nativeFlexSelectNodes"); form->addRow(selectNodes);
+        auto* automatic=new QPushButton(tr("按运动副自动附着")); automatic->setObjectName("nativeFlexAutoAttach");
+        automatic->setToolTip(tr("清空手动附着节点、显式节点组和位置，改为按连接目标体的运动副自动收组。")); form->addRow(automatic);
+        const auto clearAttachments=[panel, flexGroups, flexPositions, attachState, attachmentMeshChanged] {
+            if (auto* table=panel->findChild<QTableWidget*>("native_attachPoints")) table->setRowCount(0);
+            *flexGroups={}; *flexPositions={};
+            *attachmentMeshChanged=false;
+            attachState->setText(QStringLiteral("附着节点留空时自动按运动副收组。"));
+        };
+        connect(automatic, &QPushButton::clicked, panel, clearAttachments);
+        connect(selectNodes, &QPushButton::clicked, panel, [this, panel, flexMesh, attachState, clearAttachments] {
+            if (flexMesh->isEmpty()) { setNotice(tr("请先保存生成体网格，再编辑此自动柔性体选择节点；留空时按运动副自动附着。"), true); return; }
+            auto* table=panel->findChild<QTableWidget*>("native_attachPoints"); if (!table) return;
+            QJsonArray points;
+            for (int r=0; r<table->rowCount(); ++r) if (const auto* item=table->item(r,0)) points.append(item->text().toInt());
+            if (!selectFlexNodes(this, *flexMesh, points)) return;
+            clearAttachments();
+            table->setRowCount(points.size());
+            for (int r=0; r<points.size(); ++r) table->setItem(r,0,new QTableWidgetItem(QString::number(points[r].toInt())));
+            attachState->setText(tr("已选择 %1 个真实网格节点作为附着接口。").arg(points.size()));
+        });
+        connect(materialChoice, qOverload<int>(&QComboBox::currentIndexChanged), panel, [panel, document, materialChoice] {
+            const auto material=document.entity("materials", materialChoice->currentData().toInt());
+            for (const auto& key : {"youngModulus", "poissonRatio", "density"})
+                if (auto* input=panel->findChild<QLineEdit*>(QStringLiteral("native_")+key))
+                    input->setText(material.value(key).isDouble() ? QString::number(material.value(key).toDouble(), 'g', 17) : QString{});
+        });
+        if (auto* body=panel->findChild<QComboBox*>("native_targetBodyId"))
+            connect(body, qOverload<int>(&QComboBox::currentIndexChanged), panel, [panel, document, body, flexMesh, attachState, clearAttachments, this] {
+                *flexMesh=collectFlexMesh(document.bodyPartBindings.value(body->currentData().toInt()), m_meshes);
+                panel->findChild<QLabel*>("nativeFlexMeshStatus")->setText(flexMeshSummary(*flexMesh));
+                if (auto* file=panel->findChild<QLineEdit*>("native_meshFile")) file->clear();
+                clearAttachments();
+                attachState->setText(tr("目标体已变更，请重新选择附着节点；留空将按新目标体的运动副自动附着。"));
+            });
+    }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); form->addRow(buttons);
     buttons->button(QDialogButtonBox::Ok)->setObjectName(QStringLiteral("motionApplyButton"));
     connect(buttons, &QDialogButtonBox::rejected, this, [this] { closeEditor(); updateParameters(); });
@@ -842,12 +1166,38 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         try {
             auto next = row;
             for (auto it = fields.begin(); it != fields.end(); ++it) next.insert(it.key(), it.value()());
+            if (collection=="autoFlexBodies") {
+                if (next.value("targetBodyId")!=row.value("targetBodyId")) next.remove("meshSourceFile");
+                const auto properties=next.value("material").toObject();
+                const double e=properties.value("youngModulus").toDouble(NAN), nu=properties.value("poissonRatio").toDouble(NAN), rho=properties.value("density").toDouble(NAN);
+                if (!std::isfinite(e) || !std::isfinite(nu) || !std::isfinite(rho) || e<=0 || rho<=0 || nu<=-1 || nu>=0.5) {
+                    setNotice(tr("材料必须满足 E > 0、ρ > 0、-1 < ν < 0.5；单位为 MPa、kg/mm³。"), true); return;
+                }
+                const double size=next.value("elementSize").toDouble(), modes=next.value("modeCount").toDouble();
+                if (!(size>0) || modes<1 || modes!=std::trunc(modes)) { setNotice(tr("请填写正的网格尺寸与整数模态数量。"), true); return; }
+                auto material=document.entity("materials", next.value("materialId").toInt(-1));
+                for (auto it=properties.begin(); it!=properties.end(); ++it) material.insert(it.key(), it.value());
+                put(document, "materials", material);
+                next.remove("material"); // Share the actual material object, as the original panel did.
+            }
             if (next.value("expression") != row.value("expression")) next.remove("legacyEndValue");
             put(document, collection, next);
             QString error;
+            const bool rebound=parts && selectedParts(parts)!=document.bodyPartBindings.value(id);
             if (parts && !setNativeMotionBodyBinding(m_document, document, id, selectedParts(parts), error)) { setNotice(error, true); return; }
-            commitNativeDocument(document, collection == "scenarios" ? ModelNode{ModelNode::Scenario, id}
-                : ModelNode{ModelNode::Native, id, collection});
+            if (rebound) for (const auto& value : document.collection("autoFlexBodies")) {
+                auto flex=value.toObject(); if (flex.value("targetBodyId").toInt(-1)!=id) continue;
+                flex.remove("mesh"); flex.insert("meshFile", "");
+                flex.remove("meshSourceFile");
+                if (!flex.value("attachGroups").toArray().isEmpty() || !flex.value("attachPoints").toArray().isEmpty()
+                    || !flex.value("attachPointPositions").toArray().isEmpty()) flex.insert("attachmentMeshChanged",true);
+                put(document,"autoFlexBodies",flex);
+            }
+            if (commitNativeDocument(document, collection == "scenarios" ? ModelNode{ModelNode::Scenario, id}
+                : ModelNode{ModelNode::Native, id, collection})) {
+                if (collection=="autoFlexBodies") ensureNativeFlexMesh(id);
+                else if (rebound) setNotice(tr("已更换目标体的几何绑定；关联自动柔性体将使用新几何的体网格，手动附着节点需重新确认。"));
+            }
         } catch (const std::exception& error) { setNotice(QString::fromUtf8(error.what()), true); }
     });
     // Long native records must scroll at their natural row height. Otherwise
@@ -856,6 +1206,19 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* scroll = new QScrollArea;
     scroll->setObjectName(QStringLiteral("nativeParameterScroll"));
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
+    if (autoFlex) {
+        // Keep the ordinary form-label layout, wrapping only rows that do not
+        // fit. Material/body names must not widen the complete parameter dock.
+        for (auto* layout : panel->findChildren<QFormLayout*>()) layout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        for (auto* combo : panel->findChildren<QComboBox*>()) {
+            combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            combo->setMinimumContentsLength(8); combo->setMinimumWidth(0);
+            combo->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
+        }
+        for (auto* text : panel->findChildren<QLabel*>()) {
+            text->setWordWrap(true);
+        }
+    }
     scroll->setWidget(panel); showEditor(scroll);
 }
 

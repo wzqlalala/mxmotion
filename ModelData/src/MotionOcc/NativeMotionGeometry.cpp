@@ -126,7 +126,11 @@ std::vector<TopoDS_Shape> selectedShapes(const CadDocument& cad, const NativeMot
         const int partId = ref.value("partId").toInt(-1);
         const int index = ref.value("index").toInt(-1);
         const auto* part = cad.part(partId);
-        if (!part || !bodyParts.contains(partId)) fail(QStringLiteral("%1 引用了不属于运动体 %2 的 CAD 部件。").arg(field).arg(bodyId));
+        // Original GeoEdge references are global and may point to a separate
+        // construction wire. Its world samples become local to this body below.
+        // Faces retain the original selected base-body surface semantics.
+        if (!part || (kind == TopAbs_FACE && !bodyParts.contains(partId)))
+            fail(QStringLiteral("%1 引用了不存在或不属于运动体 %2 的 CAD 部件。").arg(field).arg(bodyId));
         TopTools_IndexedMapOfShape shapes;
         TopExp::MapShapes(part->shape, kind, shapes);
         if (index < 1 || index > shapes.Extent()) fail(QStringLiteral("%1 的 OCC 拓扑索引 %2 超出范围。").arg(field).arg(index));
@@ -316,14 +320,17 @@ NativeFlexGeometry prepareFlex(const CadDocument& cad, const NativeMotionDocumen
     out.id = definition.value("id").toInt();
     out.bodyId = definition.value("targetBodyId").toInt(-1);
     out.definition = definition;
+    if (definition.value("attachmentMeshChanged").toBool())
+        fail(QStringLiteral("自动柔性体 %1 的体网格或目标几何已改变，旧附着节点编号不能直接复用。请在当前网格上重新选择节点，或明确改为按运动副自动附着。").arg(out.id));
     QJsonObject material = definition.value("material").toObject();
     if (material.isEmpty()) material = doc.entity("materials", definition.value("materialId").toInt(-1));
     if (material.isEmpty())
-        fail(QStringLiteral("自动柔性体 %1 引用的材料未随原 .motion.json 导出。请补充 material:{youngModulus,poissonRatio,density}（N/mm²、无量纲、kg/mm³）后求解。").arg(out.id));
-    out.youngModulus = material.value("youngModulus").toDouble() * 1000.0;
-    out.poissonRatio = material.value("poissonRatio").toDouble();
-    out.density = material.value("density").toDouble();
-    if (!(out.youngModulus>0) || !(out.density>0) || out.poissonRatio<=-1 || out.poissonRatio>=0.5)
+        fail(QStringLiteral("自动柔性体 %1 引用的材料未随原 .motion.json 导出。请打开该自动柔性体，选择或填写材料并保存后求解（弹性模量 MPa、泊松比、密度 kg/mm³）。").arg(out.id));
+    out.youngModulus = material.value("youngModulus").toDouble(NAN) * 1000.0;
+    out.poissonRatio = material.value("poissonRatio").toDouble(NAN);
+    out.density = material.value("density").toDouble(NAN);
+    if (!std::isfinite(out.youngModulus) || !std::isfinite(out.density) || !std::isfinite(out.poissonRatio)
+        || !(out.youngModulus>0) || !(out.density>0) || out.poissonRatio<=-1 || out.poissonRatio>=0.5)
         fail(QStringLiteral("自动柔性体 %1 的材料参数无效。").arg(out.id));
     const auto mesh = definition.value("mesh").toObject();
     if (!definition.value("meshFile").toString().isEmpty()) {
@@ -369,11 +376,11 @@ NativeFlexGeometry prepareFlex(const CadDocument& cad, const NativeMotionDocumen
     }
     const auto originalAttachments=definition.value("attachPoints").toArray();
     const auto attachmentPositions=definition.value("attachPointPositions").toArray();
-    for(const auto& value:attachmentPositions){const auto p=vector(value);out.attachPositions.insert(out.attachPositions.end(),p.begin(),p.end());}
+    if (out.attachGroups.empty()) for(const auto& value:attachmentPositions){const auto p=vector(value);out.attachPositions.insert(out.attachPositions.end(),p.begin(),p.end());}
     if(!originalAttachments.isEmpty()&&out.attachGroups.empty()&&attachmentPositions.isEmpty()){
         const auto ids=mesh.value("nodeIds").toArray();
         if(out.nodes.empty()||ids.size()!=static_cast<int>(out.nodes.size()/3))
-            fail(QStringLiteral("自动柔性体 %1 的 attachPoints 是原网格全局 ID，原文件没有对应节点坐标。请提供 mesh.nodeIds，或重新指定 attachGroups/attachPointPositions；不能忽略这些附着约束。").arg(out.id));
+            fail(QStringLiteral("自动柔性体 %1 的 attachPoints 是原网格全局 ID，原文件没有对应节点坐标。请编辑该自动柔性体，在当前体网格上重新选择附着节点，或提供原 mesh.nodeIds/节点坐标；不能忽略这些附着约束。").arg(out.id));
         std::set<int> selected;
         for(const auto& id:originalAttachments){
             int found=-1;for(int i=0;i<ids.size();++i)if(ids[i].toInt(-1)==id.toInt(-2)){found=i;break;}
@@ -385,9 +392,29 @@ NativeFlexGeometry prepareFlex(const CadDocument& cad, const NativeMotionDocumen
             const double distance=std::hypot(out.nodes[3*i]-out.nodes[3*center],out.nodes[3*i+1]-out.nodes[3*center+1],out.nodes[3*i+2]-out.nodes[3*center+2]);
             if(distance<=radius)selected.insert(i);
         }}
-        if(!selected.empty())out.attachGroups.emplace_back(selected.begin(),selected.end());
+        // The original bridge groups selected nodes by mesh connectivity. Two
+        // separate interface patches must not become one large rigid weld.
+        std::map<int, std::set<int>> neighbours;
+        for (std::size_t t=0; t+3<out.tetrahedra.size(); t+=4)
+            for (int a=0; a<4; ++a) for (int b=a+1; b<4; ++b) {
+                const int lhs=out.tetrahedra[t+a], rhs=out.tetrahedra[t+b];
+                if (selected.count(lhs) && selected.count(rhs)) {
+                    neighbours[lhs].insert(rhs); neighbours[rhs].insert(lhs);
+                }
+            }
+        while (!selected.empty()) {
+            std::vector<int> group{*selected.begin()}; selected.erase(group.front());
+            for (std::size_t i=0; i<group.size(); ++i)
+                for (int adjacent : neighbours[group[i]])
+                    if (selected.erase(adjacent)) group.push_back(adjacent);
+            std::sort(group.begin(), group.end());
+            out.attachGroups.push_back(std::move(group));
+        }
     }
-    for (const auto& value : doc.collection("joints")) {
+    // Explicit user patches/positions take precedence, exactly as in the
+    // original mMotionFlexBridge. Adding joint patches as well overconstrains
+    // a manually attached body and changes its flexible modes.
+    if (out.attachGroups.empty() && out.attachPositions.empty()) for (const auto& value : doc.collection("joints")) {
         const auto joint=value.toObject();
         if (joint.value("actionBodyId").toInt(-1)==out.bodyId || joint.value("baseBodyId").toInt(-1)==out.bodyId) {
             const auto p=vector(joint.value("origin"));

@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MotionTreeIcons.h"
 #include "OccViewport.h"
 #include "RigidProject.h"
 
@@ -282,6 +283,7 @@ void MotionWindow::createCommands()
     add(Command::GenerateMesh, tr("生成网格"), "BrowserTree/chuangjianwangge.png", [this] { beginMeshSetup(); });
     add(Command::RemoveMesh, tr("删除网格"), "BrowserTree/shanchu.png", [this] {
         m_meshes.erase(m_partId);
+        updateNativeFlexMeshForPart(m_partId);
         if (m_meshes.empty()) command(Command::ShadedEdges)->trigger();
         syncViewport();
         updateParameters();
@@ -564,6 +566,7 @@ QWidget* MotionWindow::createParameterPage()
     m_meshKind = new QComboBox(m_meshForm);
     m_meshKind->addItems({ tr("四面体体网格"), tr("三角形面网格") });
     m_meshSize = dimension(m_meshForm, 5.0);
+    m_meshSize->setObjectName(QStringLiteral("meshElementSize"));
     m_meshSize->setRange(0.0001, 100000.0);
     form->addRow(tr("划分类型"), m_meshKind);
     form->addRow(tr("单元尺寸"), m_meshSize);
@@ -573,6 +576,7 @@ QWidget* MotionWindow::createParameterPage()
     m_meshGenerateButton = new QPushButton(tr("生成"), buttons);
     m_meshGenerateButton->setObjectName(QStringLiteral("generateMeshButton"));
     m_meshCancelButton = new QPushButton(tr("取消"), buttons);
+    m_meshCancelButton->setObjectName(QStringLiteral("cancelMeshButton"));
     row->addWidget(m_meshGenerateButton);
     row->addWidget(m_meshCancelButton);
     form->addRow(buttons);
@@ -621,15 +625,20 @@ void MotionWindow::updateTree()
     for (int i = 0; i < m_tree->topLevelItemCount(); ++i) remember(m_tree->topLevelItem(i));
     m_tree->clear();
     auto* root = new QTreeWidgetItem(m_tree, { tr("多体动力学-%1").arg(m_modelNumber) });
-    root->setIcon(0, icon(QStringLiteral("BrowserTree/moxing3x.png")));
-    const QStringList groups = { tr("部件"), tr("运动体"), tr("柔性体"), tr("运动副"), tr("耦合副"), tr("驱动"),
-        tr("弹簧"), tr("力元"), tr("传感器"), tr("控制器"), tr("标记点"), tr("接触"), tr("控制输入") };
+    root->setIcon(0, TreeIcons::item("root"));
+    const std::vector<std::pair<QString, QString>> groups = {
+        {"parts", tr("部件")}, {"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
+        {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")},
+        {"springs", tr("弹簧")}, {"forceElements", tr("力元")}, {"sensors", tr("传感器")},
+        {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")},
+        {"controlInputs", tr("控制输入")}
+    };
     std::map<QString, QTreeWidgetItem*> groupItems;
-    for (const auto& name : groups) {
-        auto* group = new QTreeWidgetItem(root, { name });
-        groupItems.emplace(name, group);
-        group->setIcon(0, icon(QStringLiteral("BrowserTree/genericPart.png")));
-        if (name == groups.front()) m_partsItem = group;
+    for (const auto& entry : groups) {
+        auto* group = new QTreeWidgetItem(root, { entry.second });
+        groupItems.emplace(entry.second, group);
+        group->setIcon(0, TreeIcons::item(entry.first));
+        if (entry.first == "parts") m_partsItem = group;
     }
     std::vector<const CadPart*> sorted;
     for (const auto& part : m_document.parts()) sorted.push_back(&part);
@@ -641,7 +650,7 @@ void MotionWindow::updateTree()
         auto* item = new QTreeWidgetItem(m_partsItem, { part->name });
         item->setData(0, partRole, part->id);
         item->setData(0, nodeKindRole, int(ModelNode::Part));
-        item->setIcon(0, icon(QStringLiteral("BrowserTree/genericPart.png")));
+        item->setIcon(0, TreeIcons::item("parts"));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(0, m_hidden.count(part->id) ? Qt::Unchecked : Qt::Checked);
         if (part->id == m_partId) m_tree->setCurrentItem(item);
@@ -988,28 +997,33 @@ void MotionWindow::beginMeshSetup()
 
 void MotionWindow::beginMesh()
 {
-    if (!m_document.part(m_partId) || m_jobPart != -1) return;
+    beginPartMesh(m_partId, m_meshSize->value(), m_meshKind->currentIndex()==0 ? MeshKind::Volume : MeshKind::Surface);
+}
+
+bool MotionWindow::beginPartMesh(int partId, double elementSize, MeshKind kind)
+{
+    if (!m_document.part(partId) || m_jobPart != -1 || !(elementSize>0)) return false;
     auto dir = std::make_unique<QTemporaryDir>(QDir::temp().filePath(QStringLiteral("MxMotionMesh-XXXXXX")));
     if (!dir->isValid()) {
         setNotice(tr("无法创建网格工作目录。"), true);
-        return;
+        return false;
     }
     QString error;
-    if (!m_document.exportFile(dir->filePath(QStringLiteral("source.brep")), m_partId, error)) {
+    if (!m_document.exportFile(dir->filePath(QStringLiteral("source.brep")), partId, error)) {
         setNotice(error, true);
-        return;
+        return false;
     }
 #ifdef Q_OS_WIN
     const auto workerName = QStringLiteral("MxMotionMeshWorker.exe");
 #else
     const auto workerName = QStringLiteral("MxMotionMeshWorker");
 #endif
-    m_worker->setProgram(QDir(QApplication::applicationDirPath()).filePath(workerName));
+    m_worker->setProgram(qEnvironmentVariable("MXMOTION_MESH_WORKER", QDir(QApplication::applicationDirPath()).filePath(workerName)));
     m_worker->setWorkingDirectory(dir->path());
-    m_jobKind = m_meshKind->currentIndex() == 0 ? MeshKind::Volume : MeshKind::Surface;
+    m_jobKind = kind;
     m_worker->setArguments({ m_jobKind == MeshKind::Volume ? "volume" : "surface",
-        "source.brep", "result.vol", QString::number(m_meshSize->value(), 'g', 16) });
-    m_jobPart = m_partId;
+        "source.brep", "result.vol", QString::number(elementSize, 'g', 16) });
+    m_jobPart = partId;
     m_jobError.clear();
     m_jobDir = std::move(dir);
     m_progress->show();
@@ -1017,6 +1031,7 @@ void MotionWindow::beginMesh()
     setNotice(tr("正在划分网格…"));
     m_meshTimeout->start(120000);
     m_worker->start();
+    return true;
 }
 
 void MotionWindow::endMesh(int exitCode, const QString& processError)
@@ -1028,6 +1043,7 @@ void MotionWindow::endMesh(int exitCode, const QString& processError)
     if (!log.isEmpty()) m_output->appendPlainText(log.right(10000));
     QString message = m_jobError.isEmpty() ? processError : m_jobError;
     FemMesh mesh;
+    bool meshUpdated=false;
     if (message.isEmpty() && exitCode == 0) {
         if (!m_jobDir) message = tr("网格工作目录已消失。");
         else if (readNetgenMesh(m_jobDir->filePath(QStringLiteral("result.vol")), m_jobKind, mesh, message)) {
@@ -1035,6 +1051,7 @@ void MotionWindow::endMesh(int exitCode, const QString& processError)
             const auto faces = qulonglong(mesh.surface.size());
             const auto tets = qulonglong(mesh.tetrahedra.size());
             m_meshes[part] = std::move(mesh);
+            meshUpdated=true;
             command(Command::MeshDisplay)->setEnabled(true);
             command(Command::MeshDisplay)->trigger();
             syncViewport();
@@ -1046,10 +1063,14 @@ void MotionWindow::endMesh(int exitCode, const QString& processError)
     }
     m_jobDir.reset();
     m_jobPart = -1;
+    if (meshUpdated) updateNativeFlexMeshForPart(part);
     m_progress->hide();
     updateParameters();
     updateActions();
     if (!message.isEmpty()) setNotice(message, true);
+    auto completed=std::move(m_meshCompletion);
+    m_meshCompletion={};
+    if (completed) completed(message.isEmpty());
 }
 
 void MotionWindow::cancelMesh()

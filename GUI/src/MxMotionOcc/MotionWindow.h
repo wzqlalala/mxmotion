@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QMainWindow>
 #include <atomic>
+#include <functional>
 #include <thread>
 #include <map>
 #include <memory>
@@ -104,6 +105,7 @@ private:
     bool confirmReplace();
     void beginMeshSetup();
     void beginMesh();
+    bool beginPartMesh(int partId, double elementSize, MeshKind kind);
     void endMesh(int exitCode, const QString& processError = {});
     void cancelMesh();
     void saveMesh();
@@ -144,6 +146,10 @@ private:
     void batchNativeBodies();
     bool commitNativeDocument(NativeMotionDocument document, ModelNode selection);
     bool resolveNativeBindings(NativeMotionDocument& document, bool interactive);
+    void ensureNativeFlexMesh(int flexId);
+    void snapshotNativeFlexMeshes();
+    void updateNativeFlexMeshForPart(int partId);
+    void restoreNativeFlexMeshes();
 
     struct RigidRun {
         RigidInput input;
@@ -221,6 +227,7 @@ private:
     int m_jobPart = -1;
     MeshKind m_jobKind = MeshKind::Volume;
     QString m_jobError;
+    std::function<void(bool)> m_meshCompletion;
 };
 
 QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent);

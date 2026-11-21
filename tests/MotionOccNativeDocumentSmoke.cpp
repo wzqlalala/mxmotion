@@ -8,6 +8,7 @@
 #include <GProp_GProps.hxx>
 #include <GProp_PrincipalProps.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopLoc_Location.hxx>
 #include <STEPCAFControl_Writer.hxx>
 #include <TDocStd_Document.hxx>
 #include <TDataStd_Name.hxx>
@@ -25,6 +26,7 @@
 #include <QTextStream>
 
 #include <functional>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -104,6 +106,129 @@ void change(NativeMotionDocument& doc, const QString& collection, const std::fun
     records[0] = record;
     data[collection] = records;
     doc.root["motionData"] = data;
+}
+
+void sourceFrameBindings(const QTemporaryDir& temp)
+{
+    CadDocument definitions;
+    QString error;
+    int id;
+    require(definitions.addPrimitive(Primitive::Box, 10, 20, 30, id, error), error);
+    require(definitions.addPrimitive(Primitive::Box, 7, 11, 13, id, error), error);
+    require(definitions.addPrimitive(Primitive::Box, 3, 9, 14, id, error), error);
+    const auto importPlaced = [&](const QString& name, const std::vector<int>& order, CadDocument& placed) {
+        Handle(TDocStd_Document) doc = new TDocStd_Document("BinXCAF");
+        const auto tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+        BRep_Builder builder;
+        TopoDS_Compound empty;
+        builder.MakeCompound(empty);
+        const auto assembly = tool->NewShape();
+        tool->SetShape(assembly, empty);
+        std::vector<TDF_Label> labels;
+        for (const auto& part : definitions.parts()) labels.push_back(tool->AddShape(part.shape, Standard_False));
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            gp_Trsf placement;
+            placement.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0.37 + i * 0.21);
+            placement.SetTranslationPart(gp_Vec(80.0 + i * 90.0, -170.0 - i * 30.0, 25.0 + i * 11.0));
+            const auto instance = tool->AddComponent(assembly, labels.at(order[i]), TopLoc_Location(placement));
+            TDataStd_Name::Set(instance, QStringLiteral("Occurrence %1").arg(i).toUtf8().constData());
+        }
+        // Avoid exporting unused free definitions in the duplicate-instance case.
+        for (std::size_t i = 0; i < labels.size(); ++i)
+            if (std::find(order.begin(), order.end(), int(i)) == order.end()) tool->RemoveShape(labels[i]);
+        tool->UpdateAssemblies();
+        STEPCAFControl_Writer writer;
+        const auto path = temp.filePath(name + ".step");
+        require(writer.Transfer(doc, STEPControl_AsIs) && writer.Write(path.toUtf8().constData()) == IFSelect_RetDone,
+            "Cannot write placed STEP binding fixture");
+        std::vector<int> imported;
+        const bool importedOk = placed.importFile(path, imported, error);
+        require(importedOk, "Cannot import placed STEP binding fixture: " + error);
+        QStringList importedNames;
+        for (const auto& part : placed.parts()) importedNames.append(part.sourceName);
+        require(imported.size() == order.size(), QStringLiteral("Placed STEP fixture imported %1 parts, expected %2: %3")
+            .arg(imported.size()).arg(order.size()).arg(importedNames.join(", ")));
+    };
+
+    CadDocument placed;
+    importPlaced("local-mass-frames", {2, 0, 1}, placed);
+    NativeMotionDocument source;
+    QJsonArray records;
+    for (int i = 0; i < 3; ++i) {
+        auto record = body(60 + i, QJsonArray{900 - i * 103}, definitions.parts()[i]);
+        record["isCustomMassProps"] = false;
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(definitions.parts()[i].shape, props);
+        double p1, p2, p3;
+        props.PrincipalProperties().Moments(p1, p2, p3);
+        const double scale = record.value("mass").toDouble() / props.Mass();
+        record["inertia"] = QJsonArray{p1 * scale, p2 * scale, p3 * scale, 0, 0, 0};
+        records.append(record);
+    }
+    source.root = {{"formatVersion", 1}, {"motionData", QJsonObject{{"bodies", records}}}};
+    const auto originalRoot = source.root;
+    QVector<NativeMotionBindingIssue> issues;
+    QMap<int, QString> evidence;
+    require(autoBindNativeMotionBodies(placed, source, issues, &evidence) && source.root == originalRoot,
+        "STEP definition-local automatic mass properties could not bind without changing the source");
+    const int originalDefinition[] = {2, 0, 1};
+    for (int i = 0; i < 3; ++i) {
+        const CadPart* part = nullptr;
+        for (const auto& candidate : placed.parts())
+            if (candidate.sourceName == QStringLiteral("Occurrence %1").arg(i)) part = &candidate;
+        require(part && source.bodyPartBindings.value(60 + originalDefinition[i]) == QVector<int>{part->id},
+            "Local-frame binding inferred identity from source IDs or CAD enumeration");
+        require(evidence.value(60 + originalDefinition[i]).contains(QStringLiteral("原始局部质心"))
+            && evidence.value(60 + originalDefinition[i]).contains(QStringLiteral("偏差")),
+            "Local-frame binding did not disclose its CAD/world centroid difference");
+    }
+    const auto sourcePath = temp.filePath("local-mass-frames.motion.json");
+    require(writeNativeMotionDocument(sourcePath, source, error), error);
+    NativeMotionDocument reread;
+    require(readNativeMotionDocument(sourcePath, reread, error) && reread.root == originalRoot,
+        "Binding silently transformed saved local COM or inertia values");
+
+    const auto rejectLocal = [&](const std::function<void(QJsonObject&)>& edit, const QString& why) {
+        NativeMotionDocument invalid;
+        invalid.root = originalRoot;
+        change(invalid, "bodies", edit);
+        require(!autoBindNativeMotionBodies(placed, invalid, issues) && !invalid.bodyPartBindings.contains(60), why);
+    };
+    rejectLocal([](auto& record) { record["isCustomMassProps"] = true; },
+        "A deliberately custom COM was reinterpreted as an automatic local frame");
+    rejectLocal([](auto& record) { record["centerOfMass"] = vector(5.1, 10, 15); },
+        "A nonmatching local COM was bound from inertia alone");
+    rejectLocal([](auto& record) {
+        auto values = record.value("inertia").toArray(); values[1] = values[1].toDouble() * 1.01; record["inertia"] = values;
+    }, "Incorrect principal inertia was accepted by the local-frame fallback");
+    rejectLocal([](auto& record) { record["inertia"] = QJsonArray{0, 0, 0, 0, 0, 0}; },
+        "Local-frame binding accepted an absent inertia fingerprint");
+
+    NativeMotionDocument world;
+    auto worldBody = body(80, {771}, placed.parts()[0]);
+    worldBody["isCustomMassProps"] = false;
+    world.root = {{"formatVersion", 1}, {"motionData", QJsonObject{{"bodies", QJsonArray{worldBody}}}}};
+    require(autoBindNativeMotionBodies(placed, world, issues, &evidence)
+        && world.bodyPartBindings.value(80) == QVector<int>{placed.parts()[0].id}
+        && !evidence.value(80).contains(QStringLiteral("原始局部质心")),
+        "A valid world-frame COM lost precedence to local-frame matching");
+
+    CadDocument repeated;
+    importPlaced("repeated-local-mass-frames", {0, 0}, repeated);
+    NativeMotionDocument ambiguous;
+    ambiguous.root = {{"formatVersion", 1}, {"motionData", QJsonObject{{"bodies", QJsonArray{records.first()}}}}};
+    require(!autoBindNativeMotionBodies(repeated, ambiguous, issues) && ambiguous.bodyPartBindings.isEmpty()
+        && issues.size() == 1 && issues.front().candidatePartIds.size() == 2,
+        "Repeated STEP definitions with identical local signatures were bound by occurrence order");
+
+    // The body pass may precede topology re-identification after CAD reimport.
+    auto withStaleTopology = source;
+    auto data = withStaleTopology.root.value("motionData").toObject();
+    data["joints"] = QJsonArray{QJsonObject{{"id", 5}, {"jointType", "PointOnCurve"}, {"baseBodyId", 60},
+        {"occCurveEdges", QJsonArray{QJsonObject{{"partId", 99999}, {"index", 88888}}}}}};
+    withStaleTopology.root["motionData"] = data;
+    require(autoBindNativeMotionBodies(placed, withStaleTopology, issues),
+        "Body binding prematurely rejected topology references awaiting their separate rebind pass");
 }
 
 } // namespace
@@ -218,9 +343,9 @@ int main(int argc, char** argv)
             record["occCurveEdges"] = QJsonArray{QJsonObject{{"partId", second}, {"index", 1}}};
         });
         require(validateNativeMotionBindings(cad, topology, error), "Valid explicit OCC owner/index rejected: " + error);
-        auto wrongOwner = topology;
-        change(wrongOwner, "joints", [](auto& record) { record["baseBodyId"] = 0; });
-        require(!validateNativeMotionBindings(cad, wrongOwner, error), "Changing a constraint's base body retained a stale geometry reference");
+        auto globalCurve = topology;
+        change(globalCurve, "joints", [](auto& record) { record["baseBodyId"] = 0; });
+        require(validateNativeMotionBindings(cad, globalCurve, error), "Original global GeoEdge reference was restricted to physical body parts");
         auto wrongIndex = topology;
         change(wrongIndex, "joints", [&](auto& record) {
             record["occCurveEdges"] = QJsonArray{QJsonObject{{"partId", second}, {"index", 999999}}};
@@ -232,6 +357,8 @@ int main(int argc, char** argv)
             record["occSurfaceFaces"] = QJsonArray{QJsonObject{{"partId", second}, {"index", 1}}};
         });
         require(validateNativeMotionBindings(cad, surfaceSelection, error), "Valid explicit OCC face rejected: " + error);
+        change(surfaceSelection, "joints", [](auto& record) { record["baseBodyId"] = 0; });
+        require(!validateNativeMotionBindings(cad, surfaceSelection, error), "Selected surface escaped its original base-body face set");
 
         // Legacy files stored sorted principal moments, not the global tensor
         // diagonal. Geometry matching must be invariant to that representation.
@@ -388,6 +515,8 @@ int main(int argc, char** argv)
         require(setNativeMotionBodyBinding(ambiguousCad, ambiguous, 100, {duplicateB}, error), error);
         require(autoBindNativeMotionBodies(ambiguousCad, ambiguous, issues) && ambiguous.bodyPartBindings.value(100) == QVector<int>{duplicateB},
                 "Automatic binding overwrote the user's explicit part selection");
+
+        sourceFrameBindings(temp);
 
         int imported = 0;
         if (app.arguments().size() > 1) {

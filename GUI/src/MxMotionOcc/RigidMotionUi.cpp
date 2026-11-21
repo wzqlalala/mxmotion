@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MotionTreeIcons.h"
 #include "OccViewport.h"
 #include "RigidPlot.h"
 #include "RigidProject.h"
@@ -352,24 +353,25 @@ void MotionWindow::updateRigidActions()
 void MotionWindow::appendRigidNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups)
 {
     if (m_model.nativeDocument) { appendNativeNodes(root, groups); return; }
-    auto insert = [this](QTreeWidgetItem* parent, const QString& label, ModelNode::Kind kind, int id, const char* image) {
+    auto insert = [this](QTreeWidgetItem* parent, const QString& label, ModelNode::Kind kind, int id, const QIcon& image) {
         auto* item = new QTreeWidgetItem(parent, {label});
-        item->setIcon(0, motionIcon(image));
+        item->setIcon(0, image);
         item->setData(0, idRole, id);
         item->setData(0, kindRole, int(kind));
         parent->setExpanded(true);
         if (m_selectionNode.kind == kind && m_selectionNode.id == id) m_tree->setCurrentItem(item);
         return item;
     };
-    for (const auto& b : m_model.bodies) insert(groups.at(tr("运动体")), b.name, ModelNode::Body, b.id, "movingBody.png");
+    for (const auto& b : m_model.bodies) insert(groups.at(tr("运动体")), b.name, ModelNode::Body, b.id, TreeIcons::body(b.fixed));
     for (const auto& j : m_model.joints) insert(groups.at(tr("运动副")), j.name, ModelNode::Joint, j.id,
-        j.kind == JointKind::Revolute ? "joint_revolute.png" : j.kind == JointKind::Prismatic ? "joint_prismatic.png" : "joint_fixed.png");
-    for (const auto& d : m_model.drives) insert(groups.at(tr("驱动")), d.name, ModelNode::Drive, d.id, "drive.png");
+        TreeIcons::joint(j.kind == JointKind::Revolute ? "Revolute" : j.kind == JointKind::Prismatic ? "Translational" : "Fixed"));
+    for (const auto& d : m_model.drives) insert(groups.at(tr("驱动")), d.name, ModelNode::Drive, d.id, motionIcon("drive.png"));
     for (const auto& sc : m_model.scenarios) {
-        auto* item = insert(root, sc.name, ModelNode::Scenario, sc.id, "solve.png");
+        auto* item = insert(root, sc.name, ModelNode::Scenario, sc.id, TreeIcons::item("scenarios"));
         const bool ready = m_results.count(sc.id) != 0;
         for (const auto& x : {std::pair{tr("动画"), ModelNode::Animation}, {tr("结果导出"), ModelNode::Export}, {tr("运动曲线"), ModelNode::Curves}}) {
-            auto* child = insert(item, x.first, x.second, sc.id, "solve.png");
+            auto* child = insert(item, x.first, x.second, sc.id, TreeIcons::item(
+                x.second == ModelNode::Animation ? "animation" : x.second == ModelNode::Curves ? "curves" : "export"));
             if (!ready) child->setDisabled(true);
         }
     }
@@ -687,6 +689,7 @@ void MotionWindow::clearResults()
 void MotionWindow::startRigidSolve(int scenarioId)
 {
     if (motionBusy() || m_jobPart >= 0) return;
+    snapshotNativeFlexMeshes();
     auto run = std::make_shared<RigidRun>();
     QString error;
     if (!prepareRigidModel(m_document, m_model, scenarioId, run->input, error)) { setNotice(error, true); return; }
@@ -889,6 +892,7 @@ void MotionWindow::updatePlaybackControls()
 
 void MotionWindow::saveProject(bool choosePath)
 {
+    snapshotNativeFlexMeshes();
     QString path = m_projectPath;
     if (choosePath || path.isEmpty()) path = QFileDialog::getSaveFileName(this, tr("保存刚体项目"),
         path.isEmpty() ? QStringLiteral("model.mxmotion") : path, tr("MxMotion 刚体项目 (*.mxmotion)"));
@@ -913,6 +917,7 @@ bool MotionWindow::openRigidProject(const QString& path)
     m_document = std::move(cad);
     m_model = std::move(model);
     m_meshes.clear();
+    restoreNativeFlexMeshes();
     m_hidden.clear();
     m_meshForm->hide();
     command(Command::ShadedEdges)->trigger();

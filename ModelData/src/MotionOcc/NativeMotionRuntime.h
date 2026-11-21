@@ -11,6 +11,17 @@
 
 namespace MotionOcc {
 
+// The native engine records a completed dynamics step before checking its
+// geometric boundaries. The adapter uses its pre-record end-of-step hook to
+// reject that trial state without recording it as an accepted result.
+struct NativeGeometryBoundary {
+    QString jointId;
+    QString kind;
+    double attemptedTime = 0;
+    double distanceMm = 0;
+};
+constexpr double NativeGeometryBoundaryToleranceMm = 0.03;
+
 struct NativePidSample { double time, target, feedback, error, output; };
 struct NativePidRuntime {
     int id=-1;
@@ -42,6 +53,7 @@ public:
 };
 
 void validateNativeAcceptedConstraints(const NativeMotionSystem& system);
+void rejectNativeGeometryBoundary(const NativeMotionSystem& system);
 
 struct NativeFlexRuntime {
     int id=-1, bodyId=-1;

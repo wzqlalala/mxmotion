@@ -17,6 +17,7 @@
 #include <cmath>
 #include <map>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -497,6 +498,19 @@ void assembleInitialState(NativeMotionSystem& system)
 
 } // namespace
 
+void rejectNativeGeometryBoundary(const NativeMotionSystem& system)
+{
+    for(const auto& item:system.nativeJoints){
+        double distance=0;QString kind;
+        if(const auto joint=std::dynamic_pointer_cast<motion::MotionLinkPointOnSurface>(item.second)){
+            if(joint->IsOutOfFace()){distance=joint->GetOutOfFaceDistance();kind=QStringLiteral("点在面上");}
+        }else if(const auto joint=std::dynamic_pointer_cast<motion::MotionLinkPointSpline>(item.second)){
+            if(joint->IsOutOfCurve()){distance=joint->GetOutOfCurveDistance();kind=QStringLiteral("点在线上");}
+        }
+        if(!kind.isEmpty())throw NativeGeometryBoundary{QString::fromStdString(item.first),kind,system.GetMotionTime(),distance};
+    }
+}
+
 SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result,QString& error,const SolverCallbacks& callbacks)
 {
     try{
@@ -510,6 +524,15 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         for(const auto& joint:system.joints_map){
             bool created=false;for(const auto& link:system.Get_linklist())if(!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)&&link->GetNameString()==joint.first){created=true;system.nativeJoints.emplace(joint.first,link);break;}
             if(!created)fail(QStringLiteral("引擎没有创建运动副 %1 (%2)，已中止，避免约束被静默丢弃。").arg(QString::fromStdString(joint.first),QString::fromStdString(joint.second->type)));
+        }
+        for(const auto& item:system.nativeJoints){
+            // Match result acceptance to the geometry's 0.02 mm sampling budget
+            // plus numerical margin. The engine's default 0.5 mm would retain
+            // several visibly out-of-domain frames at small output steps.
+            if(const auto link=std::dynamic_pointer_cast<motion::MotionLinkPointOnSurface>(item.second))
+                link->SetOutOfFaceTolerance(NativeGeometryBoundaryToleranceMm);
+            if(const auto link=std::dynamic_pointer_cast<motion::MotionLinkPointSpline>(item.second))
+                link->SetOutOfCurveTolerance(NativeGeometryBoundaryToleranceMm);
         }
         assembly.configureRuntimeDirections();
         for(const auto& body:input.bodies){
@@ -549,6 +572,11 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         system.projectPositions=projectPositions;
         system.positionIterations=std::clamp(scenario.value("positionAssemblyIterations").toInt(50),1,50);
         validateNativeAcceptedConstraints(system);
+        try { rejectNativeGeometryBoundary(system); }
+        catch(const NativeGeometryBoundary& initial) {
+            fail(QStringLiteral("%1副 %2 的初始装配状态已在有限几何之外（%3 mm）；没有可保存的有效初始帧，请核对作用点和约束几何。")
+                .arg(initial.kind,initial.jointId).arg(initial.distanceMm,0,'g',10));
+        }
         system.RecordStepResults();recordNestedBodies(system);captureNativeFlex(flex,0.0);
         system.acceptedStepSize=config.step_size;
         system.acceptedEndTime=config.total_time;
@@ -558,22 +586,18 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
             recordNestedBodies(system);captureNativeFlex(flex,current);
             if(callbacks.progress)callbacks.progress(std::clamp(progress,0.0,1.0));
         });
-        system.StartSolver(config);
+        std::optional<NativeGeometryBoundary> boundary;
+        try { system.StartSolver(config); }
+        catch(const NativeGeometryBoundary& reached) { boundary=reached; }
         if(stopped||(callbacks.stopRequested&&callbacks.stopRequested())){error.clear();return SolveStatus::Stopped;}
         RigidResult next;extractNativeResults(input,system,flex,next);
         next.diagnostics=input.geometry->diagnostics;
         if(next.frames.empty())fail("引擎未生成任何有效结果帧。");
-        for(const auto& item:system.nativeJoints){
-            double distance=0;QString kind;
-            if(const auto joint=std::dynamic_pointer_cast<motion::MotionLinkPointOnSurface>(item.second)){
-                if(joint->IsOutOfFace()){distance=joint->GetOutOfFaceDistance();kind=QStringLiteral("点在面上");}
-            }else if(const auto joint=std::dynamic_pointer_cast<motion::MotionLinkPointSpline>(item.second)){
-                if(joint->IsOutOfCurve()){distance=joint->GetOutOfCurveDistance();kind=QStringLiteral("点在线上");}
-            }
-            if(kind.isEmpty())continue;
+        if(boundary){
             next.termination=ResultTermination::GeometryBoundary;
-            next.diagnostics.append(QStringLiteral("%1副 %2 的作用点已越过几何边界 %3 mm，计算在 t=%4 s 终止；已保留此前真实结果，可继续查看动画和曲线。")
-                .arg(kind,QString::fromStdString(item.first)).arg(distance,0,'g',10).arg(next.frames.back().seconds,0,'g',12));
+            next.diagnostics.append(QStringLiteral("%1副 %2 在试算 t=%3 s 时越过几何边界 %4 mm，该步未被接受；已保留截至 t=%5 s 的 %6 帧真实结果，可继续查看动画和曲线。")
+                .arg(boundary->kind,boundary->jointId).arg(boundary->attemptedTime,0,'g',12).arg(boundary->distanceMm,0,'g',10)
+                .arg(next.frames.back().seconds,0,'g',12).arg(next.frames.size()));
         }
         const double endTolerance=256*std::numeric_limits<double>::epsilon()*std::max(1.0,input.scenario.duration);
         if(next.termination==ResultTermination::EndTime&&std::abs(next.frames.back().seconds-input.scenario.duration)>endTolerance)

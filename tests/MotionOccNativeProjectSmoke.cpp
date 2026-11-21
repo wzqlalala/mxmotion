@@ -3,6 +3,19 @@
 #include "NativeMotionSolver.h"
 #include "RigidProject.h"
 
+#include <BRepGProp.hxx>
+#include <BRep_Builder.hxx>
+#include <GProp_GProps.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <TDocStd_Document.hxx>
+#include <TDataStd_Name.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopoDS_Compound.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Trsf.hxx>
+
 #include <QCoreApplication>
 #include <QFile>
 #include <QJsonDocument>
@@ -71,6 +84,68 @@ int main(int argc, char** argv)
         require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), file.errorString()); file.write(QJsonDocument(object).toJson()); file.close();
         require(!loadRigidProject(path, restored, next, error), "Dangling CAD binding was accepted");
         require(next.nativeDocument->root == native.root && restored.parts().size() == 2, "Failed project read damaged the active document");
+
+        // The legacy automatic mass exporter used definition-local COMs for
+        // some placed STEP parts. Persist the proven identity and native placed
+        // geometry while leaving those original dynamics values untouched.
+        Handle(TDocStd_Document) step = new TDocStd_Document("BinXCAF");
+        const auto tool = XCAFDoc_DocumentTool::ShapeTool(step->Main());
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        const auto assembly = tool->NewShape();
+        tool->SetShape(assembly, compound);
+        const auto definition = tool->AddShape(cad.parts().front().shape, Standard_False);
+        gp_Trsf placement;
+        placement.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0.43);
+        placement.SetTranslationPart(gp_Vec(100, 200, 300));
+        const auto instance = tool->AddComponent(assembly, definition, TopLoc_Location(placement));
+        TDataStd_Name::Set(instance, "Placed automatic body");
+        tool->UpdateAssemblies();
+        STEPCAFControl_Writer writer;
+        const auto stepPath = temporary.filePath("local-com.step");
+        require(writer.Transfer(step, STEPControl_AsIs) && writer.Write(stepPath.toUtf8().constData()) == IFSelect_RetDone,
+            "Could not write the local COM project fixture");
+        CadDocument localCad;
+        std::vector<int> imported;
+        require(localCad.importFile(stepPath, imported, error), error);
+        require(imported.size() == 1, QStringLiteral("Local COM STEP fixture imported %1 parts instead of one").arg(imported.size()));
+        auto localNative = native;
+        localNative.bodyPartBindings.clear();
+        auto localBody = body;
+        localBody["name"] = "局部质心自动运动体";
+        localBody["isCustomMassProps"] = false;
+        localBody["geoEntityIds"] = QJsonArray{301};
+        localBody["centerOfMass"] = QJsonObject{{"x", 2}, {"y", 3}, {"z", 4}};
+        localBody["inertia"] = QJsonArray{25, 20, 13, 0, 0, 0}; // mass 3, box 4 x 6 x 8.
+        auto localData = localNative.root.value("motionData").toObject();
+        localData["bodies"] = QJsonArray{localBody};
+        localNative.root["motionData"] = localData;
+        const auto localRoot = localNative.root;
+        QVector<NativeMotionBindingIssue> bindingIssues;
+        require(autoBindNativeMotionBodies(localCad, localNative, bindingIssues)
+            && localNative.bodyPartBindings.value(0) == QVector<int>{imported.front()} && localNative.root == localRoot,
+            "Local COM project fixture did not establish a lossless STEP binding");
+        RigidModel localModel;
+        localModel.nativeDocument = std::make_shared<NativeMotionDocument>(localNative);
+        syncNativeMotionModel(localModel);
+        const auto localPath = temporary.filePath("local-com.mxmotion");
+        require(saveRigidProject(localPath, localCad, localModel, error), error);
+        CadDocument localRestored;
+        RigidModel localNext;
+        require(loadRigidProject(localPath, localRestored, localNext, error), error);
+        require(localNext.nativeDocument && localNext.nativeDocument->root == localRoot
+            && localNext.nativeDocument->bodyPartBindings == localNative.bodyPartBindings,
+            "Project persistence changed local COM, inertia, mass or their proven geometry binding");
+        GProp_GProps restoredProperties;
+        BRepGProp::VolumeProperties(localRestored.parts().front().shape, restoredProperties);
+        require(restoredProperties.CentreOfMass().Distance(gp_Pnt(2, 3, 4).Transformed(placement)) < 1e-8,
+            "Saving a local-COM binding silently moved the CAD assembly");
+        localNext.nativeDocument->bodyPartBindings.clear();
+        QMap<int, QString> bindingEvidence;
+        require(autoBindNativeMotionBodies(localRestored, *localNext.nativeDocument, bindingIssues, &bindingEvidence)
+            && localNext.nativeDocument->root == localRoot && bindingEvidence.value(0).contains(QStringLiteral("原始局部质心")),
+            "Project BREP lost the native STEP placement required to re-identify a local COM");
         QTextStream(stdout) << "Native project regression passed: lossless source, multipart bindings, zero IDs, native curves, atomic failure.\n";
         return 0;
     } catch (const std::exception& error) {

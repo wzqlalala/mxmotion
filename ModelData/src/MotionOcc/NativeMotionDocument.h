@@ -21,6 +21,9 @@ struct NativeMotionDocument {
     QJsonObject root;
     QMap<int, QVector<int>> bodyPartBindings;
     QString baseDirectory;
+    // Set only when the enclosing project supplied the original CAD BReps.
+    // Bare OCC indices in a standalone JSON do not carry that identity proof.
+    bool ownsTopologyCad = false;
 
     QJsonArray collection(const QString& name) const;
     QJsonObject entity(const QString& collectionName, int id) const;

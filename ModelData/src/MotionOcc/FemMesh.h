@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QJsonObject>
 
 #include <array>
 #include <cstdint>
@@ -21,6 +22,12 @@ struct FemMesh {
 // requires tetrahedra. Netgen tetrahedral winding is normalized for VTK.
 // On failure, mesh is unchanged and error describes why.
 bool readNetgenMesh(const QString& path, MeshKind kind, FemMesh& mesh, QString& error);
+
+// The native AutoFlex JSON/project carries the same real mesh used by the
+// viewport and solver. Missing surface triangles are recovered from boundary
+// tetrahedron faces; no volume cells or node positions are invented.
+QJsonObject femMeshJson(const FemMesh& mesh);
+bool readFemMeshJson(const QJsonObject& object, FemMesh& mesh, QString& error);
 
 // Writes a legacy ASCII VTK unstructured grid, using tetrahedra if present and
 // triangles otherwise. An existing destination is left intact on failure.
