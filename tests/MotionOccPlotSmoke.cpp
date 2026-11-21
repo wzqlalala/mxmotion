@@ -214,6 +214,12 @@ int main(int argc, char** argv)
         const auto text = csv.readAll();
         require(text.count('\n') == 3 && text.contains("\"Offset, \"\"position\"\" (mm)\""), "CSV sampling or quoted headers are wrong");
         require(text.contains("0.10000000000000001,51,-2") && text.contains("0.90000000000000002,59,-18"), "CSV data differs from displayed curves");
+        const auto txtPath=temp.filePath(QStringLiteral("curves.txt"));
+        require(plot.exportCurvesTxt(txtPath,error,1),error.toUtf8().constData());
+        QFile txt(txtPath); require(txt.open(QIODevice::ReadOnly),"TXT not written");
+        const auto tabular=txt.readAll();
+        require(tabular.count('\n')==3 && tabular.contains("0.10000000000000001\t51\t-2")
+            && tabular.contains("0.90000000000000002\t59\t-18"),"TXT changed sampled values or lost final frame");
         auto* list = widget<QListWidget>(*panel, "motionCurveList");
         auto* visible = list->itemWidget(list->item(0))->findChild<QCheckBox*>();
         require(visible, "curve visibility control missing");

@@ -394,7 +394,10 @@ private:
             c.is_static_I=s.parts_map.at(c.body_I).fixed;c.is_static_J=s.parts_map.at(c.body_J).fixed;
             c.is_convex_I=o.value("useConvexHullAction").toBool();c.is_convex_J=o.value("useConvexHullBase").toBool();
             motion::utils::ApplyContactFrictionSettings(c,o.value("frictionEnabled").toBool(),o.value("staticFriction").toDouble(.3),o.value("dynamicFriction").toDouble(.3));
-            motion::utils::ApplyImpactContactSettings(c,o.value("stiffness").toDouble()*1000,o.value("materialDamping").toDouble()*1000,o.value("forceExponent").toDouble(1.5),o.value("penetrationDepth").toDouble(.0254));
+            // Original mMotionSolverThread treats an unset/zero full-damping
+            // depth as 0.0254 mm. This is a damping ramp, not a penetration cap.
+            const double depth=o.value("penetrationDepth").toDouble(.0254);
+            motion::utils::ApplyImpactContactSettings(c,o.value("stiffness").toDouble()*1000,o.value("materialDamping").toDouble()*1000,o.value("forceExponent").toDouble(1.5),depth>0?depth:.0254);
             const auto& ma=in.geometry->bodyMeshes.at(a);const auto& mb=in.geometry->bodyMeshes.at(b);
             c.nodes_I=ma.nodes;c.elems_I=ma.triangles;c.nodes_J=mb.nodes;c.elems_J=mb.triangles;c.has_nodes_I=c.has_elems_I=c.has_nodes_J=c.has_elems_J=true;s.contacts_map.emplace(c.id,c);
         }
@@ -577,18 +580,27 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
             fail(QStringLiteral("%1副 %2 的初始装配状态已在有限几何之外（%3 mm）；没有可保存的有效初始帧，请核对作用点和约束几何。")
                 .arg(initial.kind,initial.jointId).arg(initial.distanceMm,0,'g',10));
         }
-        system.RecordStepResults();recordNestedBodies(system);captureNativeFlex(flex,0.0);
+        try { captureNativeFlex(flex,0.0); }
+        catch(const NativeFlexDivergence& initial) {
+            fail(QStringLiteral("自动柔性体 %1 的初始状态无效：%2；没有可保存的有效初始帧。")
+                .arg(initial.flexId).arg(initial.reason));
+        }
+        system.RecordStepResults();recordNestedBodies(system);
         system.acceptedStepSize=config.step_size;
         system.acceptedEndTime=config.total_time;
+        system.validateFlexState=[&](double time){validateNativeFlex(flex,time);};
+        system.captureFlexState=[&](double time){captureNativeFlex(flex,time);};
         bool stopped=false;
         system.SetProgressCallback([&](double current,double,double progress){
             if(callbacks.stopRequested&&callbacks.stopRequested()){stopped=true;system.RequestStopSolve();return;}
-            recordNestedBodies(system);captureNativeFlex(flex,current);
+            recordNestedBodies(system);
             if(callbacks.progress)callbacks.progress(std::clamp(progress,0.0,1.0));
         });
         std::optional<NativeGeometryBoundary> boundary;
+        std::optional<NativeFlexDivergence> divergence;
         try { system.StartSolver(config); }
         catch(const NativeGeometryBoundary& reached) { boundary=reached; }
+        catch(const NativeFlexDivergence& rejected) { divergence=rejected; }
         if(stopped||(callbacks.stopRequested&&callbacks.stopRequested())){error.clear();return SolveStatus::Stopped;}
         RigidResult next;extractNativeResults(input,system,flex,next);
         next.diagnostics=input.geometry->diagnostics;
@@ -597,6 +609,12 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
             next.termination=ResultTermination::GeometryBoundary;
             next.diagnostics.append(QStringLiteral("%1副 %2 在试算 t=%3 s 时越过几何边界 %4 mm，该步未被接受；已保留截至 t=%5 s 的 %6 帧真实结果，可继续查看动画和曲线。")
                 .arg(boundary->kind,boundary->jointId).arg(boundary->attemptedTime,0,'g',12).arg(boundary->distanceMm,0,'g',10)
+                .arg(next.frames.back().seconds,0,'g',12).arg(next.frames.size()));
+        }
+        if(divergence){
+            next.termination=ResultTermination::FlexDivergence;
+            next.diagnostics.append(QStringLiteral("自动柔性体 %1 在试算 t=%2 s 时出现异常：%3；该步未被接受，已保留截至 t=%4 s 的 %5 帧有效结果，动画、曲线与模态数据保持同步。")
+                .arg(divergence->flexId).arg(divergence->attemptedTime,0,'g',12).arg(divergence->reason)
                 .arg(next.frames.back().seconds,0,'g',12).arg(next.frames.size()));
         }
         const double endTolerance=256*std::numeric_limits<double>::epsilon()*std::max(1.0,input.scenario.duration);

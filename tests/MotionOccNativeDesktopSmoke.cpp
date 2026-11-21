@@ -8,7 +8,11 @@
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepTools.hxx>
+#include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 
 #include <QAction>
@@ -16,6 +20,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -28,17 +33,23 @@
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QLocale>
 #include <QMenu>
+#include <QMouseEvent>
+#include <QPointer>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QProcess>
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
+#include <QSpinBox>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
@@ -299,6 +310,284 @@ void show(MotionWindow& window)
     require(waitFor([&] { return viewport->glReady(); }, 12000), "Native desktop OpenGL context did not initialize");
 }
 
+void clickViewport(OccViewport& viewport, const std::array<double,3>& position)
+{
+    const QPointF pixel=viewport.projectPoint(position);
+    require(viewport.rect().contains(pixel.toPoint()),"Geometric test target is outside the visible viewport");
+    QMouseEvent hover(QEvent::MouseMove,pixel,Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(&viewport,&hover);
+    QMouseEvent press(QEvent::MouseButtonPress,pixel,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease,pixel,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QApplication::sendEvent(&viewport,&press);QApplication::sendEvent(&viewport,&release);
+    QApplication::processEvents();
+}
+
+void escapePick(OccViewport& viewport)
+{
+    QKeyEvent escape(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);
+    QApplication::sendEvent(&viewport,&escape);QApplication::processEvents();
+    require(!viewport.isPicking(),"Esc did not end the active field picking session");
+}
+
+void selectPickMode(QWidget& editor,const QString& path,const QString& mode)
+{
+    auto* combo=widget<QComboBox>(editor,"native_pickMode_"+path);
+    const int index=combo->findData(mode);require(index>=0,"Original picker mode is missing: "+mode);
+    combo->setCurrentIndex(index);
+}
+
+void requireVector(QWidget& editor,const QString& path,const std::array<double,3>& expected)
+{
+    auto* box=widget<QComboBox>(editor,"native_pickMode_"+path)->parentWidget();
+    for(int i=0;i<3;++i){const auto value=widget<QLineEdit>(*box,QStringLiteral("native_")+QChar('x'+i))->text().toDouble();
+        require(std::isfinite(value)&&std::abs(value-expected[i])<1e-6,
+            QStringLiteral("Picker %1 axis %2: %3 != %4").arg(path).arg(i).arg(value,0,'g',17).arg(expected[i],0,'g',17));}
+}
+
+void originalPickerAndMassWorkflow(const QDir& output,const QString& cadPath,const QString& motionPath,
+                                  const std::function<void(const QString&)>& log)
+{
+    // Independent window: these edits deliberately move the joint pivot and
+    // change the mass. They must not alter the original 90-degree solve fixture.
+    MotionWindow window;show(window);
+    require(window.importCad(cadPath)&&window.importMotionJson(motionPath,false),"Picker/mass fixture import failed");
+    auto* tree=widget<QTreeWidget>(window,"mTreeView");
+    auto* viewport=widget<OccViewport>(window,"occViewport");
+    window.command(Command::Top)->trigger();QApplication::processEvents();
+    int leakedPartPicks=0;
+    QObject::connect(viewport,&OccViewport::partPicked,&window,[&](int){++leakedPartPicks;});
+    tree->setCurrentItem(node(*tree,ModelNode::Native,23,"joints"));
+    QPointer<QWidget> joint=widget<QWidget>(window,"nativeEditor_joints");
+    selectPickMode(*joint,"origin","vertex");
+    widget<QPushButton>(*joint,"native_pick_origin")->click();
+    require(viewport->isPicking(),"Joint origin field did not activate viewport picking");
+    clickViewport(*viewport,{30,5,4});
+    require(joint&&!joint->isHidden()&&leakedPartPicks==0,"Field picking leaked a part selection or closed the joint editor");
+    requireVector(*joint,"origin",{30,5,4});
+    widget<QPushButton>(*joint,"native_pick_origin")->click();
+
+    selectPickMode(*joint,"axis","twoVertices");
+    widget<QPushButton>(*joint,"native_pick_axis")->click();
+    clickViewport(*viewport,{0,5,4});clickViewport(*viewport,{30,5,4});
+    requireVector(*joint,"axis",{1,0,0});
+    escapePick(*viewport);requireVector(*joint,"axis",{0,0,1});
+    widget<QPushButton>(*joint,"native_pick_axis")->click();
+    clickViewport(*viewport,{0,5,4});clickViewport(*viewport,{30,5,4});
+    widget<QPushButton>(*joint,"native_pick_axis")->click();
+    widget<QPushButton>(*joint,"native_reverse_axis")->click();
+    requireVector(*joint,"axis",{-1,0,0});
+    require(leakedPartPicks==0,"Two-point direction selection leaked whole-part selection events");
+    widget<QPushButton>(*joint,"motionApplyButton")->click();
+
+    window.command(Command::AddMarker)->trigger();
+    auto* marker=widget<QWidget>(window,"nativeEditor_markers");
+    choose(*marker,"bodyId",0);
+    selectPickMode(*marker,"localPosition","vertex");
+    widget<QPushButton>(*marker,"native_pick_localPosition")->click();
+    clickViewport(*viewport,{30,-5,4});
+    requireVector(*marker,"localPosition",{30,-5,4});
+    widget<QPushButton>(*marker,"native_pick_localPosition")->click();
+    widget<QPushButton>(*marker,"motionApplyButton")->click();
+
+    bool sensorTypeChosen=false;QTimer sensorDialog;
+    QObject::connect(&sensorDialog,&QTimer::timeout,&window,[&]{
+        auto* dialog=qobject_cast<QInputDialog*>(QApplication::activeModalWidget());if(!dialog)return;
+        auto* combo=dialog->findChild<QComboBox*>();if(combo){combo->setCurrentIndex(0);sensorTypeChosen=true;dialog->accept();}
+    });
+    sensorDialog.start(20);window.command(Command::AddSensor)->trigger();sensorDialog.stop();
+    require(sensorTypeChosen,"Body sensor chooser did not open");
+    auto* sensor=widget<QWidget>(window,"nativeEditor_sensors");
+    choose(*sensor,"targetBodyId",0);
+    selectPickMode(*sensor,"referencePoint","vertex");
+    widget<QPushButton>(*sensor,"native_pick_referencePoint")->click();clickViewport(*viewport,{30,5,4});
+    requireVector(*sensor,"referencePoint",{30,5,4});
+    widget<QPushButton>(*sensor,"native_pick_referencePoint")->click();
+    widget<QPushButton>(*sensor,"motionApplyButton")->click();
+
+    bool forceTypeChosen=false;QTimer forceDialog;
+    QObject::connect(&forceDialog,&QTimer::timeout,&window,[&]{
+        auto* dialog=qobject_cast<QInputDialog*>(QApplication::activeModalWidget());if(!dialog)return;
+        auto* combo=dialog->findChild<QComboBox*>();if(combo){combo->setCurrentIndex(0);forceTypeChosen=true;dialog->accept();}
+    });
+    forceDialog.start(20);window.command(Command::AddVectorForce)->trigger();forceDialog.stop();
+    require(forceTypeChosen,"Vector force chooser did not open");
+    const auto applyLaw=[&](QWidget& editor,const QString& field,const QString& expression){
+        bool used=false;QTimer editorDialog;
+        QObject::connect(&editorDialog,&QTimer::timeout,&window,[&]{
+            auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if(!dialog||dialog->objectName()!="nativeFunctionEditor")return;
+            auto* modes=dialog->findChild<QComboBox*>("nativeFunctionMode");
+            modes->setCurrentIndex(1);
+            dialog->findChild<QPlainTextEdit*>("nativeFunctionExpression")->setPlainText(expression);
+            used=true;dialog->findChild<QDialogButtonBox*>("nativeFunctionButtons")->button(QDialogButtonBox::Ok)->click();
+        });
+        editorDialog.start(20);widget<QPushButton>(editor,"native_functionBuilder_"+field)->click();editorDialog.stop();
+        require(used&&widget<QLineEdit>(editor,"native_"+field)->text()==expression,
+            "Original force function builder did not apply its compiled expression to the real model field");
+    };
+    auto* force=widget<QWidget>(window,"nativeEditor_vectorForces");
+    applyLaw(*force,"expression","2*sin(2*pi*t)");
+    require(widget<QComboBox>(*force,"native_magnitudeMode")->currentData().toString()=="Expression",
+        "Vector formula editor left the solver in inactive constant-magnitude mode");
+    widget<QPushButton>(*force,"motionApplyButton")->click();
+    const auto* vectorNode=node(*tree,ModelNode::Native,-1,"vectorForces");
+    require(vectorNode,"Vector formula entity did not commit");
+    const int vectorForceId=vectorNode->data(0,Qt::UserRole).toInt();
+    window.command(Command::AddScalarForce)->trigger();
+    auto* scalar=widget<QWidget>(window,"nativeEditor_scalarForces");
+    applyLaw(*scalar,"forceFunction","2*x+v+t");
+    widget<QPushButton>(*scalar,"motionApplyButton")->click();
+    const auto* scalarNode=node(*tree,ModelNode::Native,-1,"scalarForces");
+    require(scalarNode,"Scalar formula entity did not commit");
+    const int scalarForceId=scalarNode->data(0,Qt::UserRole).toInt();
+
+    tree->setCurrentItem(node(*tree,ModelNode::Native,0,"bodies"));
+    auto* body=widget<QWidget>(window,"nativeEditor_bodies");
+    auto* custom=widget<QCheckBox>(*body,"native_isCustomMassProps");
+    require(!custom->isChecked(),"Original automatic body flag was lost");
+    widget<QPushButton>(*body,"nativeRecalculateMass")->click();
+    require(std::abs(widget<QLineEdit>(*body,"native_mass")->text().toDouble()-.01884)<1e-10,
+        "Automatic body mass does not match 2400 mm3 of steel");
+    requireVector(*body,"centerOfMass",{15,0,0});
+    number(*body,"densityKgMm3",2.7e-6);
+    QMetaObject::invokeMethod(widget<QLineEdit>(*body,"native_densityKgMm3"),"editingFinished",Qt::DirectConnection);
+    require(std::abs(widget<QLineEdit>(*body,"native_mass")->text().toDouble()-.00648)<1e-10,
+        "Automatic body mass did not respond to density editing");
+    auto* parts=widget<QListWidget>(*body,"nativeBodyParts");QListWidgetItem* bound=nullptr;
+    for(int i=0;i<parts->count();++i)if(parts->item(i)->checkState()==Qt::Checked){bound=parts->item(i);break;}
+    require(bound,"Automatic body has no selected real geometry");
+    bound->setCheckState(Qt::Unchecked);
+    auto* massStatus=widget<QLabel>(*body,"nativeMassStatus");
+    require(massStatus->property("massError").toBool(),"Automatic mass accepted an empty geometry selection");
+    QPointer<QWidget> invalidBody=body;
+    widget<QPushButton>(*body,"motionApplyButton")->click();
+    require(invalidBody&&massStatus->property("massError").toBool(),"Invalid automatic mass committed instead of remaining editable");
+    custom->setChecked(true);bound->setCheckState(Qt::Checked);
+    require(!massStatus->property("massError").toBool(),"Switching to valid custom mass retained an obsolete automatic error");
+    number(*body,"mass",1.234);
+    widget<QPushButton>(*body,"motionApplyButton")->click();
+    const auto project=output.filePath("native-original-pickers.mxmotion");saveThroughUi(window,project);
+    CadDocument storedCad;RigidModel model;QString error;
+    require(loadRigidProject(project,storedCad,model,error)&&model.nativeDocument,error);
+    const auto& document=*model.nativeDocument;
+    const auto savedJoint=document.entity("joints",23);
+    const auto refs=savedJoint.value("occPickReferences").toObject();
+    require(refs.value("origin").toArray().size()==1&&refs.value("axis").toArray().size()==2,
+        "Point/direction topology identities were not persisted with their values");
+    const auto reference=refs.value("origin").toArray().first().toObject();
+    const auto* part=storedCad.part(reference.value("partId").toInt());require(part,"Saved picker CAD part is missing");
+    TopTools_IndexedMapOfShape vertices;TopExp::MapShapes(part->shape,TopAbs_VERTEX,vertices);
+    const int index=reference.value("index").toInt();require(index>=1&&index<=vertices.Extent(),"Saved vertex topology number is invalid");
+    const auto vertex=BRep_Tool::Pnt(TopoDS::Vertex(vertices(index)));
+    require(vertex.Distance(gp_Pnt(30,5,4))<1e-8,"Saved topology number names a different CAD vertex");
+    require(document.entity("markers",1).value("localPosition").toObject()==xyz(30,-5,4),
+        "Marker point lost the original global CAD coordinate contract");
+    require(document.entity("sensors",1).value("referencePoint").toObject()==xyz(15,5,4),
+        "Sensor pick was not converted from global CAD to the solver's COM-local point");
+    require(document.entity("vectorForces",vectorForceId).value("magnitudeMode").toString()=="Expression"
+        &&document.entity("vectorForces",vectorForceId).value("expression").toString()=="2*sin(2*pi*t)"
+        &&document.entity("scalarForces",scalarForceId).value("forceFunction").toString()=="2*x+v+t",
+        "Original vector/scalar formula fields did not survive project serialization");
+    require(document.entity("bodies",0).value("isCustomMassProps").toBool()
+        &&std::abs(document.entity("bodies",0).value("mass").toDouble()-1.234)<1e-12,
+        "Custom mass fallback was recomputed or lost on save");
+    require(window.grab().save(output.filePath("native-original-pickers.png")),"Cannot capture original picker workflow");
+
+    MotionWindow reopened;show(reopened);require(reopened.openRigidProject(project),"Cannot reopen picked original model");
+    auto* reopenedTree=widget<QTreeWidget>(reopened,"mTreeView");
+    reopenedTree->setCurrentItem(node(*reopenedTree,ModelNode::Native,23,"joints"));
+    auto* editor=widget<QWidget>(reopened,"nativeEditor_joints");
+    requireVector(*editor,"origin",{30,5,4});requireVector(*editor,"axis",{-1,0,0});
+    require(widget<QComboBox>(*editor,"native_pickMode_axis")->currentData().toString()=="twoVertices",
+        "Reopening a model lost the direction pick mode");
+    widget<QPushButton>(*editor,"native_pick_axis")->click();
+    auto* reopenedViewport=widget<OccViewport>(reopened,"occViewport");
+    require(reopenedViewport->pickSelection().size()==2,"Reentering the direction picker lost its selected topology");
+    requireVector(*editor,"axis",{-1,0,0});escapePick(*reopenedViewport);requireVector(*editor,"axis",{-1,0,0});
+    reopenedTree->setCurrentItem(node(*reopenedTree,ModelNode::Native,1,"sensors"));
+    requireVector(*widget<QWidget>(reopened,"nativeEditor_sensors"),"referencePoint",{30,5,4});
+    log("Original pickers: real viewport vertex -> joint origin/marker, two-vertex axis, reverse, Esc rollback, editor retention, no whole-part leakage, exact CAD topology + reversed direction restored after save/reopen");
+    log("Sensor point: world CAD (30,5,4) picked, COM-local (15,5,4) stored, reopened field restored to world (30,5,4)");
+    log("Original force builders: time-dependent vector force sets Expression mode; scalar force accepts actual x/v state law; both compiled fields persist in the native model");
+    log("Automatic mass: actual 2400 mm3 solid -> 0.01884 kg steel / 0.00648 kg at 2.7e-6 density, global COM, invalid selection rejection and explicit custom mass fallback persisted");
+}
+
+void loadExportWorkflow(MotionWindow& window,QTreeWidget& tree,const QDir& output,
+                        const std::function<void(const QString&)>& log)
+{
+    auto* item=node(tree,ModelNode::Export,0);require(item&&!item->isDisabled(),"Solved native export tree item is missing");
+    for (auto* parent=item->parent();parent;parent=parent->parent()) parent->setExpanded(true);
+    tree.setCurrentItem(item);tree.scrollToItem(item);QApplication::processEvents();
+    // Changing result panes queues a dock resize. Scroll after that layout has
+    // settled, since an item visible at the old height may now be below it.
+    require(waitFor([&]{tree.scrollToItem(item,QAbstractItemView::PositionAtCenter);
+        const auto rect=tree.visualItemRect(item).intersected(tree.viewport()->rect()); return !rect.isEmpty()
+        &&tree.itemAt(rect.center())==item;}),
+        "Native export tree row is not visible for double-clicking");
+    const QPointF pixel=tree.visualItemRect(item).intersected(tree.viewport()->rect()).center();
+    QMouseEvent press(QEvent::MouseButtonPress,pixel,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease,pixel,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QMouseEvent twice(QEvent::MouseButtonDblClick,pixel,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QApplication::sendEvent(tree.viewport(),&press);QApplication::sendEvent(tree.viewport(),&release);
+    QApplication::sendEvent(tree.viewport(),&twice);QApplication::sendEvent(tree.viewport(),&release);
+    require(waitFor([&]{return window.findChild<QWidget*>("nativeLoadExportPanel")!=nullptr;}),
+        "Double-clicking native result export did not open the original load workflow");
+    auto* panel=widget<QWidget>(window,"nativeLoadExportPanel");
+    auto* source=widget<QComboBox>(*panel,"nativeLoadSource");const int joint=source->findData("joints:23");
+    require(joint>=0,"Load export did not expose the physical joint result source");source->setCurrentIndex(joint);
+    widget<QComboBox>(*panel,"nativeLoadFrames")->setCurrentIndex(1);
+    widget<QSpinBox>(*panel,"nativeLoadFrame")->setValue(50);
+    widget<QSpinBox>(*panel,"nativeLoadNodeId")->setValue(42);
+    auto* button=widget<QPushButton>(*panel,"nativeExportLoad");
+    const auto save=[&](const QString& path){
+        QFile::remove(path);bool chosen=false;QTimer dialogTimer;
+        QObject::connect(&dialogTimer,&QTimer::timeout,&window,[&]{
+            auto* dialog=qobject_cast<QFileDialog*>(QApplication::activeModalWidget());if(!dialog)return;
+            dialog->selectFile(path);
+            if (auto* filename=dialog->findChild<QLineEdit*>("fileNameEdit")) filename->setText(path);
+            chosen=true;QMetaObject::invokeMethod(dialog,"accept",Qt::DirectConnection);
+        });
+        dialogTimer.start(20);button->click();dialogTimer.stop();
+        require(chosen&&QFile::exists(path),"Load export dialog did not produce the selected file: "+path);
+        QFile file(path);require(file.open(QIODevice::ReadOnly),"Cannot read exported loads");return QString::fromUtf8(file.readAll());
+    };
+    widget<QComboBox>(*panel,"nativeLoadFormat")->setCurrentIndex(0);
+    const auto csv=save(output.filePath("native-joint-load.csv"));
+    const auto lines=csv.split('\n',Qt::SkipEmptyParts);require(lines.size()==2,"Specified-frame load CSV must contain exactly one data row");
+    const auto header=lines[0].split(','),values=lines[1].split(',');
+    require(header.size()==16&&values.size()==header.size()&&header[4]=="Time_s"&&header[10]=="Fx_N"&&header[15]=="Mz_Nmm",
+        "Manual load CSV lost its declared time/force/moment units");
+    require(values[3].toInt()==50&&std::abs(values[4].toDouble()-.5)<1e-12&&values[5].toInt()==42&&values[6]=="I",
+        "Manual load UI did not apply the selected physical frame/node/end");
+    bool nonzero=false;
+    for(int i=7;i<values.size();++i){bool ok=false;const double value=values[i].toDouble(&ok);
+        require(ok&&std::isfinite(value),"Exported load has a nonnumeric/nonfinite physical component");
+        if(i>=10)nonzero|=std::abs(value)>1e-9;}
+    require(nonzero,"Loaded rotating fixture exported a zero placeholder wrench");
+    widget<QComboBox>(*panel,"nativeLoadFormat")->setCurrentIndex(1);
+    const auto bdf=save(output.filePath("native-joint-load.bdf"));
+    require(bdf.contains("$ Units: N, mm, N*mm, s; CID=0")&&bdf.contains("ENDDATA"),"BDF load export lacks units or a complete ending");
+    int cards=0;
+    for(const auto& line:bdf.split('\n',Qt::SkipEmptyParts))if(line.startsWith("FORCE,")||line.startsWith("MOMENT,")){
+        const auto fields=line.split(',');require(fields.size()==8&&fields[1].toInt()==51&&fields[2].toInt()==42&&fields[3]=="0",
+            "BDF UI export lost its frame load-set or target grid");
+        const int start=line.startsWith("FORCE,")?10:13;
+        for(int i=0;i<3;++i){bool ok=false;const double value=fields[i+5].toDouble(&ok);
+            require(ok&&std::isfinite(value)&&std::abs(value-values[start+i].toDouble())<1e-10,
+                "CSV and BDF physical load components differ at the same frame");}
+        ++cards;
+    }
+    require(cards==2,"BDF did not write both FORCE and MOMENT cards");
+    widget<QComboBox>(*panel,"nativeLoadEnd")->setCurrentIndex(1);
+    widget<QComboBox>(*panel,"nativeLoadFormat")->setCurrentIndex(0);
+    const auto opposite=save(output.filePath("native-joint-load-opposite.csv")).split('\n',Qt::SkipEmptyParts).at(1).split(',');
+    require(opposite.size()==16&&opposite[6]=="J","Load end selection was not exported");
+    for(int i=10;i<13;++i)require(std::abs(values[i].toDouble()+opposite[i].toDouble())<1e-8,
+        "I/J export force components violate action/reaction");
+    require(window.grab().save(output.filePath("native-load-export.png")),"Cannot capture the restored load export panel");
+    log("Load export UI: double-click result tree -> actual joint frame 50 / 0.5 s -> finite nonzero physical CSV, matching FORCE/MOMENT BDF at grid 42, and I/J action-reaction sign verified");
+}
+
 void writeVolumeFixture(const QString& path, const FemMesh& mesh)
 {
     QFile file(path);
@@ -388,14 +677,55 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
             && meshScroll->viewport()->rect().contains(bounds);
     }),"AutoFlex mesh status is clipped outside the default narrow parameter viewport");
     require(window.grab().save(output.filePath("autoflex-real-mesh.png")),"Cannot capture the real tetra mesh preview");
+    // Exercise the real viewport node picker before the separate list workflow.
+    // A visible corner of the generated clamp face has an unambiguous node ID.
+    auto* nodeEditor=widget<QWidget>(window,"nativeEditor_autoFlexBodies");
+    auto* pickViewport=widget<OccViewport>(window,"occViewport");
+    window.command(Command::Top)->trigger();QApplication::processEvents();
+    const auto coordinates=mesh.value("nodes").toArray();int corner=-1;
+    for(int i=0;i<coordinates.size();++i){const auto p=coordinates[i].toArray();
+        if(p.size()==3&&std::abs(p[0].toDouble())<1e-8&&std::abs(p[1].toDouble()+4)<1e-8&&std::abs(p[2].toDouble()-3)<1e-8){corner=i;break;}}
+    require(corner>=0,"Generated clamp face lost its exact CAD corner node");
+    auto* attachmentTable=widget<QTableWidget>(*nodeEditor,"native_attachPoints");
+    require(attachmentTable->rowCount()==0,"AutoFlex viewport picker fixture must initially use automatic attachment");
+    widget<QPushButton>(*nodeEditor,"nativeFlexPickNodes")->click();
+    require(pickViewport->isPicking(),"AutoFlex attachment field did not start node picking");
+    QPointer<QWidget> retainedEditor=nodeEditor;
+    clickViewport(*pickViewport,{0,-4,3});
+    require(retainedEditor&&attachmentTable->rowCount()==1
+        &&attachmentTable->item(0,0)->text().toInt()==corner+1,
+        "AutoFlex viewport pick did not write the actual generated mesh node ID");
+    escapePick(*pickViewport);
+    require(attachmentTable->rowCount()==0,"Esc did not restore the original AutoFlex attachment selection");
+    widget<QPushButton>(*nodeEditor,"nativeFlexPickNodes")->click();clickViewport(*pickViewport,{0,-4,3});
+    require(window.grab().save(output.filePath("autoflex-node-picking.png")),"Cannot capture actual node picking");
+    widget<QPushButton>(*nodeEditor,"nativeFlexPickNodes")->click();
+    require(!pickViewport->isPicking()&&attachmentTable->rowCount()==1,"Finishing node picking lost the selected real mesh node");
+    log(QStringLiteral("AutoFlex viewport node picking: real CAD corner maps to actual mesh node %1, field remains open, Esc rolls back, finished selection feeds the attachment editor").arg(corner+1));
+    // Replacing the attachment mode must retire the previous session before
+    // clearing its data. Otherwise Esc restores that session's old node IDs.
+    widget<QPushButton>(*nodeEditor,"nativeFlexPickNodes")->click();
+    require(pickViewport->isPicking(),"AutoFlex attachment picker did not resume its saved selection");
+    widget<QPushButton>(*nodeEditor,"nativeFlexAutoAttach")->click();
+    require(retainedEditor&&!pickViewport->isPicking()&&attachmentTable->rowCount()==0,
+        "Switching to automatic attachment left an old viewport node session active");
+    escapePick(*pickViewport);
+    require(retainedEditor&&attachmentTable->rowCount()==0,
+        "Esc restored stale manual node IDs after switching to automatic attachment");
+    widget<QPushButton>(*nodeEditor,"nativeFlexPickNodes")->click();
+    clickViewport(*pickViewport,{0,-4,3});
+    require(pickViewport->isPicking()&&attachmentTable->rowCount()==1,
+        "AutoFlex could not restart node picking after switching to automatic attachment");
     // Select the actual generated end-face nodes using the same UI list the
-    // user sees. No old/global node number is guessed from a new Netgen mesh.
+    // user sees while the viewport session is still active. The list must
+    // retire that session before replacing the committed attachment nodes.
     auto* attachmentEditor=widget<QWidget>(window,"nativeEditor_autoFlexBodies");
-    int selectedNodes=0; QTimer nodePicker;
+    int selectedNodes=0; bool listOpenedAfterPickFinished=false; QTimer nodePicker;
     QObject::connect(&nodePicker,&QTimer::timeout,&window,[&]{
         auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());
         auto* list=dialog ? dialog->findChild<QListWidget*>("nativeFlexNodeList") : nullptr;
         if (!list) return;
+        listOpenedAfterPickFinished=!pickViewport->isPicking();
         const auto coordinates=mesh.value("nodes").toArray();
         for(int i=0;i<list->count();++i) {
             const int index=list->item(i)->data(Qt::UserRole).toInt()-1;
@@ -407,6 +737,13 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
     });
     nodePicker.start(20); widget<QPushButton>(*attachmentEditor,"nativeFlexSelectNodes")->click(); nodePicker.stop();
     require(selectedNodes>=3,"The real tetra mesh did not expose a selectable attachment face");
+    require(listOpenedAfterPickFinished&&retainedEditor&&!pickViewport->isPicking()
+        &&attachmentTable->rowCount()==selectedNodes,
+        "The node-list selector did not retire the old viewport session before replacing its selection");
+    escapePick(*pickViewport);
+    require(retainedEditor&&attachmentTable->rowCount()==selectedNodes,
+        "Esc rolled back the committed list selection through a stale viewport callback");
+    log("AutoFlex attachment transitions: active node picker -> automatic clears nodes, active node picker -> list commits the real face nodes, subsequent Esc preserves both results");
     number(*attachmentEditor,"connectionRadius",0.0);
     widget<QPushButton>(*attachmentEditor,"motionApplyButton")->click();
     window.command(Command::Save)->trigger();
@@ -453,6 +790,26 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
     timeline->setValue(timeline->maximum());
     require(waitFor([&]{return viewport->grabFramebuffer()!=initial;}),"Modal node deformation did not reach the viewport animation");
     require(initial.save(output.filePath("autoflex-rest.png")) && viewport->grabFramebuffer().save(output.filePath("autoflex-deformed.png")),"Cannot capture AutoFlex deformation frames");
+    const auto plain=viewport->grabFramebuffer();
+    auto* contour=widget<QComboBox>(window,"motionFlexContour");
+    auto* range=widget<QComboBox>(window,"motionFlexRange");
+    const int elastic=contour->findData(int(FlexContourKind::ElasticDisplacement));
+    const int total=contour->findData(int(FlexContourKind::TotalDisplacement));
+    require(elastic>=0&&total>=0&&range->findData(1)>=0,"Original flexible contour/range choices are missing");
+    contour->setCurrentIndex(elastic);
+    require(waitFor([&]{return viewport->grabFramebuffer()!=plain;}),"Elastic displacement cloud did not change mesh coloring and legend");
+    const auto elasticImage=viewport->grabFramebuffer();
+    require(elasticImage.save(output.filePath("autoflex-elastic-contour.png")),"Cannot capture elastic cloud");
+    contour->setCurrentIndex(total);
+    require(waitFor([&]{return viewport->grabFramebuffer()!=elasticImage;}),"Total displacement cloud selection did not update the viewport/legend");
+    require(viewport->grabFramebuffer().save(output.filePath("autoflex-total-contour.png")),"Cannot capture total displacement cloud");
+    contour->setCurrentIndex(elastic);timeline->setValue(0);range->setCurrentIndex(range->findData(0));QApplication::processEvents();
+    const auto adaptiveZero=viewport->grabFramebuffer();
+    range->setCurrentIndex(range->findData(1));
+    require(waitFor([&]{return viewport->grabFramebuffer()!=adaptiveZero;}),"Whole-history color range did not replace the zero-frame adaptive legend");
+    require(viewport->grabFramebuffer().save(output.filePath("autoflex-global-range.png")),"Cannot capture fixed whole-history color range");
+    timeline->setValue(timeline->maximum());
+    log("AutoFlex animation cloud UI: elastic and total displacement colors/legends, current-frame adaptive range and whole-history fixed range produce verified framebuffer updates");
     window.command(Command::Save)->trigger();
     MotionWindow reopened; show(reopened);
     require(reopened.openRigidProject(project),"Cannot reopen a saved AutoFlex project");
@@ -617,6 +974,7 @@ int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory
     try {
         QString cadPath, motionPath;
         makeFixture(output.absolutePath(), cadPath, motionPath);
+        originalPickerAndMassWorkflow(output,cadPath,motionPath,log);
         MotionWindow window;
         show(window);
         require(window.importCad(cadPath), "Public CAD import failed");
@@ -707,6 +1065,7 @@ int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory
         require(drive->dataSize() >= 100 && std::abs(drive->sample(drive->dataSize()-1).y()-90) < 0.01,
             "Native drive curve does not match the real 90 degree solve");
         require(plot->exportCurvesCsv(output.filePath("native-selected-curves.csv"), error), "Native selected curve CSV failed: " + error);
+        loadExportWorkflow(window,*tree,output,log);
         auto* viewport = widget<OccViewport>(window, "occViewport");
         window.command(Command::Top)->trigger();
         // Leave room for the rotor's full swept envelope while keeping the

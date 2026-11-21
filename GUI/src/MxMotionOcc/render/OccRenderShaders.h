@@ -8,6 +8,7 @@ namespace MotionOcc::RenderShaders {
 inline constexpr char SurfaceVertex[] = R"GLSL(#version 330 core
 layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aNormal;
+layout(location=2) in float aScalar;
 uniform mat4 uView;
 uniform mat4 uProjection;
 uniform vec3 uPivot;
@@ -20,6 +21,7 @@ uniform vec2 uViewportPixels;
 uniform float uOutlinePixels;
 out vec3 vNormal;
 out vec3 vFlatPosition;
+out float vScalar;
 void main() {
     vec3 local = aPosition - uPivot;
     vec3 normal = aNormal;
@@ -32,6 +34,7 @@ void main() {
     }
     vec4 clip = uProjection * uView * vec4(local, 1.0);
     vNormal = uNormal * normal;
+    vScalar = aScalar;
     // For posed parts, omit the constant translation from the flat normal's
     // derivatives. Preserve the common scale for very large or small models.
     vFlatPosition = (uNormal * flatPosition) * uProjection[1][1];
@@ -47,9 +50,11 @@ void main() {
 inline constexpr char SurfaceFragment[] = R"GLSL(#version 330 core
 in vec3 vNormal;
 in vec3 vFlatPosition;
+in float vScalar;
 uniform vec3 uColor;
 uniform bool uOutline;
 uniform bool uFlat;
+uniform bool uScalars;
 out vec4 fragColor;
 void main() {
     if (uOutline) {
@@ -67,7 +72,12 @@ void main() {
     float diffuse = max(dot(n, light), 0.0);
     vec3 halfVector = normalize(light + vec3(0.0, 0.0, 1.0));
     float specular = pow(max(dot(n, halfVector), 0.0), 32.0) * 0.16;
-    fragColor = vec4(uColor * (0.38 + 0.62 * diffuse) + vec3(specular), 1.0);
+    vec3 color = uColor;
+    if (uScalars) {
+        float t = clamp(vScalar, 0.0, 1.0);
+        color = clamp(vec3(1.5) - abs(4.0 * t - vec3(3.0, 2.0, 1.0)), 0.0, 1.0);
+    }
+    fragColor = vec4(color * (0.38 + 0.62 * diffuse) + vec3(specular), 1.0);
 }
 )GLSL";
 

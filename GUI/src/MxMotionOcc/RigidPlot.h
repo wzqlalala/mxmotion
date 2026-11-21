@@ -27,6 +27,7 @@ public:
     void setTime(double seconds);
     void setTimeMarkerVisible(bool visible);
     bool exportCurvesCsv(const QString& path, QString& error, int interval = 0) const;
+    bool exportCurvesTxt(const QString& path, QString& error, int interval = 0) const;
 
 signals:
     void timeRequested(double seconds);
@@ -37,6 +38,7 @@ signals:
     void messageChanged(const QString& message);
 
 private:
+    bool exportCurvesDelimited(const QString& path, QString& error, int interval, char delimiter) const;
     struct VisibleCurve {
         QString title;
         QColor color;

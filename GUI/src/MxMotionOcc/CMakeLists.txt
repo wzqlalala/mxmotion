@@ -9,6 +9,10 @@ add_executable(MxMotion WIN32
     MotionRibbon.cpp
     RigidMotionUi.cpp
     NativeMotionUi.cpp
+    NativeMotionPickWidgets.cpp NativeMotionPickWidgets.h
+    NativeFunctionEditor.cpp NativeFunctionEditor.h
+    NativeMotionSymbols.cpp NativeMotionSymbols.h
+    NativeLoadExportUi.cpp
     RigidPlot.cpp RigidPlot.h
     RigidResultSeries.cpp RigidResultSeries.h
     OccViewport.cpp OccViewport.h
@@ -43,7 +47,7 @@ add_dependencies(MxMotion MotionOccResources)
 # The shared chrome is compiled in this executable, not imported from MechCommon.dll.
 target_compile_definitions(MxMotion PRIVATE BUILD_STATIC NOMINMAX _HAS_STD_BYTE=0)
 target_compile_options(MxMotion PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8> $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
-target_link_libraries(MxMotion PRIVATE MotionOccRigid Qt5::Widgets Qt5::Svg Qt5::PrintSupport
+target_link_libraries(MxMotion PRIVATE MotionOccRigid MotionEngine::Core Qt5::Widgets Qt5::Svg Qt5::PrintSupport
     OpenGL::GL ads::qtadvanceddocking-qt5 Qwt::Qwt)
 if(WIN32)
     target_link_libraries(MxMotion PRIVATE dwmapi)
@@ -71,6 +75,7 @@ endif()
 if(BUILD_TESTING AND MX_TEST_DESKTOP)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNativeDesktopSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccPickingSmoke.cpp")
     target_compile_definitions(MxMotion PRIVATE MX_OCC_DESKTOP_SMOKE)
     set(desktop_output "${PROJECT_BINARY_DIR}/desktop-smoke")
     file(MAKE_DIRECTORY "${desktop_output}")
@@ -80,4 +85,6 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     file(MAKE_DIRECTORY "${native_desktop_output}")
     add_test(NAME MotionOcc.NativeDesktop COMMAND MxMotion --native-desktop-smoke "${native_desktop_output}")
     set_tests_properties(MotionOcc.NativeDesktop PROPERTIES TIMEOUT 180 LABELS desktop)
+    add_test(NAME MotionOcc.Picking COMMAND MxMotion --picking-smoke "${PROJECT_BINARY_DIR}/picking-smoke")
+    set_tests_properties(MotionOcc.Picking PROPERTIES TIMEOUT 90 LABELS desktop)
 endif()

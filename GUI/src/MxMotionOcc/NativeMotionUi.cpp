@@ -3,6 +3,9 @@
 #include "OccViewport.h"
 #include "NativeMotionPresentation.h"
 #include "NativeTopologyBinding.h"
+#include "NativeMotionPickWidgets.h"
+#include "NativeBodyMass.h"
+#include "NativeFunctionEditor.h"
 #include "mFoldSection.h"
 
 #include <BRepAdaptor_Curve.hxx>
@@ -67,6 +70,7 @@ QString label(const QString& key)
         {"centerOfMass", "质心 (mm)"}, {"mass", "质量 (kg)"}, {"inertia", "惯量 (kg·mm²)"},
         {"inertiaConvention", "惯量积约定"},
         {"isCustomMassProps", "指定质量属性"}, {"initialVelocity", "初始速度 (mm/s)"},
+        {"densityKgMm3", "质量密度 (kg/mm³)"},
         {"initialAngularVelocity", "初始角速度 (°/s)"},
         {"jointType", "运动副类型"}, {"origin", "原点 (mm)"}, {"axis", "轴方向"},
         {"lead", "螺距 (mm/转)"}, {"actionSpin", "动作体转轴"}, {"actionPin", "动作体销轴"},
@@ -102,7 +106,7 @@ QString label(const QString& key)
         {"actionOnly", "仅作用于 I 体"}, {"offset", "偏置 (mm)"},
         {"preloadForce", "预载力 (N)"}, {"preloadTorque", "预载力矩 (N·mm)"},
         {"contactType", "接触类型"}, {"materialDamping", "接触阻尼"},
-        {"forceExponent", "接触力指数"}, {"penetrationDepth", "穿透深度 (mm)"},
+        {"forceExponent", "接触力指数"}, {"penetrationDepth", "接触阻尼全值深度 (mm)"},
         {"frictionEnabled", "启用摩擦"}, {"staticFriction", "静摩擦系数"}, {"dynamicFriction", "动摩擦系数"},
         {"useConvexHullAction", "动作体使用凸包"}, {"useConvexHullBase", "基本体使用凸包"},
         {"sensorType", "传感器类型"}, {"coordSystem", "坐标系"}, {"componentMode", "输出分量"},
@@ -160,6 +164,25 @@ QString enumLabel(const QString& value)
 
 QJsonObject vec(double x = 0, double y = 0, double z = 0) { return {{"x", x}, {"y", y}, {"z", z}}; }
 QJsonObject quat() { return {{"w", 1}, {"x", 0}, {"y", 0}, {"z", 0}}; }
+
+// Original sensor widgets display world CAD coordinates while the sensor
+// data model stores points relative to the body's initial COM. Other motion
+// fields named localI/localJ/localPosition intentionally remain global.
+void convertSensorPoints(QJsonObject& sensor, const NativeMotionDocument& document, bool toWorld)
+{
+    const auto convert=[&](const QJsonValue& point,int bodyId) -> QJsonValue {
+        if (bodyId<0) return point;
+        const auto center=document.entity("bodies",bodyId).value("centerOfMass");
+        const auto component=[](const QJsonValue& p,int i,const QString& axis) { return p.isArray() && p.toArray().size()==3 ? p.toArray()[i].toDouble() : p.toObject().value(axis).toDouble(); };
+        QJsonObject result; QJsonArray list;
+        for (int i=0;i<3;++i) { const auto axis=QString(QChar('x'+i)); const double value=component(point,i,axis)+(toWorld?1:-1)*component(center,i,axis); result.insert(axis,value); list.append(value); }
+        return point.isArray() ? QJsonValue(list) : QJsonValue(result);
+    };
+    if (sensor.contains("referencePoint")) sensor.insert("referencePoint",convert(sensor.value("referencePoint"),sensor.value("targetBodyId").toInt(-1)));
+    for (const auto& key:{"pointA","pointB"}) if (sensor.value(key).isObject()) {
+        auto point=sensor.value(key).toObject(); point.insert("localPos",convert(point.value("localPos"),point.value("bodyId").toInt(-1))); sensor.insert(key,point);
+    }
+}
 
 int firstId(const NativeMotionDocument& document, const QString& collection, int fallback = -1)
 {
@@ -290,7 +313,7 @@ bool selectConstraintTopology(QWidget* parent, const CadDocument& cad, const Nat
     return dialog.exec() == QDialog::Accepted;
 }
 
-QJsonObject bodyRecord(const CadDocument& cad, const RigidBody& body, QString& error)
+QJsonObject bodyRecord(const CadDocument& cad, const RigidBody& body, QString& error, bool automatic = false)
 {
     BodyProperties properties;
     if (!rigidBodyProperties(cad, body, properties, error)) return {};
@@ -298,11 +321,16 @@ QJsonObject bodyRecord(const CadDocument& cad, const RigidBody& body, QString& e
     for (double v : properties.inertiaKgM2) inertia.append(v * 1e6);
     const auto* part = cad.part(body.partId);
     const auto& c = properties.centerMm;
-    return {{"id", body.id}, {"name", body.name}, {"geoEntityIds", QJsonArray{body.partId}},
+    QJsonObject row{{"id", body.id}, {"name", body.name}, {"geoEntityIds", QJsonArray{body.partId}},
         {"geoEntityNames", QJsonArray{part ? (part->sourceName.isEmpty() ? part->name : part->sourceName) : QString{}}},
         {"isFixed", body.fixed}, {"isCustomMassProps", true}, {"mass", properties.massKg},
         {"centerOfMass", vec(c[0], c[1], c[2])}, {"inertia", inertia}, {"inertiaConvention", "tensor"},
         {"initialVelocity", vec()}, {"initialAngularVelocity", vec()}};
+    if (automatic) {
+        row.insert("isCustomMassProps",false);
+        if (!updateNativeBodyMass(cad,std::vector<int>{body.partId},row,kDefaultNativeBodyDensityKgMm3,error)) return {};
+    }
+    return row;
 }
 
 QJsonObject templateRecord(const NativeMotionDocument& doc, const QString& collection, const QString& type)
@@ -431,16 +459,27 @@ QStringList choices(const QString& key)
 }
 
 ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& value,
-                   const NativeMotionDocument& doc, const QString& collection, int depth = 0)
+                   const NativeMotionDocument& doc, const QString& collection, int depth = 0,
+                   NativePickSession* picker = nullptr, const QString& parentPath = {})
 {
     const QString text = label(key);
+    const QString path = parentPath.isEmpty() ? key : parentPath + "." + key;
+    const QStringList vectorKeys{"origin","actionPoint","centerOfMass","localI","localJ","localTarget","localOrigin","localPosition",
+        "referencePoint","localPos","position","axis","direction","fixedDirection","fixedAxis","actionSpin","actionPin","baseSpin","basePin",
+        "actionVector","baseVector","axisDirection","gravity","initialVelocity","initialAngularVelocity"};
+    if (value.isArray() && value.toArray().size()==3 && vectorKeys.contains(key)) {
+        const auto values=value.toArray(); const auto read=addField(form,key,vec(values[0].toDouble(),values[1].toDouble(),values[2].toDouble()),doc,collection,depth,picker,parentPath);
+        return [read] { const auto v=read().toObject(); return QJsonArray{v.value("x"),v.value("y"),v.value("z")}; };
+    }
     if (value.isObject() && depth < 8) {
         auto* box = new QGroupBox(text);
         auto* nested = new QFormLayout(box);
         nested->setSizeConstraint(QLayout::SetMinimumSize);
         const auto original = value.toObject();
         QMap<QString, ReadValue> fields;
-        for (auto it = original.begin(); it != original.end(); ++it) fields.insert(it.key(), addField(nested, it.key(), it.value(), doc, collection, depth + 1));
+        for (auto it = original.begin(); it != original.end(); ++it) fields.insert(it.key(), addField(nested, it.key(), it.value(), doc, collection, depth + 1, picker, path));
+        if (picker && original.size()==3 && original.contains("x") && original.contains("y") && original.contains("z"))
+            picker->decorateVector(nested,box,key,path);
         form->addRow(box);
         return [fields, original] { auto out = original; for (auto it = fields.begin(); it != fields.end(); ++it) out.insert(it.key(), it.value()()); return out; };
     }
@@ -486,7 +525,41 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
     if (value.isString() || value.isDouble()) {
         const QString original = value.isDouble() ? QString::number(value.toDouble(), 'g', 17) : value.toString();
         auto* edit = new QLineEdit(original); edit->setObjectName("native_" + key); edit->setMinimumWidth(70);
-        form->addRow(text, edit);
+        const bool law=value.isString()&&collection!="drives"
+            &&QStringList{"expression","forceFunction","torqueFunction","dampingFunction"}.contains(key)
+            &&QStringList{"springs","vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques"}.contains(collection);
+        if (law) {
+            auto* container=new QWidget;auto* layout=new QVBoxLayout(container);layout->setContentsMargins(0,0,0,0);
+            layout->addWidget(edit);
+            auto* builder=new QPushButton(QStringLiteral("函数构造与预览…"));builder->setObjectName("native_functionBuilder_"+key);
+            layout->addWidget(builder);form->addRow(text,container);
+            const bool stateVariables=collection!="vectorForces";
+            auto* hint=new QLabel(collection=="vectorForces" ? QStringLiteral("t 为时间 (s)；函数覆盖常数幅值。")
+                : collection.endsWith("Torques") ? QStringLiteral("t：s；x：相对转角 (rad)；v：相对角速度 (rad/s)。")
+                : collection=="springs" ? QStringLiteral("t：s；x/v：变形及其速度。平动为 mm、mm/s，扭转为 °、°/s。")
+                : QStringLiteral("t：s；x：沿力方向的相对位移 (mm)；v：相对速度 (mm/s)。"));
+            hint->setWordWrap(true);layout->addWidget(hint);
+            QObject::connect(builder,&QPushButton::clicked,container,[edit,collection,key,doc,stateVariables] {
+                QWidget* editor=edit;
+                while(editor->parentWidget()&&!editor->objectName().startsWith("nativeEditor_"))editor=editor->parentWidget();
+                bool torque=collection.endsWith("Torques");
+                if(auto* type=editor->findChild<QComboBox*>("native_springType"))torque=type->currentData().toString()=="Torsional";
+                if(auto* type=editor->findChild<QComboBox*>("native_loadType"))torque=type->currentData().toString()=="Torque";
+                const auto scenarios=doc.collection("scenarios");
+                const double duration=scenarios.isEmpty()?10:scenarios.first().toObject().value("endTime").toDouble(10);
+                auto expression=edit->text();QJsonArray x,y;
+                if(!editNativeFunction(editor,expression,x,y,torque?QStringLiteral("N·mm"):QStringLiteral("N"),duration,stateVariables,false))return;
+                edit->setText(expression);
+                if(collection=="vectorForces")if(auto* mode=editor->findChild<QComboBox*>("native_magnitudeMode"))mode->setCurrentIndex(mode->findData("Expression"));
+                // The spring solver gives a nonempty displacement table priority
+                // over forceFunction. Applying a force formula switches that
+                // law explicitly, while a damping formula keeps the force law.
+                if(collection=="springs"&&key=="forceFunction")for(const auto& field:{"native_tableX","native_tableY"})
+                    if(auto* table=editor->findChild<QTableWidget*>(field))table->setRowCount(0);
+                if(collection=="springs"&&key=="dampingFunction")
+                    if(auto* enabled=editor->findChild<QCheckBox*>("native_dampingEnabled"))enabled->setChecked(true);
+            });
+        }else form->addRow(text, edit);
         return [edit, value, original, text] {
             if (edit->text() == original) return value;
             if (value.isString()) return QJsonValue(edit->text());
@@ -495,7 +568,7 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
             return QJsonValue(number);
         };
     }
-    if (value.isArray() && value.toArray().size() <= 1000) {
+    if (value.isArray() && value.toArray().size() <= 100000) {
         const auto original = value.toArray();
         const bool topology = key.startsWith("occ");
         const bool pairs = key == "curvePoints";
@@ -518,7 +591,7 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
             auto* buttons = new QWidget; auto* actions = new QHBoxLayout(buttons); actions->setContentsMargins(0, 0, 0, 0);
             auto* add = new QPushButton(QStringLiteral("添加行")); auto* remove = new QPushButton(QStringLiteral("删除行"));
             actions->addWidget(add); actions->addWidget(remove); layout->addWidget(table); layout->addWidget(buttons); form->addRow(box);
-            QObject::connect(add, &QPushButton::clicked, table, [table] { if (table->rowCount() < 1000) {
+            QObject::connect(add, &QPushButton::clicked, table, [table] { if (table->rowCount() < 100000) {
                 const int row = table->rowCount(); table->insertRow(row);
                 for (int c = 0; c < table->columnCount(); ++c) table->setItem(row, c, new QTableWidgetItem("0")); } });
             QObject::connect(remove, &QPushButton::clicked, table, [table] { if (table->currentRow() >= 0) table->removeRow(table->currentRow()); });
@@ -966,7 +1039,7 @@ void MotionWindow::batchNativeBodies()
     for (const auto& part : m_document.parts()) {
         if (!canRemovePart(part.id)) continue;
         const int id = nextId(document, "bodies");
-        const auto row = bodyRecord(m_document, {id, part.name, part.id, false, 1.0, 0.0}, error);
+        const auto row = bodyRecord(m_document, {id, part.name, part.id, false, 1.0, 0.0}, error, true);
         if (row.isEmpty()) continue;
         put(document, "bodies", row); document.bodyPartBindings.insert(id, {part.id}); ++added;
     }
@@ -998,7 +1071,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         if (collection == "bodies") {
             const auto part = std::find_if(m_document.parts().begin(), m_document.parts().end(), [this](const auto& p) { return canRemovePart(p.id); });
             if (part == m_document.parts().end()) { setNotice(tr("没有可分配的几何实体。"), true); return; }
-            QString error; row = bodyRecord(m_document, {nextId(document, collection), part->name, part->id, false, 1, 0}, error);
+            QString error; row = bodyRecord(m_document, {nextId(document, collection), part->name, part->id, false, 1, 0}, error, true);
             if (row.isEmpty()) { setNotice(error, true); return; }
             document.bodyPartBindings.insert(row.value("id").toInt(), {part->id});
         }
@@ -1006,6 +1079,14 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     id = row.value("id").toInt();
     // Add optional defaults when the older document omitted editable fields.
     const auto defaults = templateRecord(document, collection, row.value(collection == "joints" ? "jointType" : collection == "springs" ? "springType" : "").toString());
+    if (collection=="drives") for (const auto& key:{"driveTableX","driveTableY","motionType","controlMode","expression"})
+        if (!row.contains(key)) row.insert(key,defaults.value(key));
+    if (QStringList{"springs","vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques"}.contains(collection))
+        for (const auto& key:{"expression","forceFunction","torqueFunction","dampingFunction"})
+            if (!row.contains(key)&&defaults.contains(key)) row.insert(key,defaults.value(key));
+    if (collection=="vectorForces"&&!row.contains("magnitudeMode"))row.insert("magnitudeMode",defaults.value("magnitudeMode"));
+    if (collection=="springs")for(const auto& key:{"tableX","tableY","dampingEnabled"})
+        if(!row.contains(key))row.insert(key,defaults.value(key));
     for (const auto& key : {QStringLiteral("friction"), QStringLiteral("limit"), QStringLiteral("occSurfaceFaces"),
             QStringLiteral("occCurveEdges"), QStringLiteral("occCurveIEdges"), QStringLiteral("occCurveJEdges")})
         if (!row.contains(key) && defaults.contains(key)) row.insert(key, defaults.value(key));
@@ -1040,13 +1121,17 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         row.insert("material", properties);
     }
     if (collection == "bodies" && !row.contains("inertiaConvention")) row.insert("inertiaConvention", "auto");
+    if (collection == "bodies" && !row.contains("isCustomMassProps")) row.insert("isCustomMassProps",false);
+    if (collection == "sensors") convertSensorPoints(row,document,true);
+    if (collection == "bodies" && !row.contains("densityKgMm3")) row.insert("densityKgMm3", kDefaultNativeBodyDensityKgMm3);
     auto* panel = new QWidget; panel->setObjectName("nativeEditor_" + collection);
+    auto* picker = new NativePickSession(m_viewport, m_document, row.value("occPickReferences").toObject(), panel);
     auto* form = new QFormLayout(panel); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setSizeConstraint(QLayout::SetMinimumSize);
     auto* title = new QLabel(label(collection)); title->setStyleSheet(QStringLiteral("font-weight:600")); form->addRow(title);
     if (collection == "bodies") {
-        auto* help = new QLabel(tr("惯量顺序为 Ixx、Iyy、Izz、Ixy、Ixz、Iyz。矩阵项与正号惯量积的后三项符号相反；自动模式依据原文档的明确公式或配套几何确认约定。"));
+        auto* help = new QLabel(tr("取消“指定质量属性”后，按绑定几何和密度计算质量、质心及惯量。导入数据先保留原值；重新计算或更改绑定、密度时更新。惯量顺序为 Ixx、Iyy、Izz、Ixy、Ixz、Iyz，后三项区分矩阵项与正号惯量积。"));
         help->setWordWrap(true); form->addRow(help);
     }
     if (collection == "autoFlexBodies") {
@@ -1062,8 +1147,26 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         help->setWordWrap(true); form->addRow(help);
     }
     QListWidget* parts = nullptr;
-    if (collection == "bodies") { parts = partList(m_document, document, id); form->addRow(tr("绑定几何 (可多选)"), parts); }
+    if (collection == "bodies") {
+        parts = partList(m_document, document, id); form->addRow(tr("绑定几何 (可多选)"), parts);
+        auto* select = new QPushButton(tr("在视口选择绑定部件")); select->setObjectName("native_pick_bodyParts"); form->addRow(select);
+        connect(select, &QPushButton::clicked, panel, [picker,select,parts] {
+            std::set<int> allowed; QVector<PickResult> initial;
+            for (int i=0;i<parts->count();++i) {
+                const auto* item=parts->item(i); const int partId=item->data(Qt::UserRole).toInt();
+                if (!(item->flags() & Qt::ItemIsEnabled)) continue;
+                allowed.insert(partId);
+                if (item->checkState()==Qt::Checked) { PickResult p; p.kind=PickKind::Part; p.partId=partId; initial.append(p); }
+            }
+            picker->begin("bodyParts",select,PickKind::Part,true,allowed,initial,[parts](const auto& picks) {
+                QSet<int> ids; for (const auto& p:picks) ids.insert(p.partId);
+                for (int i=0;i<parts->count();++i) if (parts->item(i)->flags() & Qt::ItemIsEnabled)
+                    parts->item(i)->setCheckState(ids.contains(parts->item(i)->data(Qt::UserRole).toInt()) ? Qt::Checked : Qt::Unchecked);
+            });
+        });
+    }
     QMap<QString, ReadValue> fields;
+    fields.insert("occPickReferences", [picker] { return picker->references(); });
     QComboBox* materialChoice=nullptr;
     auto flexMesh=std::make_shared<QJsonObject>(row.value("mesh").toObject());
     auto flexGroups=std::make_shared<QJsonArray>(row.value("attachGroups").toArray());
@@ -1088,10 +1191,12 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         form->addRow(tr("体网格"), meshState);
     }
     const QStringList hidden{"id", "isUserRename", "geoEntityIds", "geoEntityNames", "currentCurveRequest", "curveNode", "curveRequests",
-        "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds"};
+        "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds", "occPickReferences"};
     if (row.contains("name")) fields.insert("name", addField(form, "name", row.value("name"), document, collection));
     for (auto it = row.begin(); it != row.end(); ++it) {
         if (it.key() == "name" || hidden.contains(it.key())) continue;
+        if (collection=="vectorForces" && row.value("loadType").toString()=="Bushing"
+            && QStringList{"expression","magnitude","magnitudeMode","direction","directionMode"}.contains(it.key())) continue;
         if (autoFlex && QStringList{"mesh", "materialId", "meshSourceFile", "attachGroups", "attachPointPositions", "attachmentMeshChanged", "meshType", "minElementSize", "curvatureRefinement",
                 "solverType", "freqLower", "freqUpper", "rigidBodyModeFilter", "connectionType", "interfaceDofs",
                 "outputModeShapes", "outputStressStrain", "outputFormat"}.contains(it.key())) continue;
@@ -1107,13 +1212,77 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             auto* selected = new QLabel(topologySummary(*selection, faces)); selected->setWordWrap(true); form->addRow(label(field), selected);
             auto* choose = new QPushButton(tr("选择约束%1…").arg(faces ? tr("面") : tr("边")));
             choose->setObjectName("native_select_" + field); form->addRow(choose);
-            connect(choose, &QPushButton::clicked, panel, [this, panel, selected, selection, document, row, field, faces] {
+            auto* pick = new QPushButton(tr("在视口拾取约束%1").arg(faces ? tr("面") : tr("边")));
+            pick->setObjectName("native_pick_"+field); form->addRow(pick);
+            connect(pick,&QPushButton::clicked,panel,[this,picker,pick,panel,selected,selection,document,row,field,faces] {
+                const auto bodyField=topologyBodyField(field); int bodyId=row.value(bodyField).toInt(-1);
+                if (auto* combo=panel->findChild<QComboBox*>("native_"+bodyField)) bodyId=combo->currentData().toInt();
+                const auto bound=document.bodyPartBindings.value(bodyId);
+                std::set<int> allowed(bound.begin(),bound.end());
+                if (!faces) { allowed.clear(); for (const auto& part:m_document.parts()) allowed.insert(part.id); }
+                if (faces && allowed.empty()) { setNotice(tr("该运动体尚未绑定几何面。请先绑定实体或选择有几何的参考体。"),true); return; }
+                QVector<PickResult> initial;
+                for (const auto& value:*selection) { const auto ref=value.toObject(); PickResult p;
+                    p.kind=faces ? PickKind::Face : PickKind::Edge; p.partId=ref.value("partId").toInt(-1);
+                    p.index=ref.value("index").toInt(-1); if (allowed.empty() || allowed.count(p.partId)) initial.append(p); }
+                picker->begin(field,pick,faces ? PickKind::Face : PickKind::Edge,true,allowed,initial,
+                    [this,selection,selected,faces](const auto& picks) {
+                        QJsonArray refs; QString error;
+                        for (const auto& p:picks) {
+                            const auto ref=nativeTopologyReference(m_document,p.partId,p.index,faces ? TopAbs_FACE : TopAbs_EDGE);
+                            if (ref.isEmpty()) { setNotice(tr("所选拓扑已失效，请重新拾取。"),true); return; }
+                            refs.append(ref);
+                        }
+                        *selection=refs; selected->setText(topologySummary(refs,faces));
+                    });
+            });
+            connect(choose, &QPushButton::clicked, panel, [this, picker, panel, selected, selection, document, row, field, faces] {
+                picker->finish();
                 auto joint = row; const auto bodyField = topologyBodyField(field);
                 if (auto* combo = panel->findChild<QComboBox*>("native_" + bodyField)) joint.insert(bodyField, combo->currentData().toInt());
                 if (selectConstraintTopology(this, m_document, document, joint, field, *selection)) selected->setText(topologySummary(*selection, faces));
             });
             fields.insert(field, [selection] { return *selection; });
-        } else fields.insert(it.key(), addField(form, it.key(), it.value(), document, collection));
+        } else fields.insert(it.key(), addField(form, it.key(), it.value(), document, collection, 0, picker));
+    }
+    if (collection == "bodies") {
+        auto* massStatus=new QLabel; massStatus->setObjectName("nativeMassStatus"); massStatus->setWordWrap(true); form->addRow(massStatus);
+        auto* calculate=new QPushButton(tr("按绑定几何重新计算质量")); calculate->setObjectName("nativeRecalculateMass"); form->addRow(calculate);
+        auto* custom=panel->findChild<QCheckBox*>("native_isCustomMassProps");
+        auto* density=panel->findChild<QLineEdit*>("native_densityKgMm3");
+        const auto recalculate=[this,panel,parts,custom,density,massStatus,row] {
+            if (!custom || custom->isChecked()) return;
+            auto computed=row; computed.insert("isCustomMassProps",false); QString error;
+            bool valid=false; const double rho=density->text().toDouble(&valid);
+            if (!valid || !updateNativeBodyMass(m_document,selectedParts(parts),computed,rho,error)) {
+                massStatus->setText(valid ? error : tr("请输入有效密度。")); massStatus->setProperty("massError",true); return;
+            }
+            panel->findChild<QLineEdit*>("native_mass")->setText(QString::number(computed.value("mass").toDouble(),'g',17));
+            for (auto* box:panel->findChildren<QGroupBox*>()) if (box->title()==label("centerOfMass")) {
+                const auto c=computed.value("centerOfMass").toObject();
+                for (const auto& key:{"x","y","z"}) box->findChild<QLineEdit*>(QStringLiteral("native_")+key)->setText(QString::number(c.value(key).toDouble(),'g',17));
+            }
+            auto* tensor=panel->findChild<QTableWidget*>("native_inertia"); const auto values=computed.value("inertia").toArray();
+            tensor->setRowCount(values.size());
+            for (int r=0;r<values.size();++r) tensor->setItem(r,0,new QTableWidgetItem(QString::number(values[r].toDouble(),'g',17)));
+            auto* convention=panel->findChild<QComboBox*>("native_inertiaConvention"); convention->setCurrentIndex(convention->findData("tensor"));
+            massStatus->setProperty("massError",false);
+            massStatus->setText(tr("已按 %1 个实体、密度 %2 kg/mm³ 计算质量、全局质心和质心惯量。").arg(selectedParts(parts).size()).arg(rho,0,'g',8));
+        };
+        connect(calculate,&QPushButton::clicked,panel,[custom,recalculate] { if (custom->isChecked()) custom->setChecked(false); else recalculate(); });
+        connect(custom,&QCheckBox::toggled,panel,[recalculate,massStatus](bool manual) {
+            if (!manual) recalculate(); else { massStatus->setProperty("massError",false); massStatus->setText(QStringLiteral("使用指定质量属性。")); }
+        });
+        const auto lockMass=[panel,custom,density] {
+            const bool manual=custom->isChecked(); density->setEnabled(!manual);
+            panel->findChild<QLineEdit*>("native_mass")->setReadOnly(!manual);
+            panel->findChild<QTableWidget*>("native_inertia")->setEnabled(manual);
+            panel->findChild<QComboBox*>("native_inertiaConvention")->setEnabled(manual);
+            for (auto* box:panel->findChildren<QGroupBox*>()) if (box->title()==label("centerOfMass")) box->setEnabled(manual);
+        };
+        connect(custom,&QCheckBox::toggled,panel,[lockMass](bool) { lockMass(); }); lockMass();
+        connect(density,&QLineEdit::editingFinished,panel,recalculate);
+        connect(parts,&QListWidget::itemChanged,panel,[recalculate](QListWidgetItem*) { recalculate(); });
     }
     if (autoFlex) {
         for (const auto& key : missingFlexMaterialProperties)
@@ -1124,6 +1293,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             : tr("附着节点留空时自动按运动副收组；原网格编号须有对应节点坐标。"));
         attachState->setWordWrap(true); form->addRow(attachState);
         auto* selectNodes=new QPushButton(tr("选择附着节点…")); selectNodes->setObjectName("nativeFlexSelectNodes"); form->addRow(selectNodes);
+        auto* pickNodes=new QPushButton(tr("在视口拾取附着节点")); pickNodes->setObjectName("nativeFlexPickNodes"); form->addRow(pickNodes);
         auto* automatic=new QPushButton(tr("按运动副自动附着")); automatic->setObjectName("nativeFlexAutoAttach");
         automatic->setToolTip(tr("清空手动附着节点、显式节点组和位置，改为按连接目标体的运动副自动收组。")); form->addRow(automatic);
         const auto clearAttachments=[panel, flexGroups, flexPositions, attachState, attachmentMeshChanged] {
@@ -1132,8 +1302,43 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             *attachmentMeshChanged=false;
             attachState->setText(QStringLiteral("附着节点留空时自动按运动副收组。"));
         };
-        connect(automatic, &QPushButton::clicked, panel, clearAttachments);
-        connect(selectNodes, &QPushButton::clicked, panel, [this, panel, flexMesh, attachState, clearAttachments] {
+        connect(automatic, &QPushButton::clicked, panel, [picker,clearAttachments] {
+            picker->finish();
+            clearAttachments();
+        });
+        connect(pickNodes,&QPushButton::clicked,panel,[this,picker,pickNodes,panel,document,flexMesh,flexGroups,flexPositions,attachmentMeshChanged,attachState,clearAttachments] {
+            FemMesh mesh; QString error;
+            if (!readFemMeshJson(*flexMesh,mesh,error)) { setNotice(tr("请先保存并生成真实体网格，再拾取附着节点。 ")+error,true); return; }
+            auto* body=panel->findChild<QComboBox*>("native_targetBodyId");
+            const auto parts=document.bodyPartBindings.value(body->currentData().toInt());
+            if (parts.isEmpty()) { setNotice(tr("目标体没有绑定几何。"),true); return; }
+            auto nodeIds=flexMesh->value("nodeIds").toArray(); const bool mapped=nodeIds.size()==int(mesh.nodes.size());
+            if (!mapped) { nodeIds={}; for (int i=0;i<int(mesh.nodes.size());++i) nodeIds.append(i+1); }
+            QVector<int> ids; for (const auto& id:nodeIds) ids.append(id.toInt());
+            m_viewport->setPickNodes(parts.front(),mesh,ids);
+            auto* table=panel->findChild<QTableWidget*>("native_attachPoints"); QSet<int> selected;
+            QJsonArray originalPoints; for (int r=0;r<table->rowCount();++r) if (auto* item=table->item(r,0)) originalPoints.append(item->text().toInt());
+            if (mapped) for (const auto& id:originalPoints) selected.insert(id.toInt());
+            QVector<PickResult> initial;
+            for (int i=0;i<ids.size();++i) if (selected.contains(ids[i])) {
+                PickResult p; p.kind=PickKind::Node; p.partId=parts.front(); p.index=i; p.nodeId=ids[i]; p.position=mesh.nodes[i]; initial.append(p);
+            }
+            const auto groups=*flexGroups, positions=*flexPositions; const bool changed=*attachmentMeshChanged;
+            const auto oldText=attachState->text(); const auto oldMesh=*flexMesh;
+            picker->begin("attachPoints",pickNodes,PickKind::Node,true,{parts.front()},initial,
+                [=](const auto& picks) {
+                    clearAttachments(); flexMesh->insert("nodeIds",nodeIds); table->setRowCount(picks.size());
+                    for (int r=0;r<picks.size();++r) table->setItem(r,0,new QTableWidgetItem(QString::number(picks[r].nodeId)));
+                    attachState->setText(tr("已拾取 %1 个真实网格节点；Ctrl+左键可框选，右键减选。").arg(picks.size()));
+                },[=] {
+                    *flexGroups=groups; *flexPositions=positions; *attachmentMeshChanged=changed; *flexMesh=oldMesh;
+                    table->setRowCount(originalPoints.size());
+                    for (int r=0;r<originalPoints.size();++r) table->setItem(r,0,new QTableWidgetItem(QString::number(originalPoints[r].toInt())));
+                    attachState->setText(oldText);
+                });
+        });
+        connect(selectNodes, &QPushButton::clicked, panel, [this, picker, panel, flexMesh, attachState, clearAttachments] {
+            picker->finish();
             if (flexMesh->isEmpty()) { setNotice(tr("请先保存生成体网格，再编辑此自动柔性体选择节点；留空时按运动副自动附着。"), true); return; }
             auto* table=panel->findChild<QTableWidget*>("native_attachPoints"); if (!table) return;
             QJsonArray points;
@@ -1151,7 +1356,10 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                     input->setText(material.value(key).isDouble() ? QString::number(material.value(key).toDouble(), 'g', 17) : QString{});
         });
         if (auto* body=panel->findChild<QComboBox*>("native_targetBodyId"))
-            connect(body, qOverload<int>(&QComboBox::currentIndexChanged), panel, [panel, document, body, flexMesh, attachState, clearAttachments, this] {
+            connect(body, qOverload<int>(&QComboBox::currentIndexChanged), panel, [panel, picker, document, body, flexMesh, attachState, clearAttachments, this] {
+                // The active session captures node IDs and positions from the old mesh.
+                // Detach it before replacing that mesh, even when node counts coincide.
+                picker->finish();
                 *flexMesh=collectFlexMesh(document.bodyPartBindings.value(body->currentData().toInt()), m_meshes);
                 panel->findChild<QLabel*>("nativeFlexMeshStatus")->setText(flexMeshSummary(*flexMesh));
                 if (auto* file=panel->findChild<QLineEdit*>("native_meshFile")) file->clear();
@@ -1159,13 +1367,47 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                 attachState->setText(tr("目标体已变更，请重新选择附着节点；留空将按新目标体的运动副自动附着。"));
             });
     }
+    if (collection=="drives") {
+        auto* function=new QPushButton(tr("函数编辑、表格与预览…")); function->setObjectName("nativeFunctionBuilder"); form->addRow(function);
+        connect(function,&QPushButton::clicked,panel,[this,panel,document] {
+            auto* expression=panel->findChild<QLineEdit*>("native_expression");
+            auto* x=panel->findChild<QTableWidget*>("native_driveTableX"); auto* y=panel->findChild<QTableWidget*>("native_driveTableY");
+            if (!expression || !x || !y) return;
+            const auto read=[](QTableWidget* table) { QJsonArray values; for (int r=0;r<table->rowCount();++r) {
+                bool ok=false; const double v=table->item(r,0) ? table->item(r,0)->text().toDouble(&ok) : 0;
+                if (!ok || !std::isfinite(v)) throw std::runtime_error("函数表中包含无效数值。"); values.append(v);
+            } return values; };
+            try {
+                auto text=expression->text(); auto tx=read(x), ty=read(y);
+                const bool rotation=panel->findChild<QComboBox*>("native_motionType")->currentData().toString()=="Rotation";
+                const bool velocity=panel->findChild<QComboBox*>("native_controlMode")->currentData().toString()=="Velocity";
+                const auto scenarios=document.collection("scenarios"); const double duration=scenarios.isEmpty() ? 10 : scenarios.first().toObject().value("endTime").toDouble(10);
+                if (!editNativeFunction(this,text,tx,ty,rotation ? (velocity ? "°/s" : "°") : (velocity ? "mm/s" : "mm"),duration)) return;
+                expression->setText(text);
+                const auto write=[](QTableWidget* table,const QJsonArray& values) { table->setRowCount(values.size());
+                    for (int r=0;r<values.size();++r) table->setItem(r,0,new QTableWidgetItem(QString::number(values[r].toDouble(),'g',17))); };
+                write(x,tx); write(y,ty);
+            } catch (const std::exception& error) { setNotice(QString::fromUtf8(error.what()),true); }
+        });
+    }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); form->addRow(buttons);
     buttons->button(QDialogButtonBox::Ok)->setObjectName(QStringLiteral("motionApplyButton"));
     connect(buttons, &QDialogButtonBox::rejected, this, [this] { closeEditor(); updateParameters(); });
-    connect(buttons, &QDialogButtonBox::accepted, this, [this, document, row, fields, parts, collection, id]() mutable {
+    connect(buttons, &QDialogButtonBox::accepted, this, [this, document, row, fields, parts, collection, id, panel, picker]() mutable {
         try {
+            picker->finish();
+            if (auto* status=panel->findChild<QLabel*>("nativeMassStatus"); status && status->property("massError").toBool()) {
+                setNotice(status->text(),true); return;
+            }
             auto next = row;
             for (auto it = fields.begin(); it != fields.end(); ++it) next.insert(it.key(), it.value()());
+            if (collection=="sensors") convertSensorPoints(next,document,false);
+            if (parts && !next.value("isCustomMassProps").toBool()
+                && (next.value("densityKgMm3")!=row.value("densityKgMm3") || row.value("isCustomMassProps").toBool()
+                    || selectedParts(parts)!=document.bodyPartBindings.value(id))) {
+                QString error;
+                if (!updateNativeBodyMass(m_document,selectedParts(parts),next,next.value("densityKgMm3").toDouble(),error)) { setNotice(error,true); return; }
+            }
             if (collection=="autoFlexBodies") {
                 if (next.value("targetBodyId")!=row.value("targetBodyId")) next.remove("meshSourceFile");
                 const auto properties=next.value("material").toObject();

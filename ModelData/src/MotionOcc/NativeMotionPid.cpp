@@ -147,9 +147,11 @@ void NativeMotionSystem::CustomEndOfStep()
         GetTimestepper()->SetTime(exact);
     }
     const double time=GetMotionTime();
+    if(validateFlexState)validateFlexState(time);
     if(projectPositions)projectAcceptedPositions();
     if(acceptedStepSize>0)rejectNativeGeometryBoundary(*this);
     validateNativeAcceptedConstraints(*this);
+    if(captureFlexState)captureFlexState(time);
     for(auto& controller:controllers)update(controller,*this,time);
 }
 

@@ -529,11 +529,14 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
     connect(start, &QDoubleSpinBox::editingFinished, panel, changeWindow);
     connect(end, &QDoubleSpinBox::editingFinished, panel, changeWindow);
     connect(exportButton, &QPushButton::clicked, panel, [this, panel, interval, feedback] {
-        QString path = QFileDialog::getSaveFileName(panel, tr("导出可见曲线"), QStringLiteral("motion-curves.csv"), tr("CSV 表格 (*.csv)"));
+        QString selectedFilter;
+        QString path = QFileDialog::getSaveFileName(panel, tr("导出可见曲线"), QStringLiteral("motion-curves.csv"), tr("CSV 表格 (*.csv);;TXT 制表符数据 (*.txt)"), &selectedFilter);
         if (path.isEmpty()) return;
-        if (QFileInfo(path).suffix().isEmpty()) path += QStringLiteral(".csv");
+        const bool txt=QFileInfo(path).suffix().compare("txt",Qt::CaseInsensitive)==0 || selectedFilter.contains("*.txt");
+        if (QFileInfo(path).suffix().isEmpty()) path += txt ? QStringLiteral(".txt") : QStringLiteral(".csv");
         QString error;
-        feedback->setText(exportCurvesCsv(path, error, interval->value()) ? tr("已导出：%1").arg(QFileInfo(path).fileName()) : error);
+        const bool ok=txt ? exportCurvesTxt(path,error,interval->value()) : exportCurvesCsv(path,error,interval->value());
+        feedback->setText(ok ? tr("已导出：%1").arg(QFileInfo(path).fileName()) : error);
     });
     populateSources();
     refresh();
@@ -628,6 +631,16 @@ void RigidPlot::setTimeMarkerVisible(bool visible)
 
 bool RigidPlot::exportCurvesCsv(const QString& path, QString& error, int interval) const
 {
+    return exportCurvesDelimited(path,error,interval,',');
+}
+
+bool RigidPlot::exportCurvesTxt(const QString& path, QString& error, int interval) const
+{
+    return exportCurvesDelimited(path,error,interval,'\t');
+}
+
+bool RigidPlot::exportCurvesDelimited(const QString& path, QString& error, int interval, char delimiter) const
+{
     error.clear();
     if (m_visible.empty()) { error = tr("没有可导出的可见曲线。"); return false; }
     if (interval < 0) { error = tr("导出间隔不能为负数。"); return false; }
@@ -643,7 +656,7 @@ bool RigidPlot::exportCurvesCsv(const QString& path, QString& error, int interva
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) { error = file.errorString(); return false; }
     QByteArray header = csvLabel(QStringLiteral("time_s"));
-    for (const auto& curve : m_visible) header += ',' + csvLabel(curve.series.unit.isEmpty() ? curve.title
+    for (const auto& curve : m_visible) header += delimiter + csvLabel(curve.series.unit.isEmpty() ? curve.title
         : QStringLiteral("%1 (%2)").arg(curve.title, curve.series.unit));
     header += "\r\n";
     bool ok = file.write(header) == header.size();
@@ -652,7 +665,7 @@ bool RigidPlot::exportCurvesCsv(const QString& path, QString& error, int interva
     const auto writeRow = [&](int index) {
         QByteArray row = QByteArray::number(times[index], 'g', std::numeric_limits<double>::max_digits10);
         for (const auto& curve : m_visible)
-            row += ',' + QByteArray::number(curve.series.values[index], 'g', std::numeric_limits<double>::max_digits10);
+            row += delimiter + QByteArray::number(curve.series.values[index], 'g', std::numeric_limits<double>::max_digits10);
         row += "\r\n";
         return file.write(row) == row.size();
     };

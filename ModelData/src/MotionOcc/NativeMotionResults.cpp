@@ -167,10 +167,21 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
     }
     for(const auto& runtime:flex){
         RigidFlexResult output;output.flexId=runtime.id;output.bodyId=runtime.bodyId;output.referenceNodes=runtime.result.node_x0;output.surfaceTriangles=runtime.result.surface_tris;
+        output.tetrahedra=runtime.tetrahedra;
+        output.modeCount=runtime.result.n_modes;
+        output.interfaceCount=static_cast<int>(runtime.result.interface_bodies.size());
+        output.densityKgMm3=runtime.densityKgMm3;
+        output.psiInternal=runtime.result.psi_internal;
+        if(runtime.interfacePoses.empty())throw std::runtime_error("柔性体没有初始接口位姿。");
+        output.initialInterfacePoses=runtime.interfacePoses.front();
+        if(output.psiInternal.size()!=output.referenceNodes.size()*static_cast<std::size_t>(6*output.interfaceCount+output.modeCount))
+            throw std::runtime_error("柔性体模态矩阵尺寸与节点/接口/模态数不一致。");
         for(const auto& frame:result.frames){
             const auto found=std::lower_bound(runtime.times.begin(),runtime.times.end(),frame.seconds-1e-9);
             if(found==runtime.times.end()||std::abs(*found-frame.seconds)>1e-8)throw std::runtime_error("柔性体采样与刚体结果时间轴不一致。");
             const std::size_t index=static_cast<std::size_t>(found-runtime.times.begin());output.nodePositions.push_back(runtime.nodePositions[index]);
+            output.interfacePoses.push_back(runtime.interfacePoses.at(index));
+            output.modalCoordinates.push_back(runtime.modalCoordinates.at(index));
             channels.add("autoFlexBodies",runtime.id,"ModalCoordinates","",runtime.modalCoordinates[index]);
         }
         result.flexBodies.push_back(std::move(output));

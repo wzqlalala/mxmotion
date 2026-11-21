@@ -3,19 +3,46 @@
 #include <QMatrix4x4>
 #include <QOpenGLWidget>
 #include <QString>
+#include <QVector>
+#include <QMetaType>
+#include <array>
 #include <map>
 #include <memory>
 #include <set>
+#include <vector>
 
 class QMouseEvent;
 class QPointF;
 class QResizeEvent;
 class QWheelEvent;
+class QKeyEvent;
+class QEvent;
 
 namespace MotionOcc {
 
 class CadDocument;
 struct FemMesh;
+struct MotionSymbol;
+
+enum class PickKind { Part, Vertex, Edge, Face, Node, MeshEdge, MeshFace, Element };
+
+// Coordinates are initial global CAD coordinates in millimetres, including
+// STEP placement. Topology indices follow TopExp::MapShapes (one based).
+// Node index is zero based; nodeId preserves the supplied FEM numbering.
+// FEM edge/face/element indices are one-based connectivity ordinals, with
+// nodeIds retaining the mesh's actual endpoint/cell connectivity numbering.
+struct PickResult {
+    PickKind kind = PickKind::Part;
+    int partId = -1;
+    int index = -1;
+    int nodeId = -1;
+    QVector<int> nodeIds; // actual connectivity IDs for FEM edges, faces and elements
+    std::array<double, 3> position{};
+    std::array<double, 3> hitPosition{}; // actual cursor location on CAD, when applicable
+    std::array<double, 3> direction{};
+    bool hasDirection = false;
+    bool isValid() const { return partId > 0; }
+};
 
 class OccViewport final : public QOpenGLWidget {
     Q_OBJECT
@@ -42,6 +69,20 @@ public:
     void selectPart(int id);
     void setDisplayMode(DisplayMode mode);
     void setPickEnabled(bool enabled);
+    void beginPick(PickKind kind, bool multiple = false,
+                   const std::set<int>& allowedParts = {}, const QVector<PickResult>& initial = {});
+    void endPick();
+    bool isPicking() const;
+    QVector<PickResult> pickSelection() const;
+    void setPickSelection(const QVector<PickResult>& selection);
+    // Replaces this part's selectable node cloud without modifying the FEM mesh.
+    void setPickNodes(int partId, const FemMesh& mesh, const QVector<int>& nodeIds = {});
+    void setMeshScalars(const std::map<int, std::vector<double>>& values,
+                        double minimum, double maximum, const QString& title);
+    void clearMeshScalars();
+    void setMotionSymbols(const QVector<MotionSymbol>& symbols);
+    PickResult pickAt(const QPointF& position) const;
+    QPointF projectPoint(const std::array<double, 3>& position, int partId = -1) const;
     void fitAll();
     void viewIsometric();
     void viewFront();
@@ -52,6 +93,8 @@ public:
 signals:
     void partPicked(int id); // -1 when nothing was hit
     void graphicsError(const QString& message);
+    void pickSelectionChanged(const QVector<MotionOcc::PickResult>& selection);
+    void pickCancelled();
 
 protected:
     void initializeGL() override;
@@ -61,6 +104,8 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     struct State;
@@ -72,7 +117,13 @@ private:
     bool uploadChangedMeshes();
     int pickPart(const QPointF& position) const;
     void drawAxes();
+    void drawPickOverlay();
+    void drawScalarLegend();
+    void drawMotionSymbols();
     void reportGraphicsError(const QString& message);
 };
 
 } // namespace MotionOcc
+
+Q_DECLARE_METATYPE(MotionOcc::PickResult)
+Q_DECLARE_METATYPE(QVector<MotionOcc::PickResult>)

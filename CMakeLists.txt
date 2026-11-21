@@ -76,6 +76,8 @@ function(mx_add_docking)
             message(FATAL_ERROR "Qt ADS on Linux requires the Qt5 private headers (qtbase5-private-dev).")
         endif()
         target_link_libraries(qtadvanceddocking-qt5 PRIVATE Qt5::GuiPrivate)
+        include("${PROJECT_SOURCE_DIR}/cmake/PatchQtAdsLifetime.cmake")
+        mx_patch_qtads_lifetime(qtadvanceddocking-qt5)
     endif()
 endfunction()
 
@@ -84,6 +86,7 @@ add_library(MotionOccData STATIC
     "${model_dir}/CadDocument.cpp"
     "${model_dir}/NativeMotionDocument.cpp"
     "${model_dir}/NativeTopologyBinding.cpp"
+    "${model_dir}/NativeBodyMass.cpp"
     "${model_dir}/OccTessellation.cpp"
     "${model_dir}/FemMesh.cpp")
 target_include_directories(MotionOccData PUBLIC "${model_dir}")
@@ -130,7 +133,9 @@ add_library(MotionOccRigid STATIC "${model_dir}/RigidMotion.cpp" "${model_dir}/R
     "${model_dir}/NativeMotionSolver.cpp" "${model_dir}/NativeMotionGeometry.cpp"
     "${model_dir}/NativeMotionPid.cpp" "${model_dir}/NativeMotionSensors.cpp"
     "${model_dir}/NativeMotionProjection.cpp"
-    "${model_dir}/NativeMotionResults.cpp" "${model_dir}/NativeMotionFlex.cpp")
+    "${model_dir}/NativeMotionResults.cpp" "${model_dir}/NativeMotionFlex.cpp"
+    "${model_dir}/FlexResultScalars.cpp")
+target_sources(MotionOccRigid PRIVATE "${model_dir}/NativeMotionLoadExport.cpp")
 target_link_libraries(MotionOccRigid PUBLIC MotionOccData PRIVATE MotionEngine::Core MotionEngine::Modal)
 target_compile_options(MotionOccRigid PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 target_compile_definitions(MotionOccRigid PRIVATE _HAS_STD_BYTE=0)
@@ -171,6 +176,39 @@ if(BUILD_TESTING)
     target_compile_options(MotionOccNativeSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_dependencies(MotionOccNativeSmoke MxMotionMeshWorker MotionOccRuntime MotionEngineRuntime)
     add_test(NAME MotionOcc.Native COMMAND MotionOccNativeSmoke)
+    add_executable(MotionOccFlexResultsSmoke tests/MotionOccFlexResultsSmoke.cpp)
+    target_link_libraries(MotionOccFlexResultsSmoke PRIVATE MotionOccRigid MotionEngine::Core MotionEngine::Modal)
+    target_compile_options(MotionOccFlexResultsSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccFlexResultsSmoke MxMotionMeshWorker MotionOccRuntime MotionEngineRuntime)
+    add_test(NAME MotionOcc.FlexResults COMMAND MotionOccFlexResultsSmoke)
+    add_executable(MotionOccNativeMassSmoke tests/MotionOccNativeMassSmoke.cpp)
+    target_link_libraries(MotionOccNativeMassSmoke PRIVATE MotionOccData)
+    add_dependencies(MotionOccNativeMassSmoke MotionOccRuntime)
+    add_test(NAME MotionOcc.NativeMass COMMAND MotionOccNativeMassSmoke)
+    add_executable(MotionOccFunctionEditorSmoke tests/MotionOccFunctionEditorSmoke.cpp
+        GUI/src/MxMotionOcc/NativeFunctionEditor.cpp)
+    target_include_directories(MotionOccFunctionEditorSmoke PRIVATE GUI/src/MxMotionOcc)
+    target_link_libraries(MotionOccFunctionEditorSmoke PRIVATE Qt5::Widgets Qwt::Qwt MotionEngine::Core)
+    add_dependencies(MotionOccFunctionEditorSmoke MotionEngineRuntime)
+    add_test(NAME MotionOcc.FunctionEditor COMMAND MotionOccFunctionEditorSmoke)
+    set_tests_properties(MotionOcc.FunctionEditor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+    add_executable(MotionOccSymbolsSmoke tests/MotionOccSymbolsSmoke.cpp GUI/src/MxMotionOcc/NativeMotionSymbols.cpp)
+    target_include_directories(MotionOccSymbolsSmoke PRIVATE GUI/src/MxMotionOcc)
+    target_link_libraries(MotionOccSymbolsSmoke PRIVATE MotionOccData)
+    add_dependencies(MotionOccSymbolsSmoke MotionOccRuntime)
+    add_test(NAME MotionOcc.Symbols COMMAND MotionOccSymbolsSmoke)
+    add_executable(MotionOccLoadExportSmoke tests/MotionOccLoadExportSmoke.cpp)
+    target_link_libraries(MotionOccLoadExportSmoke PRIVATE MotionOccRigid)
+    add_dependencies(MotionOccLoadExportSmoke MotionOccRuntime MotionEngineRuntime)
+    add_test(NAME MotionOcc.LoadExport COMMAND MotionOccLoadExportSmoke)
+    add_executable(MotionOccNativeDynamicsSmoke tests/MotionOccNativeDynamicsSmoke.cpp)
+    target_link_libraries(MotionOccNativeDynamicsSmoke PRIVATE MotionOccRigid)
+    add_dependencies(MotionOccNativeDynamicsSmoke MotionOccRuntime MotionEngineRuntime)
+    add_test(NAME MotionOcc.NativeDynamics COMMAND MotionOccNativeDynamicsSmoke)
+    set_tests_properties(MotionOcc.NativeDynamics PROPERTIES TIMEOUT 120)
+    foreach(target IN ITEMS MotionOccNativeMassSmoke MotionOccFunctionEditorSmoke MotionOccSymbolsSmoke MotionOccLoadExportSmoke MotionOccNativeDynamicsSmoke)
+        target_compile_options(${target} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    endforeach()
     set_tests_properties(MotionOcc.Native PROPERTIES TIMEOUT 180)
 
     add_executable(MotionOccNativeBindings tests/MotionOccNativeCases.cpp)

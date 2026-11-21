@@ -5,6 +5,7 @@
 #include "RigidProject.h"
 #include "RigidPlayback.h"
 #include "NativeMotionPresentation.h"
+#include "NativeMotionSymbols.h"
 #include "ThemeManager.h"
 #include "mFoldSection.h"
 #include "mUiMenu.h"
@@ -221,6 +222,19 @@ void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
     curveLink->addRow(m_followCurveMarker);
     curveLink->addRow(m_clickCurveJump);
     layout->addWidget(curveLink);
+    auto* flexDisplay = new FoldSection(tr("柔性体云图"), controls);
+    m_flexContour = new QComboBox(controls); m_flexContour->setObjectName("motionFlexContour");
+    m_flexContour->addItem(tr("关闭云图"),-1);
+    m_flexContour->addItem(tr("弹性位移 (mm)"),int(FlexContourKind::ElasticDisplacement));
+    m_flexContour->addItem(tr("总位移 (mm)"),int(FlexContourKind::TotalDisplacement));
+    m_flexContour->addItem(tr("原自由模态投影 (mm)"),int(FlexContourKind::LegacyFreeModeProjection));
+    m_flexContour->setToolTip(tr("弹性位移去除刚体运动；总位移相对初始几何。原自由模态投影沿用原界面的近似投影公式。"));
+    m_flexRange = new QComboBox(controls); m_flexRange->setObjectName("motionFlexRange");
+    m_flexRange->addItem(tr("当前帧自适应"),0); m_flexRange->addItem(tr("整个时程统一范围"),1);
+    flexDisplay->addRow(tr("显示量"),m_flexContour); flexDisplay->addRow(tr("色标范围"),m_flexRange);
+    layout->addWidget(flexDisplay);
+    connect(m_flexContour,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int) { seekRigidTime(m_playbackTime); });
+    connect(m_flexRange,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int) { seekRigidTime(m_playbackTime); });
     layout->addStretch();
     auto* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
@@ -398,6 +412,10 @@ void MotionWindow::selectRigidNode(ModelNode node)
     case ModelNode::Export: leaveRigidAnimation(); break;
     default: break;
     }
+    if (!m_animationActive && m_model.nativeDocument)
+        m_viewport->setMotionSymbols(nativeMotionSymbols(m_document, *m_model.nativeDocument, {},
+            node.kind == ModelNode::Native ? node.collection : QString{},
+            node.kind == ModelNode::Native ? node.id : -1));
 }
 
 void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
@@ -443,6 +461,7 @@ void MotionWindow::showEditor(QWidget* editor)
 
 void MotionWindow::closeEditor()
 {
+    if (m_viewport && m_viewport->isPicking()) { m_viewport->endPick(); m_viewport->setProperty("nativePickOwner",QVariant{}); }
     if (!m_editor) return;
     m_editor->hide();
     m_parameterLayout->removeWidget(m_editor);
@@ -455,6 +474,7 @@ void MotionWindow::closeEditor()
 
 void MotionWindow::editBody(int id)
 {
+    if (!m_model.nativeDocument && m_model.bodies.empty() && !ensureNativeModel()) return;
     if (m_model.nativeDocument) { editNativeEntity(QStringLiteral("bodies"), id); return; }
     if (motionBusy() || m_jobPart >= 0) return;
     const auto* current = byId(m_model.bodies, id);
@@ -497,6 +517,7 @@ void MotionWindow::editBody(int id)
 
 void MotionWindow::batchBodies()
 {
+    if (!m_model.nativeDocument && m_model.bodies.empty() && !ensureNativeModel()) return;
     if (m_model.nativeDocument) { batchNativeBodies(); return; }
     if (motionBusy() || m_jobPart >= 0) return;
     RigidModel next = m_model;
@@ -737,8 +758,10 @@ void MotionWindow::pollRigidSolve()
         m_results[id] = run;
         m_selectionNode = {ModelNode::Scenario, id};
         updateTree();
-        const auto message = run->result.termination == ResultTermination::GeometryBoundary
-            ? tr("MotionEngine 因几何边界终止：已保留 %1 帧 / %2 s 的有效结果。")
+        const auto message = run->result.termination != ResultTermination::EndTime
+            ? (run->result.termination == ResultTermination::FlexDivergence
+                ? tr("MotionEngine 因柔性体模态发散终止：已保留 %1 帧 / %2 s 的有效结果。")
+                : tr("MotionEngine 因几何边界终止：已保留 %1 帧 / %2 s 的有效结果。"))
                 .arg(run->result.frames.size()).arg(run->result.frames.back().seconds)
             : tr("MotionEngine 求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
                 .arg(run->result.frames.size()).arg(run->result.frames.back().seconds);
@@ -761,6 +784,7 @@ void MotionWindow::showRigidResult(ModelNode node)
         if (!validateRigidPlayback(run.input, run.result, error)) { setNotice(error, true); return; }
     }
     if (node.kind == ModelNode::Export) {
+        if (run.input.nativeInput) { editNativeLoadExport(node.id); return; }
         leaveRigidAnimation();
         auto path = QFileDialog::getSaveFileName(this, tr("导出求解结果"), run.input.scenario.name + ".csv", tr("CSV 表格 (*.csv)"));
         if (path.isEmpty()) return;
@@ -820,7 +844,40 @@ void MotionWindow::seekRigidTime(double seconds)
         }
     }
     m_viewport->setPartPoses(sample.partPoses);
+    if (run.input.nativeInput) m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,run.input.nativeInput->document,sample.partPoses));
     m_viewport->setDeformedMeshes(sample.flexMeshes, sample.flexHiddenParts);
+    if (m_flexContour->currentData().toInt()>=0 && !run.result.flexBodies.empty()) {
+        const auto kind=FlexContourKind(m_flexContour->currentData().toInt());
+        std::map<int,std::vector<double>> scalars; double maximum=0;
+        const auto next=std::upper_bound(frames.begin(),frames.end(),sample.seconds,[](double t,const RigidFrame& f) { return t<f.seconds; });
+        const auto left=next==frames.begin() ? std::size_t(0) : std::size_t(next-frames.begin()-1);
+        const auto right=std::min(left+1,frames.size()-1);
+        const double fraction=right==left ? 0 : (sample.seconds-frames[left].seconds)/(frames[right].seconds-frames[left].seconds);
+        for (const auto& flex:run.result.flexBodies) {
+            const auto parts=run.input.nativeInput->document.bodyPartBindings.value(flex.bodyId);
+            const auto visible=std::find_if(parts.begin(),parts.end(),[&](int part) { return sample.flexMeshes.count(part)!=0; });
+            if (visible==parts.end()) continue;
+            std::vector<double> values;
+            if (!flexNodeScalarsAt(flex,left,right,fraction,kind,values,error)) {
+                setPlayback(false); setNotice(error,true); m_viewport->clearMeshScalars(); return;
+            }
+            for (double value:values) maximum=std::max(maximum,value);
+            if (m_flexRange->currentData().toInt()==1) {
+                const auto key=std::make_pair(flex.flexId,int(kind)); auto cached=m_flexGlobalMax.find(key);
+                if (cached==m_flexGlobalMax.end()) {
+                    double all=0; std::vector<double> frame;
+                    for (std::size_t i=0;i<frames.size();++i) {
+                        if (!flexNodeScalars(flex,i,kind,frame,error)) { setNotice(error,true); return; }
+                        for (double value:frame) all=std::max(all,value);
+                    }
+                    cached=m_flexGlobalMax.emplace(key,all).first;
+                }
+                maximum=std::max(maximum,cached->second);
+            }
+            scalars.emplace(*visible,std::move(values));
+        }
+        m_viewport->setMeshScalars(scalars,0,maximum,m_flexContour->currentText());
+    } else m_viewport->clearMeshScalars();
     m_playbackTime = sample.seconds;
     const QSignalBlocker block(m_timeline);
     m_timeline->setValue(sample.frameIndex);
@@ -854,6 +911,8 @@ void MotionWindow::stopRigidPlayback()
 
 void MotionWindow::leaveRigidAnimation()
 {
+    m_flexGlobalMax.clear();
+    if (m_viewport) m_viewport->clearMeshScalars();
     setPlayback(false);
     if (m_animationActive) {
         const auto it = m_results.find(m_resultScenario);
@@ -867,6 +926,7 @@ void MotionWindow::leaveRigidAnimation()
     }
     m_animationActive = false;
     if (m_viewport) m_viewport->clearPartPoses();
+    if (m_viewport && m_model.nativeDocument) m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,*m_model.nativeDocument));
     if (m_rigidPlot) m_rigidPlot->setTimeMarkerVisible(false);
     if (m_animationDock && !m_animationDock->isClosed()) m_animationDock->closeDockWidget();
     updatePlaybackControls();

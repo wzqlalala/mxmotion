@@ -22,6 +22,14 @@ struct NativeGeometryBoundary {
 };
 constexpr double NativeGeometryBoundaryToleranceMm = 0.03;
 
+// A rejected trial state. It is thrown before the engine records a frame, so
+// rigid channels, flexible meshes and modal coordinates retain one time axis.
+struct NativeFlexDivergence {
+    int flexId = -1;
+    double attemptedTime = 0;
+    QString reason;
+};
+
 struct NativePidSample { double time, target, feedback, error, output; };
 struct NativePidRuntime {
     int id=-1;
@@ -46,6 +54,8 @@ public:
     std::uint64_t acceptedStepIndex=0;
     const NativeMotionInput* sourceInput=nullptr;
     bool projectPositions=false;
+    std::function<void(double)> validateFlexState;
+    std::function<void(double)> captureFlexState;
     int positionIterations=50;
     void configureControllers(const NativeMotionInput& input);
     void projectAcceptedPositions();
@@ -61,11 +71,15 @@ struct NativeFlexRuntime {
     std::vector<double> times;
     std::vector<std::vector<double>> modalCoordinates;
     std::vector<std::vector<double>> nodePositions;
+    std::vector<int> tetrahedra;
+    double densityKgMm3=0;
+    std::vector<std::vector<double>> interfacePoses;
 };
 
 std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system, const NativeMotionInput& input,
                                              const SolverCallbacks& callbacks);
 void captureNativeFlex(std::vector<NativeFlexRuntime>& flex, double time);
+void validateNativeFlex(const std::vector<NativeFlexRuntime>& flex, double time);
 void extractNativeResults(const NativeMotionInput& input, const NativeMotionSystem& system,
                           const std::vector<NativeFlexRuntime>& flex, RigidResult& result);
 

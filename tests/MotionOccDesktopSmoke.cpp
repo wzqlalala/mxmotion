@@ -16,6 +16,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QListWidget>
+#include <QLineEdit>
 #include <QSlider>
 
 #include <QAction>
@@ -279,6 +280,7 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         applyForm();
         require(window.command(Command::AddSpeedDrive)->isEnabled(), QStringLiteral("Revolute joint not created"));
         window.command(Command::AddSpeedDrive)->trigger();
+        if (auto* value=window.findChild<QLineEdit*>("native_expression")) value->setText("90");
         for (auto* value : window.findChildren<QDoubleSpinBox*>())
             if (value->isVisible() && value->suffix().contains(QStringLiteral("°/s"))) value->setValue(90);
         applyForm();
@@ -316,8 +318,9 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         auto* variable = configuration->findChild<QComboBox*>(QStringLiteral("motionCurveVariable"));
         auto* addCurve = configuration->findChild<QPushButton*>(QStringLiteral("motionAddCurveButton"));
         require(source && variable && addCurve, QStringLiteral("Original curve request controls missing"));
-        source->setCurrentIndex(source->findData(1)); // Joint relative angle, not world position.
-        variable->setCurrentIndex(variable->findData(int(RigidCurveMetric::JointCoordinate) * 4));
+        const bool native=source->findData("joints")>=0;
+        source->setCurrentIndex(source->findData(native ? QVariant("joints") : QVariant(1))); // Relative joint angle.
+        variable->setCurrentIndex(variable->findData(native ? QVariant("Coordinate:0") : QVariant(int(RigidCurveMetric::JointCoordinate)*4)));
         addCurve->click();
         require(waitFor([&] { return plot->isVisible() && plot->itemList(QwtPlotItem::Rtti_PlotCurve).size() == 1; }, 4000),
             QStringLiteral("Explicit Add Curve did not create the requested series"));
@@ -327,8 +330,8 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         require(std::abs(curve->sample(curve->dataSize() - 1).y() - 90.0) < 0.5,
             QStringLiteral("Joint angle curve disagrees with the solved 90 degree motion"));
         const auto physicalFrames = curve->dataSize();
-        source->setCurrentIndex(source->findData(0));
-        variable->setCurrentIndex(variable->findData(int(RigidCurveMetric::BodyPosition) * 4));
+        source->setCurrentIndex(source->findData(native ? QVariant("bodies") : QVariant(0)));
+        variable->setCurrentIndex(variable->findData(native ? QVariant("Position:0") : QVariant(int(RigidCurveMetric::BodyPosition)*4)));
         addCurve->click();
         require(plot->itemList(QwtPlotItem::Rtti_PlotCurve).size() == 2,
             QStringLiteral("Adding another channel replaced the existing curve"));

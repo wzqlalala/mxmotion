@@ -144,6 +144,7 @@ private:
     void removeNativeEntity(const QString& collection, int id);
     bool ensureNativeModel();
     void batchNativeBodies();
+    void editNativeLoadExport(int scenarioId);
     bool commitNativeDocument(NativeMotionDocument document, ModelNode selection);
     bool resolveNativeBindings(NativeMotionDocument& document, bool interactive);
     void ensureNativeFlexMesh(int flexId);
@@ -206,6 +207,9 @@ private:
     QLabel* m_timeLabel = nullptr;
     QCheckBox* m_loopPlayback = nullptr;
     QComboBox* m_playbackSpeed = nullptr;
+    QComboBox* m_flexContour = nullptr;
+    QComboBox* m_flexRange = nullptr;
+    std::map<std::pair<int,int>,double> m_flexGlobalMax;
     QCheckBox* m_followCurveMarker = nullptr;
     QCheckBox* m_clickCurveJump = nullptr;
     QTimer* m_rigidPoll = nullptr;

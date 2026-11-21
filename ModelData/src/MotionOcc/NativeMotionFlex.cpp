@@ -94,6 +94,7 @@ std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system,const 
         }
         for(std::size_t i=0;i<p.attach_groups.size();++i)p.external_interfaces.push_back(body);
         NativeFlexRuntime runtime;runtime.id=source.id;runtime.bodyId=source.bodyId;
+        runtime.tetrahedra=source.tetrahedra;runtime.densityKgMm3=source.density;
         runtime.result=motion::modal::BuildFlexBody(system,p);
         if(!runtime.result.assembly||runtime.result.n_modes<=0)throw std::runtime_error("柔性体模态缩减没有生成有效模态。");
         runtime.result.assembly->SetInternalNodesUpdate(true);
@@ -102,25 +103,63 @@ std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system,const 
     return out;
 }
 
+void validateNativeFlex(const std::vector<NativeFlexRuntime>& flex,double time)
+{
+    for(const auto& runtime:flex){
+        if(!runtime.result.assembly)throw std::runtime_error("柔性体模态装配不存在。");
+        const auto& q=runtime.result.assembly->Get_modal_q();
+        if(q.size()!=runtime.result.n_modes)throw std::runtime_error("柔性体模态坐标数量改变。");
+        if(!q.allFinite()||q.squaredNorm()>1e6)
+            throw NativeFlexDivergence{runtime.id,time,QStringLiteral("模态坐标非有限或模长超过 1000")};
+    }
+}
+
 void captureNativeFlex(std::vector<NativeFlexRuntime>& flex,double time)
 {
+    validateNativeFlex(flex,time);
+    struct PendingFrame {
+        NativeFlexRuntime* runtime;
+        std::vector<double> q,positions,poses;
+    };
+    std::vector<PendingFrame> pending;
+    pending.reserve(flex.size());
+    // Validate and stage ALL flexible bodies before appending any history. A
+    // bad second body must not append a frame to the first body's result.
     for(auto& runtime:flex){
         if(!runtime.times.empty()&&time<=runtime.times.back())continue;
         auto& assembly=*runtime.result.assembly;
         const auto& q=assembly.Get_modal_q();
-        if(!q.allFinite()||q.squaredNorm()>1e6)throw std::runtime_error(QStringLiteral("自动柔性体 %1 的模态坐标在 t=%2 s 发散，已终止，未返回伪造结果。").arg(runtime.id).arg(time).toStdString());
         assembly.SetInternalStateWithModes(true);
-        std::vector<double> positions;
+        PendingFrame frame{&runtime,{q.data(),q.data()+q.size()},{},{}};
+        auto& positions=frame.positions;
+        positions.reserve(runtime.result.node_x0.size());
         for(const auto& mesh:assembly.Get_internal_meshlist())for(const auto& node:mesh->GetNodes()){
             const auto xyz=std::dynamic_pointer_cast<motion::fea::MotionNodeFEAxyz>(node);
             if(!xyz)throw std::runtime_error("自动柔性体网格节点类型不受支持。");
             const auto& p=xyz->GetPos();
-            if(!std::isfinite(p.x())||!std::isfinite(p.y())||!std::isfinite(p.z()))throw std::runtime_error("柔性体节点位置出现非有限值。");
+            if(!std::isfinite(p.x())||!std::isfinite(p.y())||!std::isfinite(p.z()))
+                throw NativeFlexDivergence{runtime.id,time,QStringLiteral("柔性体节点位置出现非有限值")};
             positions.insert(positions.end(),{p.x(),p.y(),p.z()});
         }
         if(positions.size()!=runtime.result.node_x0.size())throw std::runtime_error("柔性体结果节点数量与参考网格不一致。");
-        if(positions.size()*(runtime.times.size()+1)>60000000)throw std::runtime_error("柔性体动画结果超过 60000000 个坐标预算；请增大步长或简化网格。");
-        runtime.times.push_back(time);runtime.modalCoordinates.emplace_back(q.data(),q.data()+q.size());runtime.nodePositions.push_back(std::move(positions));
+        if(!positions.empty()&&runtime.times.size()+1>60000000/positions.size())throw std::runtime_error("柔性体动画结果超过 60000000 个坐标预算；请增大步长或简化网格。");
+        for(const auto& body:runtime.result.interface_bodies){
+            if(!body)throw std::runtime_error("柔性体接口运动体不存在。");
+            const auto& pose=body->GetCoord();
+            frame.poses.insert(frame.poses.end(),{pose.pos.x(),pose.pos.y(),pose.pos.z(),
+                pose.rot.e0(),pose.rot.e1(),pose.rot.e2(),pose.rot.e3()});
+            if(!std::all_of(frame.poses.end()-7,frame.poses.end(),[](double v){return std::isfinite(v);})
+                ||pose.rot.Length2()<1e-24)
+                throw NativeFlexDivergence{runtime.id,time,QStringLiteral("柔性体接口位姿无效")};
+        }
+        pending.push_back(std::move(frame));
+    }
+    for(auto& frame:pending){
+        auto& runtime=*frame.runtime;
+        runtime.times.push_back(time);
+        runtime.modalCoordinates.push_back(std::move(frame.q));
+        runtime.nodePositions.push_back(std::move(frame.positions));
+        runtime.interfacePoses.push_back(std::move(frame.poses));
     }
 }
 

@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "NativeMotionSymbols.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
 #include "RigidProject.h"
@@ -257,7 +258,10 @@ void MotionWindow::createCommands()
         [this](bool checked) { m_viewport->setPickEnabled(checked); });
     pick->setCheckable(true);
     pick->setChecked(true);
-    add(Command::ClearSelection, tr("清除选择"), "display/yincangquanbu.png", [this] { selectPart(-1); }, QKeySequence(Qt::Key_Escape));
+    add(Command::ClearSelection, tr("清除选择"), "display/yincangquanbu.png", [this] {
+        if (m_viewport->isPicking()) { m_viewport->endPick(); emit m_viewport->pickCancelled(); }
+        else selectPart(-1);
+    }, QKeySequence(Qt::Key_Escape));
     auto visibilityChanged = [this] { syncViewport(); updateTree(); updateParameters(); updateActions(); };
     add(Command::ShowAll, tr("显示全部"), "display/xianshiquanbu.png", [this, visibilityChanged] {
         m_hidden.clear();
@@ -744,6 +748,8 @@ void MotionWindow::updateActions()
 void MotionWindow::syncViewport(bool fit)
 {
     m_viewport->setScene(m_document, m_meshes, m_hidden);
+    m_viewport->setMotionSymbols(m_model.nativeDocument
+        ? nativeMotionSymbols(m_document,*m_model.nativeDocument,{},m_selectionNode.collection,m_selectionNode.id) : QVector<MotionSymbol>{});
     m_viewport->selectPart(m_partId);
     if (fit) m_viewport->fitAll();
 }

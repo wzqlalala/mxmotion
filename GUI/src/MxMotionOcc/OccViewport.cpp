@@ -1,10 +1,12 @@
 #include "OccViewport.h"
 #include "CadDocument.h"
 #include "FemMesh.h"
+#include "NativeMotionSymbols.h"
 #include "render/OccRenderShaders.h"
 
 #include <QApplication>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QOpenGLFunctions_3_3_Core>
@@ -17,6 +19,21 @@
 #include <QVector2D>
 #include <QVector4D>
 #include <QWheelEvent>
+
+#include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepGProp.hxx>
+#include <GCPnts_QuasiUniformDeflection.hxx>
+#include <GProp_GProps.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
+#include <Poly_Triangulation.hxx>
+#include <Standard_Failure.hxx>
+#include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopoDS.hxx>
+#include <gp_Lin.hxx>
 
 #include <algorithm>
 #include <array>
@@ -129,12 +146,14 @@ Bounds posedBounds(const Bounds& rest, const PartPose& pose)
 struct Vertex {
     float position[3];
     float normal[3]{};
+    float scalar = 0;
 };
 
 struct Geometry {
     std::vector<Vertex> vertices;
     std::vector<Index> triangles;
     std::vector<Index> edges;
+    std::vector<Index> sourceIndices;
     Bounds bounds;
 
     Vec position(Index i) const
@@ -157,6 +176,99 @@ struct Part {
         return (deformed || mode == OccViewport::DisplayMode::Mesh) && !mesh.triangles.empty();
     }
 };
+
+struct PickCurve {
+    TopoDS_Edge edge;
+    std::vector<Vec> points;
+    std::vector<double> parameters;
+};
+
+struct PickGeometry {
+    TopoDS_Shape shape;
+    TopTools_IndexedMapOfShape faces, edges, vertices;
+    std::vector<PickCurve> curves;
+    std::vector<Vec> nodes;
+    QVector<int> nodeIds;
+    std::vector<Edge> meshEdges;
+    std::vector<Triangle> meshFaces;
+    std::vector<std::array<Index, 4>> elements;
+};
+
+void setMeshTopology(PickGeometry& geometry, const FemMesh& mesh)
+{
+    geometry.nodes = mesh.nodes;
+    geometry.meshFaces = mesh.surface;
+    geometry.elements = mesh.tetrahedra;
+    std::set<Edge> edges;
+    const auto add = [&](Index a, Index b) {
+        if (a < mesh.nodes.size() && b < mesh.nodes.size() && a != b) edges.insert({std::min(a,b),std::max(a,b)});
+    };
+    for (const auto& face : mesh.surface) for (int j = 0; j < 3; ++j) add(face[j],face[(j+1)%3]);
+    for (const auto& cell : mesh.tetrahedra) for (int j = 0; j < 4; ++j) for (int k = j+1; k < 4; ++k) add(cell[j],cell[k]);
+    geometry.meshEdges.assign(edges.begin(),edges.end());
+}
+
+Vec vec(const gp_Pnt& p) { return {p.X(), p.Y(), p.Z()}; }
+
+bool samePick(const PickResult& a, const PickResult& b)
+{
+    return a.kind == b.kind && a.partId == b.partId && a.index == b.index;
+}
+
+bool normalise(Vec& direction)
+{
+    const double length = std::sqrt(dot(direction, direction));
+    if (!std::isfinite(length) || length < 1e-14) return false;
+    for (double& value : direction) value /= length;
+    return true;
+}
+
+PickGeometry pickGeometry(const CadPart& part, const FemMesh* mesh)
+{
+    PickGeometry result;
+    result.shape = part.shape;
+    TopExp::MapShapes(part.shape, TopAbs_FACE, result.faces);
+    TopExp::MapShapes(part.shape, TopAbs_EDGE, result.edges);
+    TopExp::MapShapes(part.shape, TopAbs_VERTEX, result.vertices);
+    result.curves.resize(result.edges.Extent());
+    for (int i = 1; i <= result.edges.Extent(); ++i) {
+        auto& out = result.curves[i - 1];
+        out.edge = TopoDS::Edge(result.edges(i));
+        try {
+            if (BRep_Tool::Degenerated(out.edge)) continue;
+            BRepAdaptor_Curve curve(out.edge);
+            const double first = curve.FirstParameter(), last = curve.LastParameter();
+            if (!std::isfinite(first) || !std::isfinite(last) || std::abs(first) > 1e50 || std::abs(last) > 1e50) continue;
+            // Adaptive OCC tessellation is only for cursor proximity/highlight.
+            // The returned point and derivative are evaluated on the real curve.
+            GProp_GProps props;
+            BRepGProp::LinearProperties(out.edge, props);
+            const double deflection = std::max(1e-7, std::abs(props.Mass()) * 1e-5);
+            GCPnts_QuasiUniformDeflection samples(curve, deflection);
+            if (samples.IsDone() && samples.NbPoints() >= 2 && samples.NbPoints() < 100000) {
+                for (int j = 1; j <= samples.NbPoints(); ++j) {
+                    out.points.push_back(vec(samples.Value(j)));
+                    out.parameters.push_back(samples.Parameter(j));
+                }
+            } else {
+                for (int j = 0; j <= 64; ++j) {
+                    const double parameter = first + (last - first) * j / 64.0;
+                    out.points.push_back(vec(curve.Value(parameter)));
+                    out.parameters.push_back(parameter);
+                }
+            }
+        } catch (const Standard_Failure&) {
+            // A failed edge cannot produce a made-up topology hit.
+            out.points.clear(); out.parameters.clear();
+        }
+    }
+    if (mesh) {
+        setMeshTopology(result, *mesh);
+        result.nodeIds.reserve(int(mesh->nodes.size()));
+        for (int i = 0; i < int(mesh->nodes.size()); ++i) result.nodeIds.append(i + 1);
+    }
+    return result;
+}
 
 bool showsEdges(OccViewport::DisplayMode mode, const Geometry& geometry)
 {
@@ -202,6 +314,7 @@ Geometry snapshot(std::size_t count, const std::vector<Triangle>& triangles,
         }
         mapped = Index(result.vertices.size());
         result.vertices.push_back({{float(p[0]), float(p[1]), float(p[2])}});
+        result.sourceIndices.push_back(source);
         return mapped;
     };
     result.triangles.reserve(triangles.size() * 3);
@@ -423,6 +536,9 @@ bool bufferGeometry(QOpenGLFunctions_3_3_Core& gl, const Geometry& source, Buffe
     gl.glEnableVertexAttribArray(1);
     gl.glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                              reinterpret_cast<const void*>(offsetof(Vertex, normal)));
+    gl.glEnableVertexAttribArray(2);
+    gl.glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                             reinterpret_cast<const void*>(offsetof(Vertex, scalar)));
     const auto indices = [&](const std::vector<Index>& data, GLuint& name, GLsizei& count) {
         if (data.empty()) return true;
         gl.glGenBuffers(1, &name);
@@ -453,6 +569,7 @@ const QVector3D backdropBottom = rgb(242, 247, 252);
 
 struct OccViewport::State {
     std::vector<Part> parts;
+    std::map<int, PickGeometry> pickGeometry;
     std::set<int> partIds; // includes hidden document parts
     std::map<int, PartPose> poses; // only non-identity poses
     std::map<int, Geometry> restMeshes;
@@ -462,6 +579,17 @@ struct OccViewport::State {
     DisplayMode mode = DisplayMode::ShadedEdges;
     int selected = -1;
     bool pickEnabled = true;
+    bool pickActive = false, pickMultiple = false;
+    PickKind pickKind = PickKind::Part;
+    std::set<int> pickParts;
+    QVector<PickResult> picks;
+    PickResult hover;
+    bool boxSelecting = false;
+    QRectF pickRectangle;
+    std::set<int> scalarParts;
+    double scalarMinimum = 0, scalarMaximum = 1;
+    QString scalarTitle;
+    QVector<MotionSymbol> symbols;
 
     Qt::MouseButton button = Qt::NoButton;
     bool dragging = false;
@@ -524,6 +652,8 @@ OccViewport::OccViewport(QWidget* parent) : QOpenGLWidget(parent), m_state(std::
     format.setStencilBufferSize(8);
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
+    qRegisterMetaType<QVector<MotionOcc::PickResult>>();
 }
 
 OccViewport::~OccViewport() { cleanupGL(); }
@@ -533,6 +663,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
 {
     auto& s = *m_state;
     std::vector<Part> parts;
+    std::map<int, PickGeometry> pickGeometry;
     std::set<int> partIds;
     const auto& source = document.parts();
     parts.reserve(source.size());
@@ -549,6 +680,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
             copy.mesh = snapshot(fem.nodes.size(), fem.surface, {}, true,
                                  [&](Index i) { return fem.nodes[i]; });
         }
+        pickGeometry.emplace(part.id, MotionOcc::pickGeometry(part, found == meshes.end() ? nullptr : &found->second));
         Bounds rest = copy.cad.bounds;
         rest.merge(copy.mesh.bounds);
         const Vec origin = rest.center();
@@ -556,6 +688,9 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
         parts.push_back(std::move(copy));
     }
     s.parts = std::move(parts);
+    s.pickGeometry = std::move(pickGeometry);
+    s.hover = {};
+    s.scalarParts.clear();
     s.restMeshes.clear();
     s.dirtyMeshParts.clear();
     s.partIds = std::move(partIds);
@@ -589,6 +724,7 @@ void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
 void OccViewport::clearPartPoses()
 {
     auto& s = *m_state;
+    clearMeshScalars();
     setDeformedMeshes({}, {});
     if (s.poses.empty()) return;
     s.poses.clear();
@@ -638,6 +774,364 @@ void OccViewport::setDisplayMode(DisplayMode mode)
 }
 
 void OccViewport::setPickEnabled(bool enabled) { m_state->pickEnabled = enabled; }
+
+void OccViewport::beginPick(PickKind kind, bool multiple, const std::set<int>& allowedParts,
+                            const QVector<PickResult>& initial)
+{
+    auto& s = *m_state;
+    s.pickActive = true; s.pickKind = kind; s.pickMultiple = multiple; s.pickParts = allowedParts;
+    s.hover = {}; s.button = Qt::NoButton; s.boxSelecting = false;
+    setPickSelection(initial);
+    setFocus(Qt::OtherFocusReason);
+    setCursor(Qt::CrossCursor);
+    update();
+}
+
+void OccViewport::endPick()
+{
+    auto& s = *m_state;
+    s.pickActive = false; s.picks.clear(); s.hover = {}; s.pickParts.clear();
+    s.button = Qt::NoButton; s.boxSelecting = false; s.pickRectangle = {};
+    unsetCursor();
+    update();
+}
+
+bool OccViewport::isPicking() const { return m_state->pickActive; }
+QVector<PickResult> OccViewport::pickSelection() const { return m_state->picks; }
+
+void OccViewport::setPickSelection(const QVector<PickResult>& selection)
+{
+    auto& s = *m_state;
+    s.picks.clear();
+    for (auto pick : selection) {
+        if (!pick.isValid() || pick.kind != s.pickKind || !s.pickGeometry.count(pick.partId) ||
+            (!s.pickParts.empty() && !s.pickParts.count(pick.partId))) continue;
+        const auto& geometry = s.pickGeometry.at(pick.partId);
+        if ((pick.kind == PickKind::Vertex && (pick.index < 1 || pick.index > geometry.vertices.Extent())) ||
+            (pick.kind == PickKind::Edge && (pick.index < 1 || pick.index > geometry.edges.Extent())) ||
+            (pick.kind == PickKind::Face && (pick.index < 1 || pick.index > geometry.faces.Extent())) ||
+            (pick.kind == PickKind::MeshEdge && (pick.index < 1 || pick.index > int(geometry.meshEdges.size()))) ||
+            (pick.kind == PickKind::MeshFace && (pick.index < 1 || pick.index > int(geometry.meshFaces.size()))) ||
+            (pick.kind == PickKind::Element && (pick.index < 1 || pick.index > int(geometry.elements.empty() ? geometry.meshFaces.size() : geometry.elements.size()))) ||
+            (pick.kind == PickKind::Node && (pick.index < 0 || pick.index >= int(geometry.nodes.size()) ||
+                (pick.nodeId > 0 && pick.nodeId != geometry.nodeIds.value(pick.index))))) continue;
+        try {
+            if (pick.kind == PickKind::Node) {
+                pick.position = pick.hitPosition = geometry.nodes[pick.index];
+                pick.nodeId = geometry.nodeIds.value(pick.index,pick.index+1);
+            } else if (pick.kind == PickKind::Vertex) {
+                pick.position = pick.hitPosition = vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(pick.index))));
+            } else if (pick.kind == PickKind::Edge) {
+                BRepAdaptor_Curve curve(TopoDS::Edge(geometry.edges(pick.index)));
+                pick.position = vec(curve.Value((curve.FirstParameter()+curve.LastParameter())*.5));
+                if (curve.GetType()==GeomAbs_Circle) pick.position=vec(curve.Circle().Location());
+                else if (curve.GetType()==GeomAbs_Ellipse) pick.position=vec(curve.Ellipse().Location());
+            } else if (pick.kind == PickKind::Face || pick.kind == PickKind::Part) {
+                GProp_GProps props;
+                if (pick.kind == PickKind::Face) BRepGProp::SurfaceProperties(geometry.faces(pick.index),props);
+                else {
+                    BRepGProp::VolumeProperties(geometry.shape,props);
+                    if (std::abs(props.Mass())<1e-14) BRepGProp::SurfaceProperties(geometry.shape,props);
+                    if (std::abs(props.Mass())<1e-14) BRepGProp::LinearProperties(geometry.shape,props);
+                }
+                if (std::abs(props.Mass())>1e-14) pick.position=vec(props.CentreOfMass());
+            } else {
+                std::vector<Index> nodes;
+                if (pick.kind==PickKind::MeshEdge) nodes.assign(geometry.meshEdges[pick.index-1].begin(),geometry.meshEdges[pick.index-1].end());
+                else if (pick.kind==PickKind::Element && !geometry.elements.empty()) nodes.assign(geometry.elements[pick.index-1].begin(),geometry.elements[pick.index-1].end());
+                else nodes.assign(geometry.meshFaces[pick.index-1].begin(),geometry.meshFaces[pick.index-1].end());
+                if (std::any_of(nodes.begin(),nodes.end(),[&](Index n) { return n>=geometry.nodes.size(); })) continue;
+                QVector<int> ids; pick.position={};
+                for (auto n:nodes) {
+                    ids.append(geometry.nodeIds.value(n,int(n+1)));
+                    for (int k=0;k<3;++k) pick.position[k]+=geometry.nodes[n][k]/nodes.size();
+                }
+                if (!pick.nodeIds.isEmpty() && pick.nodeIds!=ids) continue;
+                pick.nodeIds=ids;
+            }
+        } catch (const Standard_Failure&) { continue; }
+        if (std::any_of(s.picks.cbegin(), s.picks.cend(), [&](const auto& p) { return samePick(p, pick); })) continue;
+        s.picks.append(pick);
+        if (!s.pickMultiple) break;
+    }
+    update();
+}
+
+void OccViewport::setPickNodes(int partId, const FemMesh& mesh, const QVector<int>& nodeIds)
+{
+    const auto found = m_state->pickGeometry.find(partId);
+    if (found == m_state->pickGeometry.end()) return;
+    auto& target = found->second;
+    if (!nodeIds.isEmpty()) {
+        if (nodeIds.size() != int(mesh.nodes.size())) return;
+        std::set<int> unique;
+        for (const int id : nodeIds) if (id <= 0 || !unique.insert(id).second) return;
+    }
+    setMeshTopology(target, mesh);
+    target.nodeIds = nodeIds;
+    if (target.nodeIds.size() != int(target.nodes.size())) {
+        target.nodeIds.clear(); target.nodeIds.reserve(int(target.nodes.size()));
+        for (int i = 0; i < int(target.nodes.size()); ++i) target.nodeIds.append(i + 1);
+    }
+    update();
+}
+
+
+void OccViewport::setMeshScalars(const std::map<int, std::vector<double>>& values,
+                                 double minimum, double maximum, const QString& title)
+{
+    auto& s = *m_state;
+    s.scalarParts.clear();
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum < minimum) { update(); return; }
+    s.scalarMinimum = minimum; s.scalarMaximum = maximum; s.scalarTitle = title;
+    const double span = maximum - minimum;
+    for (auto& part : s.parts) {
+        const auto found = values.find(part.id);
+        if (found == values.end() || found->second.empty()) continue;
+        const auto& input = found->second;
+        if (std::any_of(input.cbegin(), input.cend(), [](double v) { return !std::isfinite(v); })) continue;
+        auto& geometry = part.mesh;
+        if (geometry.sourceIndices.size() != geometry.vertices.size() || geometry.vertices.empty() ||
+            *std::max_element(geometry.sourceIndices.begin(), geometry.sourceIndices.end()) >= input.size()) continue;
+        for (std::size_t i = 0; i < geometry.vertices.size(); ++i) {
+            const double value = input[geometry.sourceIndices[i]];
+            geometry.vertices[i].scalar = float(span > 0 ? std::clamp((value - minimum) / span, 0.0, 1.0) : 0.0);
+        }
+        s.scalarParts.insert(part.id); s.dirtyMeshParts.insert(part.id);
+    }
+    update();
+}
+
+void OccViewport::clearMeshScalars()
+{
+    m_state->scalarParts.clear(); m_state->scalarTitle.clear(); update();
+}
+
+void OccViewport::setMotionSymbols(const QVector<MotionSymbol>& symbols)
+{
+    m_state->symbols = symbols;
+    update();
+}
+
+QPointF OccViewport::projectPoint(const Vec& position, int partId) const
+{
+    const auto& s = *m_state;
+    const auto frame = s.camera.frame(size(), s.bounds);
+    const auto* pose = s.poseFor(partId);
+    const Vec point = pose ? pose->relativePoint(position, vec(s.camera.pivot)) : subtract(position, vec(s.camera.pivot));
+    const double unit = s.camera.mmPerPixel(size());
+    return {width() * 0.5 + (dot(frame.rows[0], point) + s.camera.pan.x()) / unit,
+            height() * 0.5 - (dot(frame.rows[1], point) + s.camera.pan.y()) / unit};
+}
+
+PickResult OccViewport::pickAt(const QPointF& position) const
+{
+    const auto& s = *m_state;
+    PickResult best;
+    if (!s.pickEnabled || !s.bounds.valid || !QRectF(rect()).contains(position)) return best;
+    const auto frame = s.camera.frame(size(), s.bounds);
+    const double unit = s.camera.mmPerPixel(size());
+    const QPointF eye((position.x() - width() * 0.5) * unit - s.camera.pan.x(),
+                      (height() * 0.5 - position.y()) * unit - s.camera.pan.y());
+    const Vec pivot = vec(s.camera.pivot);
+    Ray world;
+    for (int i = 0; i < 3; ++i) {
+        world.origin[i] = pivot[i] + frame.rows[0][i] * eye.x() + frame.rows[1][i] * eye.y() + frame.rows[2][i] * frame.nearZ;
+        world.direction[i] = -frame.rows[2][i];
+    }
+    double visibleDepth = frame.nearZ - frame.farZ;
+    if (s.mode != DisplayMode::Wireframe) {
+        for (const auto& part : s.parts) {
+            if (part.suppressed) continue;
+            const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
+            const auto ray = restRay(world, s.poseFor(part.id));
+            if (!intersectsBounds(ray, geometry.bounds, visibleDepth, unit)) continue;
+            for (std::size_t i = 0; i + 2 < geometry.triangles.size(); i += 3) {
+                double distance;
+                if (intersectsTriangle(ray, geometry.position(geometry.triangles[i]),
+                    geometry.position(geometry.triangles[i+1]), geometry.position(geometry.triangles[i+2]), distance))
+                    visibleDepth = std::min(visibleDepth, distance);
+            }
+        }
+    }
+    double bestOffset = 8.0 * 8.0, bestDepth = frame.nearZ - frame.farZ;
+    const auto depthAt = [&](const Vec& point, int partId) {
+        const auto* pose = s.poseFor(partId);
+        const auto relative = pose ? pose->relativePoint(point, pivot) : subtract(point, pivot);
+        return frame.nearZ - dot(frame.rows[2], relative);
+    };
+    const auto pointHit = [&](const Vec& point, PickResult candidate) {
+        const auto offset = position - projectPoint(point, candidate.partId);
+        const double offset2 = QPointF::dotProduct(offset, offset), depth = depthAt(point, candidate.partId);
+        if (depth < 0 || depth > visibleDepth + 8 * unit || offset2 > bestOffset ||
+            (std::abs(offset2 - bestOffset) < 1e-8 && depth >= bestDepth)) return;
+        candidate.position = candidate.hitPosition = point;
+        best = candidate; bestOffset = offset2; bestDepth = depth;
+    };
+    for (const auto& [partId, geometry] : s.pickGeometry) {
+        if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
+        const auto part = std::find_if(s.parts.cbegin(), s.parts.cend(), [partId](const auto& p) { return p.id == partId; });
+        if (part == s.parts.cend() || part->suppressed || part->deformed) continue;
+        if (s.pickKind < PickKind::Node && !intersectsBounds(restRay(world, s.poseFor(partId)),
+                part->cad.bounds, visibleDepth + 8 * unit, 8 * unit)) continue;
+        PickResult candidate; candidate.kind = s.pickKind; candidate.partId = partId;
+        try {
+            if (s.pickKind == PickKind::Vertex) {
+                for (int index = 1; index <= geometry.vertices.Extent(); ++index) {
+                    candidate.index = index;
+                    pointHit(vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(index)))), candidate);
+                }
+            } else if (s.pickKind == PickKind::Node) {
+                for (int index = 0; index < int(geometry.nodes.size()); ++index) {
+                    candidate.index = index; candidate.nodeId = geometry.nodeIds.value(index, index + 1);
+                    pointHit(geometry.nodes[index], candidate);
+                }
+            } else if (s.pickKind == PickKind::MeshEdge) {
+                for (std::size_t index = 0; index < geometry.meshEdges.size(); ++index) {
+                    const auto& edge = geometry.meshEdges[index];
+                    const auto& pa = geometry.nodes[edge[0]]; const auto& pb = geometry.nodes[edge[1]];
+                    const auto a = projectPoint(pa,partId), b = projectPoint(pb,partId), delta = b-a;
+                    const double length2 = QPointF::dotProduct(delta,delta);
+                    if (length2 < 1e-20) continue;
+                    const double t = std::clamp(QPointF::dotProduct(position-a,delta)/length2,0.0,1.0);
+                    const auto offset = position-a-delta*t; const double offset2 = QPointF::dotProduct(offset,offset);
+                    Vec point; for (int k = 0; k < 3; ++k) point[k] = pa[k]*(1-t)+pb[k]*t;
+                    const double depth = depthAt(point,partId);
+                    if (offset2 > bestOffset || depth < 0 || depth > visibleDepth+8*unit ||
+                        (std::abs(offset2-bestOffset) < 1e-8 && depth >= bestDepth)) continue;
+                    candidate.index = int(index+1); candidate.hitPosition = point;
+                    for (int k = 0; k < 3; ++k) candidate.position[k] = (pa[k]+pb[k])*0.5;
+                    candidate.direction = subtract(pb,pa); candidate.hasDirection = normalise(candidate.direction);
+                    candidate.nodeIds = {geometry.nodeIds.value(edge[0],int(edge[0]+1)),geometry.nodeIds.value(edge[1],int(edge[1]+1))};
+                    best = candidate; bestOffset = offset2; bestDepth = depth;
+                }
+            } else if (s.pickKind == PickKind::MeshFace || s.pickKind == PickKind::Element) {
+                const auto ray = restRay(world,s.poseFor(partId));
+                const bool volume = s.pickKind == PickKind::Element && !geometry.elements.empty();
+                const std::size_t count = volume ? geometry.elements.size() : geometry.meshFaces.size();
+                constexpr int tetFaces[4][3] = {{0,2,1},{0,1,3},{0,3,2},{1,2,3}};
+                for (std::size_t index = 0; index < count; ++index) {
+                    std::vector<Index> nodes;
+                    if (volume) nodes.assign(geometry.elements[index].begin(),geometry.elements[index].end());
+                    else nodes.assign(geometry.meshFaces[index].begin(),geometry.meshFaces[index].end());
+                    if (std::any_of(nodes.begin(),nodes.end(),[&](Index n) { return n >= geometry.nodes.size(); })) continue;
+                    Bounds bounds; for (auto n : nodes) bounds.add(geometry.nodes[n]);
+                    if (!intersectsBounds(ray,bounds,std::min(bestDepth,visibleDepth+8*unit),unit*.01)) continue;
+                    double depth = bestDepth; bool found = false; Vec normal{};
+                    for (int face = 0; face < (volume ? 4 : 1); ++face) {
+                        const auto& a = geometry.nodes[nodes[volume ? tetFaces[face][0] : 0]];
+                        const auto& b = geometry.nodes[nodes[volume ? tetFaces[face][1] : 1]];
+                        const auto& c = geometry.nodes[nodes[volume ? tetFaces[face][2] : 2]];
+                        double hit;
+                        if (intersectsTriangle(ray,a,b,c,hit) && hit < depth && hit <= visibleDepth+8*unit) {
+                            depth = hit; found = true; normal = cross(subtract(b,a),subtract(c,a));
+                        }
+                    }
+                    if (!found) continue;
+                    candidate.index = int(index+1); candidate.position = {}; candidate.nodeIds.clear();
+                    for (auto node : nodes) {
+                        for (int k = 0; k < 3; ++k) candidate.position[k] += geometry.nodes[node][k]/nodes.size();
+                        candidate.nodeIds.append(geometry.nodeIds.value(node,int(node+1)));
+                    }
+                    for (int k = 0; k < 3; ++k) candidate.hitPosition[k] = ray.origin[k]+ray.direction[k]*depth;
+                    candidate.direction = normal;
+                    candidate.hasDirection = s.pickKind == PickKind::MeshFace && normalise(candidate.direction);
+                    best = candidate; bestDepth = depth;
+                }
+            } else if (s.pickKind == PickKind::Edge) {
+                for (std::size_t index = 0; index < geometry.curves.size(); ++index) {
+                    const auto& curve = geometry.curves[index];
+                    for (std::size_t j = 1; j < curve.points.size(); ++j) {
+                        const QPointF a = projectPoint(curve.points[j-1], partId), b = projectPoint(curve.points[j], partId);
+                        const auto delta = b - a; const double length2 = QPointF::dotProduct(delta, delta);
+                        if (length2 < 1e-20) continue;
+                        const double t = std::clamp(QPointF::dotProduct(position - a, delta) / length2, 0.0, 1.0);
+                        const auto offset = position - a - delta * t;
+                        const double offset2 = QPointF::dotProduct(offset, offset);
+                        if (offset2 > bestOffset) continue;
+                        const double parameter = curve.parameters[j-1] * (1-t) + curve.parameters[j] * t;
+                        BRepAdaptor_Curve exact(curve.edge);
+                        gp_Pnt hit; gp_Vec tangent; exact.D1(parameter, hit, tangent);
+                        const double depth = depthAt(vec(hit), partId);
+                        if (depth < 0 || depth > visibleDepth + 8 * unit ||
+                            (std::abs(offset2 - bestOffset) < 1e-8 && depth >= bestDepth)) continue;
+                        candidate.index = int(index + 1); candidate.hitPosition = vec(hit);
+                        candidate.position = vec(exact.Value((exact.FirstParameter() + exact.LastParameter()) * .5));
+                        candidate.direction = {tangent.X(), tangent.Y(), tangent.Z()};
+                        if (exact.GetType() == GeomAbs_Circle) {
+                            candidate.position = vec(exact.Circle().Location());
+                            const auto axis = exact.Circle().Axis().Direction();
+                            candidate.direction = {axis.X(), axis.Y(), axis.Z()};
+                        } else if (exact.GetType() == GeomAbs_Ellipse) {
+                            candidate.position = vec(exact.Ellipse().Location());
+                            const auto axis = exact.Ellipse().Axis().Direction();
+                            candidate.direction = {axis.X(), axis.Y(), axis.Z()};
+                        }
+                        candidate.hasDirection = normalise(candidate.direction);
+                        best = candidate; bestOffset = offset2; bestDepth = depth;
+                    }
+                }
+            } else {
+                const auto ray = restRay(world, s.poseFor(partId));
+                IntCurvesFace_ShapeIntersector intersector;
+                intersector.Load(geometry.shape, 1e-7);
+                intersector.Perform(gp_Lin(gp_Pnt(ray.origin[0], ray.origin[1], ray.origin[2]),
+                    gp_Dir(ray.direction[0], ray.direction[1], ray.direction[2])), 0, frame.nearZ - frame.farZ);
+                if (!intersector.IsDone()) continue;
+                for (int hit = 1; hit <= intersector.NbPnt(); ++hit) {
+                    const double depth = intersector.WParameter(hit);
+                    if (depth < 0 || depth >= bestDepth || depth > visibleDepth + 8 * unit) continue;
+                    const auto face = intersector.Face(hit);
+                    candidate.index = s.pickKind == PickKind::Face ? geometry.faces.FindIndex(face) : -1;
+                    if (s.pickKind == PickKind::Face && candidate.index < 1) continue;
+                    candidate.hitPosition = vec(intersector.Pnt(hit));
+                    GProp_GProps props;
+                    if (s.pickKind == PickKind::Part) {
+                        BRepGProp::VolumeProperties(geometry.shape, props);
+                        if (std::abs(props.Mass()) < 1e-14) BRepGProp::SurfaceProperties(geometry.shape, props);
+                    } else BRepGProp::SurfaceProperties(face, props);
+                    candidate.position = std::abs(props.Mass()) > 1e-14 ? vec(props.CentreOfMass()) : candidate.hitPosition;
+                    if (s.pickKind == PickKind::Face) {
+                        BRepAdaptor_Surface surface(face);
+                        gp_Pnt point; gp_Vec du, dv;
+                        surface.D1(intersector.UParameter(hit), intersector.VParameter(hit), point, du, dv);
+                        gp_Vec normal = du.Crossed(dv);
+                        if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+                        candidate.direction = {normal.X(), normal.Y(), normal.Z()};
+                        const auto useAxis = [&](const gp_Dir& direction) { candidate.direction = {direction.X(), direction.Y(), direction.Z()}; };
+                        switch (surface.GetType()) {
+                        case GeomAbs_Cylinder: useAxis(surface.Cylinder().Axis().Direction()); break;
+                        case GeomAbs_Cone: useAxis(surface.Cone().Axis().Direction()); break;
+                        case GeomAbs_Torus: useAxis(surface.Torus().Axis().Direction()); break;
+                        case GeomAbs_Sphere: {
+                            const auto radial = gp_Vec(surface.Sphere().Location(), intersector.Pnt(hit));
+                            candidate.direction = {radial.X(), radial.Y(), radial.Z()};
+                            if (face.Orientation() == TopAbs_REVERSED) for (auto& value : candidate.direction) value = -value;
+                            break;
+                        }
+                        default: break;
+                        }
+                        candidate.hasDirection = normalise(candidate.direction);
+                    }
+                    best = candidate; bestDepth = depth;
+                }
+            }
+        } catch (const Standard_Failure&) { /* Ignore an unevaluable entity, never invent a hit. */ }
+    }
+    if (s.pickKind == PickKind::Part && !best.isValid()) {
+        // Wire/edge-only imported construction geometry has no face intersector.
+        const int partId = pickPart(position);
+        if (partId > 0 && (s.pickParts.empty() || s.pickParts.count(partId))) {
+            const auto found = s.pickGeometry.find(partId);
+            if (found != s.pickGeometry.end()) {
+                GProp_GProps props; BRepGProp::LinearProperties(found->second.shape, props);
+                best.kind = PickKind::Part; best.partId = partId;
+                best.position = best.hitPosition = vec(props.CentreOfMass());
+            }
+        }
+    }
+    return best;
+}
 
 void OccViewport::fitAll()
 {
@@ -911,6 +1405,7 @@ void OccViewport::paintGL()
                                meshed ? rgb(138, 166, 189) : rgb(110, 129, 151);
             setPose(*s.surface, part);
             s.surface->setUniformValue("uFlat", meshed);
+            s.surface->setUniformValue("uScalars", meshed && s.scalarParts.count(part.id) != 0);
             s.surface->setUniformValue("uColor", color);
             gl.glBindVertexArray(gpu.vao);
             gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.triangles);
@@ -972,6 +1467,9 @@ void OccViewport::paintGL()
     gl.glDisable(GL_BLEND);
     gl.glDisable(GL_DEPTH_TEST);
     drawAxes();
+    drawMotionSymbols();
+    drawScalarLegend();
+    drawPickOverlay();
 }
 
 void OccViewport::drawAxes()
@@ -1010,6 +1508,158 @@ void OccViewport::drawAxes()
             painter.drawText(QRectF(label - QPointF(6, 6), QSizeF(12, 12)), Qt::AlignCenter, QString::fromLatin1(axis.name));
         }
     }
+}
+
+
+
+
+void OccViewport::drawMotionSymbols()
+{
+    const auto& symbols = m_state->symbols;
+    if (symbols.isEmpty()) return;
+    QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing);
+    for (const auto& symbol : symbols) {
+        QColor color = symbol.color.isValid() ? symbol.color : QColor(150, 61, 179);
+        if (!symbol.emphasized) color.setAlpha(200);
+        painter.setPen(QPen(color, symbol.emphasized ? 2.7 : 1.65, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        for (std::size_t i = 0; i + 1 < symbol.linePoints.size(); i += 2)
+            painter.drawLine(projectPoint(symbol.linePoints[i], symbol.partId), projectPoint(symbol.linePoints[i + 1], symbol.partId));
+        const auto origin = projectPoint(symbol.origin, symbol.partId);
+        painter.setBrush(color); painter.setPen(QPen(Qt::white, 1));
+        const double radius = symbol.emphasized ? 4.5 : 2.7;
+        painter.drawEllipse(origin, radius, radius);
+        if (symbol.emphasized && !symbol.label.isEmpty()) {
+            const auto bounds = painter.fontMetrics().boundingRect(symbol.label).adjusted(-5,-3,5,3);
+            const QRectF textBox(origin + QPointF(9,-bounds.height()-2), QSizeF(bounds.size()));
+            painter.setPen(Qt::NoPen); painter.setBrush(QColor(255,255,255,225)); painter.drawRoundedRect(textBox,3,3);
+            painter.setPen(color.darker(140)); painter.drawText(textBox,Qt::AlignCenter,symbol.label);
+        }
+    }
+}
+
+void OccViewport::drawScalarLegend()
+{
+    const auto& s = *m_state;
+    if (s.scalarParts.empty() || width() < 260 || height() < 180) return;
+    QPainter painter(this);
+    const int barHeight = std::min(220, height() - 100);
+    const QRectF panel(width() - 177, 38, 165, barHeight + 65);
+    painter.setPen(Qt::NoPen); painter.setBrush(QColor(255, 255, 255, 225)); painter.drawRoundedRect(panel, 5, 5);
+    painter.setPen(QColor(34, 51, 69));
+    painter.drawText(panel.adjusted(9, 5, -8, -barHeight - 30), Qt::AlignTop | Qt::TextWordWrap, s.scalarTitle);
+    const QRectF bar(panel.left() + 12, panel.top() + 40, 18, barHeight);
+    QLinearGradient gradient(bar.bottomLeft(), bar.topLeft());
+    for (int i = 0; i <= 16; ++i) {
+        const double t = i / 16.0;
+        const auto channel = [t](double center) { return std::clamp(1.5 - std::abs(4*t - center), 0.0, 1.0); };
+        gradient.setColorAt(t, QColor::fromRgbF(channel(3), channel(2), channel(1)));
+    }
+    painter.fillRect(bar, gradient);
+    painter.setPen(QColor(53, 69, 87)); painter.setBrush(Qt::NoBrush); painter.drawRect(bar);
+    for (int i = 0; i <= 4; ++i) {
+        const double t = i / 4.0, value = s.scalarMaximum * (1-t) + s.scalarMinimum * t;
+        const double y = bar.top() + bar.height() * t;
+        painter.drawLine(QPointF(bar.right(), y), QPointF(bar.right() + 5, y));
+        painter.drawText(QRectF(bar.right() + 9, y - 10, 112, 20), Qt::AlignVCenter, QString::number(value, 'g', 6));
+    }
+}
+
+void OccViewport::drawPickOverlay()
+{
+    const auto& s = *m_state;
+    if (!s.pickActive) return;
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    if (s.pickKind == PickKind::Node) {
+        painter.setPen(QPen(QColor(37, 116, 174, 190), 1));
+        painter.setBrush(QColor(226, 245, 255, 220));
+        for (const auto& [partId, geometry] : s.pickGeometry) {
+            if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
+            for (const auto& point : geometry.nodes) {
+                const auto screen = projectPoint(point, partId);
+                if (QRectF(rect()).contains(screen)) painter.drawEllipse(screen, 2.5, 2.5);
+            }
+        }
+    } else if (s.pickKind == PickKind::MeshEdge || s.pickKind == PickKind::MeshFace || s.pickKind == PickKind::Element) {
+        painter.setPen(QPen(QColor(35,108,151,150),1));
+        for (const auto& [partId, geometry] : s.pickGeometry) {
+            if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
+            for (const auto& edge : geometry.meshEdges)
+                painter.drawLine(projectPoint(geometry.nodes[edge[0]],partId),projectPoint(geometry.nodes[edge[1]],partId));
+        }
+    }
+    const auto highlight = [&](const PickResult& pick, const QColor& color) {
+        const auto found = s.pickGeometry.find(pick.partId);
+        if (found == s.pickGeometry.end()) return;
+        const auto& geometry = found->second;
+        painter.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::NoBrush);
+        const auto drawCurve = [&](const PickCurve& curve) {
+            QPolygonF line;
+            for (const auto& point : curve.points) line.append(projectPoint(point, pick.partId));
+            if (line.size() >= 2) painter.drawPolyline(line);
+        };
+        if (pick.kind == PickKind::Part) {
+            for (const auto& curve : geometry.curves) drawCurve(curve);
+        } else if (pick.kind == PickKind::Edge && pick.index > 0 && pick.index <= int(geometry.curves.size())) {
+            drawCurve(geometry.curves[pick.index - 1]);
+        } else if (pick.kind == PickKind::Face && pick.index > 0 && pick.index <= geometry.faces.Extent()) {
+            const auto face = TopoDS::Face(geometry.faces(pick.index));
+            TopLoc_Location location;
+            const auto mesh = BRep_Tool::Triangulation(face, location);
+            if (!mesh.IsNull()) {
+                QColor tint = color; tint.setAlpha(45);
+                painter.setPen(Qt::NoPen); painter.setBrush(tint);
+                for (int i = 1; i <= mesh->NbTriangles(); ++i) {
+                    int a, b, c; mesh->Triangle(i).Get(a, b, c);
+                    QPolygonF triangle;
+                    for (int node : {a, b, c}) triangle.append(projectPoint(vec(mesh->Node(node).Transformed(location.Transformation())), pick.partId));
+                    painter.drawPolygon(triangle);
+                }
+                painter.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.setBrush(Qt::NoBrush);
+            }
+            for (TopExp_Explorer edge(face, TopAbs_EDGE); edge.More(); edge.Next()) {
+                const int index = geometry.edges.FindIndex(edge.Current());
+                if (index > 0) drawCurve(geometry.curves[index - 1]);
+            }
+        } else if (pick.kind == PickKind::MeshEdge && pick.index > 0 && pick.index <= int(geometry.meshEdges.size())) {
+            const auto& edge = geometry.meshEdges[pick.index-1];
+            painter.drawLine(projectPoint(geometry.nodes[edge[0]],pick.partId),projectPoint(geometry.nodes[edge[1]],pick.partId));
+        } else if ((pick.kind == PickKind::MeshFace || pick.kind == PickKind::Element) && pick.index > 0) {
+            std::vector<Index> nodes;
+            if (pick.kind == PickKind::Element && !geometry.elements.empty() && pick.index <= int(geometry.elements.size()))
+                nodes.assign(geometry.elements[pick.index-1].begin(),geometry.elements[pick.index-1].end());
+            else if (pick.index <= int(geometry.meshFaces.size()))
+                nodes.assign(geometry.meshFaces[pick.index-1].begin(),geometry.meshFaces[pick.index-1].end());
+            if (std::all_of(nodes.begin(),nodes.end(),[&](Index n) { return n < geometry.nodes.size(); })) {
+                if (nodes.size() == 3) {
+                    QPolygonF face; for (auto node : nodes) face.append(projectPoint(geometry.nodes[node],pick.partId));
+                    QColor tint = color; tint.setAlpha(50); painter.setBrush(tint); painter.drawPolygon(face); painter.setBrush(Qt::NoBrush);
+                } else for (std::size_t i=0; i<nodes.size(); ++i) for (std::size_t j=i+1; j<nodes.size(); ++j)
+                    painter.drawLine(projectPoint(geometry.nodes[nodes[i]],pick.partId),projectPoint(geometry.nodes[nodes[j]],pick.partId));
+            }
+        }
+        Vec point = pick.position;
+        if (pick.kind == PickKind::Node && pick.index >= 0 && pick.index < int(geometry.nodes.size())) point = geometry.nodes[pick.index];
+        if (pick.kind == PickKind::Vertex && pick.index > 0 && pick.index <= geometry.vertices.Extent()) point = vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(pick.index))));
+        const auto screen = projectPoint(point, pick.partId);
+        painter.setBrush(color); painter.setPen(QPen(Qt::white, 1.4)); painter.drawEllipse(screen, 5.0, 5.0);
+    };
+    for (const auto& pick : s.picks) highlight(pick, QColor(232, 130, 28));
+    if (s.hover.isValid()) highlight(s.hover, QColor(199, 46, 153));
+    if (s.boxSelecting) {
+        painter.setPen(QPen(QColor(25, 114, 195), 1, Qt::DashLine));
+        painter.setBrush(QColor(60, 160, 230, 35)); painter.drawRect(s.pickRectangle);
+    }
+    const QStringList names{tr("部件"), tr("顶点"), tr("边"), tr("面"), tr("节点"), tr("网格边"), tr("网格面"), tr("单元")};
+    const QString label = tr("拾取%1 · 已选 %2 · 右键撤回 · Esc 结束%3")
+        .arg(names.value(int(s.pickKind))).arg(s.picks.size())
+        .arg(s.pickKind == PickKind::Node && s.pickMultiple ? tr(" · Ctrl + 左键贯穿框选") : QString());
+    const QFontMetrics metrics(painter.font());
+    const QRectF box(12, 12, std::min(width() - 24, metrics.horizontalAdvance(label) + 20), metrics.height() + 16);
+    painter.setPen(Qt::NoPen); painter.setBrush(QColor(255, 255, 255, 225)); painter.drawRoundedRect(box, 4, 4);
+    painter.setPen(QColor(38, 55, 72)); painter.drawText(box.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
 }
 
 int OccViewport::pickPart(const QPointF& position) const
@@ -1112,6 +1762,9 @@ void OccViewport::mousePressEvent(QMouseEvent* event)
         s.ballRadius = std::max(1.0, 0.5 * std::min(width(), height()));
         s.ballStart = trackball(s.press, s.ballCenter, s.ballRadius);
         s.pressRotation = s.camera.rotation;
+        s.boxSelecting = s.pickActive && s.pickMultiple && s.pickKind == PickKind::Node &&
+                         s.button == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier);
+        s.pickRectangle = QRectF(s.press, s.press);
     }
     event->accept();
 }
@@ -1121,8 +1774,16 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event)
     auto& s = *m_state;
     if (s.button == Qt::NoButton || !(event->buttons() & s.button)) {
         s.button = Qt::NoButton;
+        if (s.pickActive) {
+            s.hover = pickAt(event->localPos());
+            update(); event->accept(); return;
+        }
         QOpenGLWidget::mouseMoveEvent(event);
         return;
+    }
+    if (s.boxSelecting) {
+        s.pickRectangle = QRectF(s.press, event->localPos()).normalized();
+        s.dragging = true; update(); event->accept(); return;
     }
     s.dragTo(event->localPos(), size());
     if (s.dragging) update();
@@ -1136,16 +1797,60 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
         QOpenGLWidget::mouseReleaseEvent(event);
         return;
     }
+    if (s.boxSelecting) {
+        s.pickRectangle = QRectF(s.press, event->localPos()).normalized();
+        for (const auto& [partId, geometry] : s.pickGeometry) {
+            if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
+            for (int index = 0; index < int(geometry.nodes.size()); ++index) {
+                if (!s.pickRectangle.contains(projectPoint(geometry.nodes[index], partId))) continue;
+                PickResult pick; pick.kind = PickKind::Node; pick.partId = partId;
+                pick.index = index; pick.nodeId = geometry.nodeIds.value(index, index + 1);
+                pick.position = pick.hitPosition = geometry.nodes[index];
+                if (std::none_of(s.picks.cbegin(), s.picks.cend(), [&](const auto& p) { return samePick(p, pick); })) s.picks.append(pick);
+            }
+        }
+        s.boxSelecting = false; s.dragging = false; s.button = Qt::NoButton; s.pickRectangle = {};
+        emit pickSelectionChanged(s.picks); update(); event->accept(); return;
+    }
     s.dragTo(event->localPos(), size());
     const bool click = s.button == Qt::LeftButton && !s.dragging && s.pickEnabled;
+    const bool subtract = s.button == Qt::RightButton && !s.dragging && s.pickEnabled && s.pickActive;
     s.button = Qt::NoButton;
     if (s.dragging) update();
     event->accept();
     if (click) {
+        if (s.pickActive) {
+            const auto hit = pickAt(event->localPos());
+            if (hit.isValid()) {
+                if (!s.pickMultiple) s.picks.clear();
+                const auto found = std::find_if(s.picks.begin(), s.picks.end(), [&](const auto& p) { return samePick(p, hit); });
+                if (found == s.picks.end()) s.picks.append(hit);
+                else s.picks.erase(found);
+                s.hover = hit;
+                emit pickSelectionChanged(s.picks);
+            }
+            update(); return;
+        }
         const int id = pickPart(event->localPos());
         selectPart(id);
         emit partPicked(id);
+    } else if (subtract) {
+        if (!s.picks.isEmpty()) { s.picks.removeLast(); emit pickSelectionChanged(s.picks); }
+        update();
     }
+}
+
+void OccViewport::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Escape && m_state->pickActive) {
+        endPick(); emit pickCancelled(); event->accept(); return;
+    }
+    QOpenGLWidget::keyPressEvent(event);
+}
+
+void OccViewport::leaveEvent(QEvent* event)
+{
+    m_state->hover = {}; update(); QOpenGLWidget::leaveEvent(event);
 }
 
 void OccViewport::wheelEvent(QWheelEvent* event)

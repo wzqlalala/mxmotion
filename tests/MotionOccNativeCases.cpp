@@ -292,16 +292,19 @@ bool checkResult(const CadDocument& cad, const NativeMotionInput& input, const R
 {
     const auto fail = [&](const QString& message) { error = message; return false; };
     const bool boundary = result.termination == ResultTermination::GeometryBoundary;
-    report["termination"] = boundary ? "GeometryBoundary" : "EndTime";
+    const bool flexDivergence = result.termination == ResultTermination::FlexDivergence;
+    const bool partial = boundary || flexDivergence;
+    report["termination"] = boundary ? "GeometryBoundary" : flexDivergence ? "FlexDivergence" : "EndTime";
+    report["completeRequestedDuration"] = !partial;
     report["diagnostics"] = QJsonArray::fromStringList(result.diagnostics);
-    if (result.scenarioId != input.scenario.id || result.frames.empty() || (!boundary && result.frames.size() < 2))
+    if (result.scenarioId != input.scenario.id || result.frames.empty() || (!partial && result.frames.size() < 2))
         return fail("Missing/mismatched result frames");
     report["actualLastTime"] = result.frames.back().seconds;
     const double timeTolerance = std::max(1e-8,input.scenario.step*1e-6);
     if (std::abs(result.frames.front().seconds) > 1e-9 || result.frames.back().seconds > input.scenario.duration + timeTolerance
-        || (!boundary && std::abs(result.frames.back().seconds-input.scenario.duration) > timeTolerance))
+        || (!partial && std::abs(result.frames.back().seconds-input.scenario.duration) > timeTolerance))
         return fail("Result does not include the original initial and final times");
-    if (boundary && result.diagnostics.isEmpty()) return fail("A geometry-boundary stop did not retain its termination reason");
+    if (partial && result.diagnostics.isEmpty()) return fail("A partial result did not retain its termination reason");
     std::map<int, Vec> centers;
     std::map<int, bool> fixed;
     double scale = 1;
@@ -377,6 +380,14 @@ bool checkResult(const CadDocument& cad, const NativeMotionInput& input, const R
         if(channel.components<1||channel.values.size()!=result.frames.size()*std::size_t(channel.components))return fail("Result channel length is inconsistent with frames");
         for(double value:channel.values)if(!std::isfinite(value))return fail("Nonfinite result/sensor/control channel");
     }
+    for(const auto& flex:result.flexBodies){
+        if(flex.nodePositions.size()!=result.frames.size()||flex.interfacePoses.size()!=result.frames.size()
+            ||flex.modalCoordinates.size()!=result.frames.size())return fail("Flexible payload is not synchronized with accepted rigid frames");
+        for(const auto& frame:flex.nodePositions){
+            if(frame.size()!=flex.referenceNodes.size())return fail("Flexible node count changed between frames");
+            for(double value:frame)if(!std::isfinite(value))return fail("Nonfinite flexible node result");
+        }
+    }
     report["maxJointClosureErrorMm"]=maxClosure;report["maxFixedBodyMotionMm"]=maxFixedMotion;
     report["maxJointClosureJointId"] = closureJointId;report["maxJointClosureTime"] = closureTime;
     report["maxConstantDriveRateError"]=maxDriveRateError;report["checkedDriveRates"]=checkedDriveRates;
@@ -451,7 +462,7 @@ int main(int argc,char** argv)
     QString currentCadError;
     std::unique_ptr<CadDocument> cad;
     QJsonArray currentGeometry;
-    int failed=0,boundaryStopped=0;
+    int failed=0,boundaryStopped=0,flexDiverged=0;
     for(const auto& path:paths){
         QElapsedTimer timer;timer.start();
         QJsonObject report{{"json",root.relativeFilePath(path)}};
@@ -506,7 +517,7 @@ int main(int argc,char** argv)
                     }
 #ifdef MX_NATIVE_SOLVE_CASES
                     if(bound&&!parser.isSet("bind-only")){
-                        QJsonArray scenarios;bool allPassed=true,anyBoundary=false;
+                        QJsonArray scenarios;bool allPassed=true,anyBoundary=false,anyFlexDivergence=false;
                         for(const auto& value:document.collection("scenarios")){
                             const auto definition=value.toObject();const int id=definition.value("id").toInt();
                             QJsonObject scenario{{"id",id},{"name",definition.value("name")},{"requestedEndTime",definition.value("endTime")},{"requestedStep",definition.value("stepSize")}};
@@ -528,12 +539,15 @@ int main(int argc,char** argv)
                                 else if (result.termination == ResultTermination::GeometryBoundary) {
                                     scenario["status"] = "boundary-stopped"; anyBoundary = true;
                                     output << "  Boundary stop: " << result.diagnostics.join("; ") << Qt::endl;
+                                } else if (result.termination == ResultTermination::FlexDivergence) {
+                                    scenario["status"] = "flex-diverged"; anyFlexDivergence = true;
+                                    output << "  Flex divergence, clean prefix retained: " << result.diagnostics.join("; ") << Qt::endl;
                                 } else scenario["status"]="passed";
                             }
                             scenario["wallSeconds"]=solveTimer.elapsed()/1000.0;scenarios.append(scenario);
                             output<<"  "<<scenario.value("status").toString()<<" "<<scenario.value("error").toString()<<Qt::endl;
                         }
-                        report["scenarios"]=scenarios;report["status"]=!allPassed?"failed":anyBoundary?"boundary-stopped":"passed";
+                        report["scenarios"]=scenarios;report["status"]=!allPassed?"failed":anyFlexDivergence?"flex-diverged":anyBoundary?"boundary-stopped":"passed";
                     }
 #endif
                 }
@@ -542,12 +556,13 @@ int main(int argc,char** argv)
         report["wallSeconds"]=timer.elapsed()/1000.0;
         const QString status=report.value("status").toString();
         if(status=="boundary-stopped")++boundaryStopped;
+        else if(status=="flex-diverged"){++flexDiverged;++failed;}
         else if(status!="bound"&&status!="passed")++failed;
         reports.append(report);
         if(!saveReport(parser.value("report"),reports,error)){errors<<"Cannot save report: "<<error<<'\n';return 2;}
         output<<"  "<<status<<" in "<<timer.elapsed()/1000.0<<" s"<<Qt::endl;
     }
     output<<paths.size()<<" unique JSON cases checked; "<<failed<<" unresolved/failed; "<<boundaryStopped
-        <<" geometry-boundary stops (valid prefixes, not full-duration passes). Report: "<<parser.value("report")<<Qt::endl;
+        <<" geometry-boundary stops; "<<flexDiverged<<" flexible divergences included in failed count (valid prefixes, not full-duration passes). Report: "<<parser.value("report")<<Qt::endl;
     return failed?1:0;
 }

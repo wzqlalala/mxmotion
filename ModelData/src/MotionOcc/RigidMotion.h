@@ -140,9 +140,29 @@ struct RigidFlexResult {
     std::vector<double> referenceNodes;
     std::vector<int> surfaceTriangles;
     std::vector<std::vector<double>> nodePositions; // Global mm, one node vector per accepted frame.
+    // Original modal-result payload. Indices refer to referenceNodes, and every
+    // frame array follows RigidResult::frames. All poses are [x,y,z,w,qx,qy,qz].
+    std::vector<int> tetrahedra;
+    int modeCount = 0;
+    int interfaceCount = 0; // Unique interface bodies, not attachment patches.
+    double densityKgMm3 = 0;
+    std::vector<double> psiInternal; // Row-major 3N x (6*interfaceCount + modeCount).
+    std::vector<double> initialInterfacePoses;
+    std::vector<std::vector<double>> interfacePoses;
+    std::vector<std::vector<double>> modalCoordinates;
 };
 
-enum class ResultTermination { EndTime, GeometryBoundary };
+// The legacy free-mode option is a mass-weighted cosine projection used by the
+// original UI; it is not an exact free-free eigensolution or an NX/MNF result.
+enum class FlexContourKind { ElasticDisplacement, TotalDisplacement, LegacyFreeModeProjection };
+bool flexNodeScalars(const RigidFlexResult& result, std::size_t frame, FlexContourKind kind,
+                     std::vector<double>& values, QString& error);
+// Interpolate vectors/modal coordinates first, then compute magnitudes; a
+// signed mode crossing zero must not retain the endpoint's nonzero colour.
+bool flexNodeScalarsAt(const RigidFlexResult& result, std::size_t left, std::size_t right,
+                       double fraction, FlexContourKind kind, std::vector<double>& values, QString& error);
+
+enum class ResultTermination { EndTime, GeometryBoundary, FlexDivergence };
 
 struct RigidResult {
     int scenarioId = 0;
