@@ -1,0 +1,67 @@
+#pragma once
+
+#include "NativeMotionGeometry.h"
+#include "motion/physics/SystemSMC.h"
+#include "motion/physics/LinkMotor.h"
+#include "motion/functions/Function_Setpoint.h"
+#include "motion/modal/FlexBodyBuilder.h"
+
+#include <functional>
+#include <cstdint>
+
+namespace MotionOcc {
+
+struct NativePidSample { double time, target, feedback, error, output; };
+struct NativePidRuntime {
+    int id=-1;
+    int driveId=-1;
+    QJsonObject definition;
+    QJsonObject trajectory;
+    QJsonObject sensor;
+    std::shared_ptr<motion::MotionLinkMotor> motor;
+    std::shared_ptr<motion::MotionFunction_Setpoint> setpoint;
+    double integral=0, lastFeedback=0, lastTime=0, unwrappedAngle=0;
+    bool hasSample=false, hasAngle=false;
+    std::vector<NativePidSample> history;
+};
+
+class NativeMotionSystem : public motion::MotionSystemSMC {
+public:
+    std::vector<NativePidRuntime> controllers;
+    std::map<int, std::shared_ptr<motion::MotionBody>> nativeBodies;
+    std::map<int, std::shared_ptr<motion::MotionLinkMotor>> nativeMotors;
+    std::map<std::string, std::shared_ptr<motion::MotionLinkBase>> nativeJoints;
+    double acceptedStepSize=0, acceptedEndTime=0;
+    std::uint64_t acceptedStepIndex=0;
+    const NativeMotionInput* sourceInput=nullptr;
+    bool projectPositions=false;
+    int positionIterations=50;
+    void configureControllers(const NativeMotionInput& input);
+    void projectAcceptedPositions();
+    void CustomEndOfStep() override;
+};
+
+void validateNativeAcceptedConstraints(const NativeMotionSystem& system);
+
+struct NativeFlexRuntime {
+    int id=-1, bodyId=-1;
+    motion::modal::MotionFlexBodyResult result;
+    std::vector<double> times;
+    std::vector<std::vector<double>> modalCoordinates;
+    std::vector<std::vector<double>> nodePositions;
+};
+
+std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system, const NativeMotionInput& input,
+                                             const SolverCallbacks& callbacks);
+void captureNativeFlex(std::vector<NativeFlexRuntime>& flex, double time);
+void extractNativeResults(const NativeMotionInput& input, const NativeMotionSystem& system,
+                          const std::vector<NativeFlexRuntime>& flex, RigidResult& result);
+
+// Sensor data is evaluated from the same accepted body state for runtime PID
+// and post-processing; components are XYZ or a scalar value in element zero.
+std::vector<double> evaluateNativeSensor(const QJsonObject& definition,
+                                       const std::map<int,motion::state_kinematic>& bodies,
+                                       const std::map<int,motion::joint_result>& joints = {},
+                                       const std::map<int,motion::motion_result>& drives = {});
+
+} // namespace MotionOcc

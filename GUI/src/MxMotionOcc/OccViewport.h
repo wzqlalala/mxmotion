@@ -35,6 +35,9 @@ public:
     // rest CAD world to animated world in mm. Missing or invalid poses mean
     // identity; unknown part IDs are ignored. Does not refit or modify geometry.
     void setPartPoses(const std::map<int, QMatrix4x4>& poses);
+    // Real modal node positions in global mm replace the bound CAD only while
+    // animating. Other bound parts are suppressed, not removed from the model.
+    void setDeformedMeshes(const std::map<int, FemMesh>& meshes, const std::set<int>& suppressed);
     void clearPartPoses();
     void selectPart(int id);
     void setDisplayMode(DisplayMode mode);
@@ -66,6 +69,7 @@ private:
     void cleanupGL();
     void releaseSceneBuffers();
     bool uploadScene();
+    bool uploadChangedMeshes();
     int pickPart(const QPointF& position) const;
     void drawAxes();
     void reportGraphicsError(const QString& message);

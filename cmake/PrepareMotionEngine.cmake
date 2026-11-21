@@ -1,4 +1,4 @@
-# Build-only portability adaptation for the pinned Windows-oriented engine.
+# Build-only compatibility for the legacy and current pinned engine revisions.
 # Copying preserves every source and keeps the git submodule byte-for-byte clean.
 if(NOT IS_DIRECTORY "${MX_ENGINE_SOURCE}/src" OR NOT MX_ENGINE_DESTINATION)
     message(FATAL_ERROR "Expected MotionEngine source and build-tree destination")
@@ -11,16 +11,21 @@ file(COPY "${MX_ENGINE_SOURCE}/" DESTINATION "${MX_ENGINE_DESTINATION}"
 set(path "${MX_ENGINE_DESTINATION}/src/CMakeLists.txt")
 file(READ "${MX_ENGINE_SOURCE}/src/CMakeLists.txt" content)
 set(old "set(MOTION_CXX_FLAGS \"\${CMAKE_CXX_FLAGS} /utf-8\")")
-set(new "set(MOTION_CXX_FLAGS \"\${CMAKE_CXX_FLAGS}\")\nif(MSVC)\n  string(APPEND MOTION_CXX_FLAGS \" /utf-8\")\nendif()")
+set(new "set(MOTION_CXX_FLAGS \"\${CMAKE_CXX_FLAGS}\")\nif(MSVC)\n  set(MOTION_CXX_FLAGS \"\${MOTION_CXX_FLAGS} /utf-8\")\nendif()")
 string(FIND "${content}" "${old}" found)
 if(found EQUAL -1)
-    message(FATAL_ERROR "MotionEngine portability patch no longer matches src/CMakeLists.txt; review the submodule revision")
+    set(guarded "if(MSVC)\n  set(MOTION_CXX_FLAGS \"\${MOTION_CXX_FLAGS} /utf-8\")\nendif()")
+    string(FIND "${content}" "${guarded}" guarded_found)
+    if(guarded_found EQUAL -1)
+        message(FATAL_ERROR "MotionEngine compiler flags are neither the legacy nor the reviewed portable form; review the submodule revision")
+    endif()
+else()
+    string(REPLACE "${old}" "${new}" content "${content}")
 endif()
-string(REPLACE "${old}" "${new}" content "${content}")
 file(CONFIGURE OUTPUT "${path}" CONTENT "${content}" @ONLY)
 
-# The engine rename accidentally changed the standard chrono namespace only in
-# the non-Windows timer. Value-initialize its accumulator, as the Win32 timer does.
+# Earlier engine revisions renamed std::chrono accidentally; current revisions
+# already use the correct namespace. Initialize the accumulator in either case.
 set(path "${MX_ENGINE_DESTINATION}/src/motion/core/Timer.h")
 file(READ "${MX_ENGINE_SOURCE}/src/motion/core/Timer.h" content)
 string(REPLACE "std::motion::" "std::chrono::" content "${content}")
@@ -35,7 +40,11 @@ set(old "if constexpr (std::is_same_v<T, int>)")
 set(new "if (std::is_same<T, int>::value)")
 string(FIND "${content}" "${old}" found)
 if(found EQUAL -1)
-    message(FATAL_ERROR "MotionEngine C++14 parser adaptation no longer matches; review the submodule revision")
+    string(FIND "${content}" "${new}" portable_found)
+    if(portable_found EQUAL -1)
+        message(FATAL_ERROR "MotionEngine numeric parser is neither the legacy nor the reviewed C++14 form; review the submodule revision")
+    endif()
+else()
+    string(REPLACE "${old}" "${new}" content "${content}")
 endif()
-string(REPLACE "${old}" "${new}" content "${content}")
 file(CONFIGURE OUTPUT "${path}" CONTENT "${content}" @ONLY)

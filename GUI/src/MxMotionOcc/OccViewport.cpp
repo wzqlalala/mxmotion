@@ -149,10 +149,12 @@ struct Part {
     Geometry cad;
     Geometry mesh;
     QVector3D origin; // shared rest-space origin for CAD and FEM rendering
+    bool deformed = false;
+    bool suppressed = false;
 
     bool usesMesh(OccViewport::DisplayMode mode) const
     {
-        return mode == OccViewport::DisplayMode::Mesh && !mesh.triangles.empty();
+        return (deformed || mode == OccViewport::DisplayMode::Mesh) && !mesh.triangles.empty();
     }
 };
 
@@ -453,6 +455,8 @@ struct OccViewport::State {
     std::vector<Part> parts;
     std::set<int> partIds; // includes hidden document parts
     std::map<int, PartPose> poses; // only non-identity poses
+    std::map<int, Geometry> restMeshes;
+    std::set<int> dirtyMeshParts;
     Bounds bounds;
     Camera camera;
     DisplayMode mode = DisplayMode::ShadedEdges;
@@ -484,8 +488,9 @@ struct OccViewport::State {
     {
         bounds = {};
         for (const auto& part : parts) {
+            if (part.suppressed) continue;
             const auto* pose = poseFor(part.id);
-            bounds.merge(pose ? posedBounds(part.cad.bounds, *pose) : part.cad.bounds);
+            if (!part.deformed) bounds.merge(pose ? posedBounds(part.cad.bounds, *pose) : part.cad.bounds);
             bounds.merge(pose ? posedBounds(part.mesh.bounds, *pose) : part.mesh.bounds);
         }
     }
@@ -551,6 +556,8 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
         parts.push_back(std::move(copy));
     }
     s.parts = std::move(parts);
+    s.restMeshes.clear();
+    s.dirtyMeshParts.clear();
     s.partIds = std::move(partIds);
     for (auto it = s.poses.begin(); it != s.poses.end();) {
         if (s.partIds.count(it->first)) ++it;
@@ -582,8 +589,36 @@ void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
 void OccViewport::clearPartPoses()
 {
     auto& s = *m_state;
+    setDeformedMeshes({}, {});
     if (s.poses.empty()) return;
     s.poses.clear();
+    s.updateBounds();
+    update();
+}
+
+void OccViewport::setDeformedMeshes(const std::map<int, FemMesh>& meshes, const std::set<int>& suppressed)
+{
+    auto& s = *m_state;
+    if (s.restMeshes.empty() && meshes.empty()
+        && std::none_of(s.parts.begin(), s.parts.end(), [](const auto& part) { return part.suppressed; })) return;
+    for (auto& part : s.parts) {
+        const auto rest = s.restMeshes.find(part.id);
+        if (rest != s.restMeshes.end()) {
+            part.mesh = std::move(rest->second);
+            s.restMeshes.erase(rest);
+            s.dirtyMeshParts.insert(part.id);
+        }
+        part.deformed = false;
+        part.suppressed = suppressed.count(part.id) != 0;
+        const auto found = meshes.find(part.id);
+        if (found == meshes.end()) continue;
+        const auto& mesh = found->second;
+        s.restMeshes.emplace(part.id, std::move(part.mesh));
+        part.mesh = snapshot(mesh.nodes.size(), mesh.surface, {}, true, [&](Index i) { return mesh.nodes[i]; });
+        part.deformed = true;
+        s.poses.erase(part.id); // Deformed node positions are already in world coordinates.
+        s.dirtyMeshParts.insert(part.id);
+    }
     s.updateBounds();
     update();
 }
@@ -736,6 +771,7 @@ bool OccViewport::uploadScene()
     auto& s = *m_state;
     auto& gl = *s.gl;
     releaseSceneBuffers();
+    s.dirtyMeshParts.clear();
     s.buffers.resize(s.parts.size());
     bool ok = true;
     for (std::size_t i = 0; i < s.parts.size() && ok; ++i) {
@@ -756,6 +792,25 @@ bool OccViewport::uploadScene()
     return false;
 }
 
+bool OccViewport::uploadChangedMeshes()
+{
+    auto& s = *m_state;
+    if (s.buffers.size() != s.parts.size()) return uploadScene();
+    bool ok = true;
+    for (std::size_t i = 0; i < s.parts.size(); ++i) {
+        if (!s.dirtyMeshParts.count(s.parts[i].id)) continue;
+        deleteBuffers(*s.gl, s.buffers[i].mesh);
+        s.buffers[i].mesh = {};
+        ok = bufferGeometry(*s.gl, s.parts[i].mesh, s.buffers[i].mesh) && ok;
+    }
+    s.dirtyMeshParts.clear();
+    s.gl->glBindVertexArray(0);
+    s.gl->glBindBuffer(GL_ARRAY_BUFFER, 0);
+    if (s.gl->glGetError() != GL_NO_ERROR) ok = false;
+    if (!ok) reportGraphicsError(tr("无法更新柔性体动画网格。"));
+    return ok;
+}
+
 void OccViewport::paintGL()
 {
     auto& s = *m_state;
@@ -772,6 +827,8 @@ void OccViewport::paintGL()
         s.sceneDirty = false;
         s.uploadFailed = !uploadScene();
         if (!s.uploadFailed) s.lastError.clear();
+    } else if (!s.dirtyMeshParts.empty()) {
+        s.uploadFailed = !uploadChangedMeshes();
     }
 
     // Qt supplies the current widget FBO (not framebuffer 0) and a device-pixel viewport.
@@ -846,6 +903,7 @@ void OccViewport::paintGL()
         gl.glPolygonOffset(1.0f, 1.0f);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
             const auto& part = s.parts[i];
+            if (part.suppressed) continue;
             const bool meshed = part.usesMesh(s.mode);
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
             if (!gpu.triangleCount) continue;
@@ -869,9 +927,10 @@ void OccViewport::paintGL()
             s.surface->setUniformValue("uOutline", true);
             s.surface->setUniformValue("uOutlinePixels", 1.05f * dpr);
             for (std::size_t i = 0; i < s.buffers.size(); ++i) {
-                const auto& gpu = s.buffers[i].cad;
-                if (!gpu.triangleCount) continue;
                 const auto& part = s.parts[i];
+                if (part.suppressed) continue;
+                const auto& gpu = part.usesMesh(s.mode) ? s.buffers[i].mesh : s.buffers[i].cad;
+                if (!gpu.triangleCount) continue;
                 setPose(*s.surface, part);
                 s.surface->setUniformValue("uColor", part.id == s.selected ? rgb(21, 94, 170) : rgb(57, 72, 89));
                 gl.glBindVertexArray(gpu.vao);
@@ -893,6 +952,7 @@ void OccViewport::paintGL()
         s.edge->setUniformValue("uDepthBiasNdc", wireframe ? 0.0f : 2e-5f);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
             const auto& part = s.parts[i];
+            if (part.suppressed) continue;
             const bool meshed = part.usesMesh(s.mode), selected = part.id == s.selected;
             const auto& geometry = meshed ? part.mesh : part.cad;
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
@@ -973,6 +1033,7 @@ int OccViewport::pickPart(const QPointF& position) const
     const bool wireframe = s.mode == DisplayMode::Wireframe;
     if (!wireframe) {
         for (const auto& part : s.parts) {
+            if (part.suppressed) continue;
             const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
             const Ray localRay = restRay(ray, s.poseFor(part.id));
             if (!intersectsBounds(localRay, geometry.bounds, nearest, unit * 0.01)) continue;
@@ -993,6 +1054,7 @@ int OccViewport::pickPart(const QPointF& position) const
     double bestLineDepth = nearest;
     const bool hitFace = best != -1;
     for (const auto& part : s.parts) {
+        if (part.suppressed) continue;
         const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
         if (!showsEdges(s.mode, geometry) || (hitFace && !geometry.triangles.empty())) continue;
         const auto* pose = s.poseFor(part.id);

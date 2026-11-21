@@ -44,7 +44,7 @@ private:
     };
     void replotCurves();
     void requestsEdited();
-    void addCurve(RigidCurveMetric metric, int sourceId, int component, const QString& name);
+    void addCurve(RigidCurveRequest request, const QString& name);
     void removeCurve(int requestId);
     void setCurveVisible(int requestId, bool visible);
     void setCurveColor(int requestId, const QColor& color);

@@ -2,10 +2,16 @@
 #include "FemMesh.h"
 
 #include <BRepBndLib.hxx>
+#include <BRepGProp.hxx>
+#include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
 #include <Bnd_Box.hxx>
+#include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopoDS_Compound.hxx>
+#include <gp_Trsf.hxx>
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -358,6 +364,40 @@ void runSmokeTest(const QString& workerPath, const QDir& root)
     checkVtk(root.filePath(QStringLiteral("表面.vtk")), surface, surface.surface, 5); // VTK_TRIANGLE
     checkVtk(root.filePath(QStringLiteral("体积.vtk")), volume, volume.tetrahedra, 10); // VTK_TETRA
     checkDocumentUnchanged(document, originalParts, QStringLiteral("FE meshing and export"));
+
+    // A compact exact assembly can exceed the viewport's default tessellation
+    // budget. Exercise the real import path with placed instances rather than
+    // relaxing the memory limit or dropping parts to make the test pass.
+    const auto* sphere = document.part(sphereId);
+    const std::size_t instanceCount = (1100000 + sphere->display.triangles.size() - 1) / sphere->display.triangles.size();
+    require(instanceCount > 1 && instanceCount < 5000, QStringLiteral("Unexpected sphere tessellation for the large assembly fixture"));
+    BRep_Builder builder; TopoDS_Compound compound; builder.MakeCompound(compound);
+    for (std::size_t i = 0; i < instanceCount; ++i) {
+        gp_Trsf placement; placement.SetTranslation(gp_Vec(20.0 * (i % 50), 20.0 * (i / 50), 0));
+        builder.Add(compound, sphere->shape.Moved(TopLoc_Location(placement)));
+    }
+    std::ostringstream encoded;
+    BRepTools::Write(compound, encoded, false, false, TopTools_FormatVersion_CURRENT);
+    const auto largePath = root.filePath(QStringLiteral("large_assembly.brep"));
+    writeFixture(largePath, QByteArray::fromStdString(encoded.str()));
+    CadDocument large; std::vector<int> largeIds;
+    require(large.importFile(largePath, largeIds, error), QStringLiteral("Display LOD must allow a complete large assembly: ") + error);
+    require(large.parts().size() == instanceCount && largeIds.size() == instanceCount && !large.importNotes().isEmpty(),
+            QStringLiteral("Adaptive display tessellation lost parts or omitted its precision notice"));
+    std::size_t triangles = 0;
+    GProp_GProps sourceProperties; BRepGProp::VolumeProperties(sphere->shape, sourceProperties);
+    for (std::size_t i = 0; i < instanceCount; ++i) {
+        const auto& part = large.parts()[i]; triangles += part.display.triangles.size();
+        require(!part.display.triangles.empty(), QStringLiteral("Large-assembly LOD silently omitted a part's faces"));
+        GProp_GProps properties; BRepGProp::VolumeProperties(part.shape, properties);
+        require(std::abs(properties.Mass() - sourceProperties.Mass()) < 1e-6,
+                QStringLiteral("Display LOD changed the exact solid volume"));
+        const auto center = properties.CentreOfMass();
+        require(std::abs(center.X() - 20.0 * (i % 50)) < 1e-6 && std::abs(center.Y() - 20.0 * (i / 50)) < 1e-6,
+                QStringLiteral("Display LOD changed an assembly instance placement"));
+    }
+    require(triangles <= 1000000, QStringLiteral("Adaptive tessellation bypassed the display triangle budget"));
+    qInfo() << "Large assembly:" << instanceCount << "complete exact instances," << triangles << "display triangles within budget";
 }
 
 } // namespace

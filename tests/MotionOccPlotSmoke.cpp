@@ -1,4 +1,5 @@
 #include "RigidPlot.h"
+#include "NativeMotionSolver.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -239,7 +240,74 @@ int main(int argc, char** argv)
         widget<QPushButton>(*panel, "motionClearCurvesButton")->click();
         require(curves().isEmpty() && !plot.hasVisibleCurves() && input.scenario.curveRequests.empty(), "Clear retained stale curves or persisted requests");
         require(!plot.exportCurvesCsv(temp.filePath(QStringLiteral("empty.csv")), error), "empty plot exported stale curves");
-        qInfo() << "Qwt curve workflow: explicit add, multiple curves, request persistence, visibility, real-time filtering, CSV and scenario isolation passed";
+        {
+            RigidInput nativeInput;
+            nativeInput.scenario.id = 0;
+            nativeInput.scenario.name = QStringLiteral("完整模型结果");
+            nativeInput.nativeInput = std::make_shared<NativeMotionInput>();
+            nativeInput.nativeInput->document.root = {{"motionData", QJsonObject{
+                {"drives", QJsonArray{QJsonObject{{"id",0},{"name",QStringLiteral("原始驱动零")}}}}}}};
+            RigidResult native;
+            native.scenarioId = 0;
+            for (const double seconds : {0.0, 0.05, 0.12}) { RigidFrame frame; frame.seconds = seconds; native.frames.push_back(frame); }
+            native.channels = {
+                {"drives", 0, "ReactionForce", "N", 6, {1,2,3,4,5,6, 7,8,9,10,11,12, 13,14,15,16,17,18}},
+                {"sensors", 0, "SensorValue", "mm", 3, {3,4,0, 0,0,7, 1,2,2}},
+                {"controllers", 0, "PidError", {}, 1, {-2,0,2}}
+            };
+            RigidPlot nativePlot;
+            nativePlot.setResult(&nativeInput, &native);
+            QObject::connect(&nativePlot, &RigidPlot::curveRequestsChanged, &nativePlot, [&](int id) {
+                require(id == 0, "native scenario ID zero did not round trip through requests");
+                nativeInput.scenario.curveRequests = nativePlot.curveRequests(id);
+            });
+            std::unique_ptr<QWidget> nativePanel(nativePlot.createConfigurationPanel());
+            auto* nativeSource = widget<QComboBox>(*nativePanel, "motionCurveSource");
+            auto* nativeObject = widget<QComboBox>(*nativePanel, "motionCurveObject");
+            auto* nativeVariable = widget<QComboBox>(*nativePanel, "motionCurveVariable");
+            auto* nativeAdd = widget<QPushButton>(*nativePanel, "motionAddCurveButton");
+            auto* nativeChart = nativePlot.findChild<QwtPlot*>();
+            require(nativeSource->count() == 3 && nativeObject->currentData().toInt() == 0,
+                    "native result sources were dropped or object ID zero was rejected");
+            nativeSource->setCurrentIndex(nativeSource->findData(QStringLiteral("drives")));
+            require(nativeObject->currentText().contains(QStringLiteral("原始驱动零")), "native object name was lost in the curve selector");
+            require(nativeVariable->findData(QStringLiteral("ReactionForce:5")) >= 0,
+                    "sixth result component is not available in the original curve panel");
+            nativeVariable->setCurrentIndex(nativeVariable->findData(QStringLiteral("ReactionForce:5")));
+            require(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).isEmpty(), "native selection manufactured an unrequested curve");
+            nativeAdd->click();
+            require(nativeInput.scenario.curveRequests.size() == 1, "native Add did not persist request");
+            const auto& request = nativeInput.scenario.curveRequests.front();
+            require(request.metric == RigidCurveMetric::NativeChannel && request.sourceType == QStringLiteral("drives")
+                && request.sourceId == 0 && request.variable == QStringLiteral("ReactionForce") && request.component == 5,
+                "native request was saved with menu positions instead of stable keys");
+            auto* sixth = static_cast<QwtPlotCurve*>(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).front());
+            require(sixth->sample(0).y() == 6 && sixth->sample(2).y() == 18 && sixth->sample(2).x() == 0.12,
+                    "six-component native curve changed solver samples");
+            nativeSource->setCurrentIndex(nativeSource->findData(QStringLiteral("sensors")));
+            nativeVariable->setCurrentIndex(nativeVariable->findData(QStringLiteral("SensorValue:-1")));
+            nativeAdd->click();
+            require(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).size() == 2, "native sensor curve replaced the drive curve");
+            auto* magnitude = static_cast<QwtPlotCurve*>(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).back());
+            require(magnitude->sample(0).y() == 5 && magnitude->sample(2).y() == 3, "native sensor magnitude is incorrect");
+            nativeSource->setCurrentIndex(nativeSource->findData(QStringLiteral("controllers")));
+            nativeAdd->click();
+            require(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).size() == 3, "dimensionless PID scalar was hidden");
+            auto* pid = static_cast<QwtPlotCurve*>(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).back());
+            require(pid->sample(0).y() == -2 && !pid->title().text().contains(QStringLiteral("()")), "PID value or unit label is incorrect");
+            const auto nativePath = temp.filePath(QStringLiteral("native-curves.csv"));
+            require(nativePlot.exportCurvesCsv(nativePath, error), error.toUtf8().constData());
+            QFile nativeCsv(nativePath);
+            require(nativeCsv.open(QIODevice::ReadOnly), "native curve CSV missing");
+            const auto nativeText = nativeCsv.readAll();
+            require(nativeText.contains("0,6,5,-2") && nativeText.contains("0.12,18,3,2"),
+                    "native CSV differs from visible physical samples");
+            nativePlot.setResult(nullptr, nullptr);
+            nativePlot.setResult(&nativeInput, &native);
+            require(nativeChart->itemList(QwtPlotItem::Rtti_PlotCurve).size() == 3,
+                    "native persisted requests were lost on result reopening");
+        }
+        qInfo() << "Qwt curve workflow: explicit add, native channels/components, request persistence, visibility, real-time filtering and CSV passed";
         return 0;
     } catch (const std::exception& e) {
         qCritical() << e.what();

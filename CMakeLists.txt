@@ -82,6 +82,9 @@ endfunction()
 set(model_dir "${CMAKE_CURRENT_SOURCE_DIR}/ModelData/src/MotionOcc")
 add_library(MotionOccData STATIC
     "${model_dir}/CadDocument.cpp"
+    "${model_dir}/NativeMotionDocument.cpp"
+    "${model_dir}/NativeTopologyBinding.cpp"
+    "${model_dir}/OccTessellation.cpp"
     "${model_dir}/FemMesh.cpp")
 target_include_directories(MotionOccData PUBLIC "${model_dir}")
 target_include_directories(MotionOccData SYSTEM PUBLIC "${MX_OCCT_INCLUDE_DIR}")
@@ -89,7 +92,8 @@ target_link_libraries(MotionOccData PUBLIC Qt5::Gui)
 target_compile_options(MotionOccData PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 # Link directly, avoiding relocated OCCT package exports that contain packager paths.
 foreach(lib IN ITEMS TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo
-        TKTopAlgo TKPrim TKBO TKBool TKMesh TKShHealing TKXSBase TKDE TKDESTEP TKDEIGES)
+        TKTopAlgo TKPrim TKBO TKBool TKMesh TKShHealing TKXSBase TKDE TKDESTEP TKDEIGES
+        TKCDF TKLCAF TKCAF TKXCAF)
     if(WIN32)
         set(occt_lib "${MX_OCCT_ROOT}/lib/${lib}.lib")
         if(NOT EXISTS "${occt_lib}")
@@ -122,8 +126,12 @@ else()
 endif()
 add_dependencies(MxMotionMeshWorker MotionOccRuntime)
 mx_import_motionengine()
-add_library(MotionOccRigid STATIC "${model_dir}/RigidMotion.cpp" "${model_dir}/RigidProject.cpp")
-target_link_libraries(MotionOccRigid PUBLIC MotionOccData PRIVATE MotionEngine::Core)
+add_library(MotionOccRigid STATIC "${model_dir}/RigidMotion.cpp" "${model_dir}/RigidProject.cpp"
+    "${model_dir}/NativeMotionSolver.cpp" "${model_dir}/NativeMotionGeometry.cpp"
+    "${model_dir}/NativeMotionPid.cpp" "${model_dir}/NativeMotionSensors.cpp"
+    "${model_dir}/NativeMotionProjection.cpp"
+    "${model_dir}/NativeMotionResults.cpp" "${model_dir}/NativeMotionFlex.cpp")
+target_link_libraries(MotionOccRigid PUBLIC MotionOccData PRIVATE MotionEngine::Core MotionEngine::Modal)
 target_compile_options(MotionOccRigid PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 target_compile_definitions(MotionOccRigid PRIVATE _HAS_STD_BYTE=0)
 if(TARGET MotionEngineBuild)
@@ -132,7 +140,7 @@ endif()
 add_custom_target(MotionEngineRuntime
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "$<TARGET_FILE:MotionEngine::Core>" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+        "$<TARGET_FILE:MotionEngine::Core>" "$<TARGET_FILE:MotionEngine::Modal>" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     VERBATIM)
 if(TARGET MotionEngineBuild)
     add_dependencies(MotionEngineRuntime MotionEngineBuild)
@@ -146,6 +154,42 @@ if(MX_BUILD_GUI)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(MotionOccNativeTopologySmoke tests/MotionOccNativeTopologySmoke.cpp)
+    target_link_libraries(MotionOccNativeTopologySmoke PRIVATE MotionOccData)
+    target_compile_options(MotionOccNativeTopologySmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccNativeTopologySmoke MotionOccRuntime)
+    add_test(NAME MotionOcc.NativeTopology COMMAND MotionOccNativeTopologySmoke)
+
+    add_executable(MotionOccNativeProjectSmoke tests/MotionOccNativeProjectSmoke.cpp)
+    target_link_libraries(MotionOccNativeProjectSmoke PRIVATE MotionOccRigid)
+    target_compile_options(MotionOccNativeProjectSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccNativeProjectSmoke MotionOccRuntime MotionEngineRuntime)
+    add_test(NAME MotionOcc.NativeProject COMMAND MotionOccNativeProjectSmoke)
+
+    add_executable(MotionOccNativeSmoke tests/MotionOccNativeSmoke.cpp)
+    target_link_libraries(MotionOccNativeSmoke PRIVATE MotionOccRigid MotionEngine::Core MotionEngine::Modal)
+    target_compile_options(MotionOccNativeSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccNativeSmoke MxMotionMeshWorker MotionOccRuntime MotionEngineRuntime)
+    add_test(NAME MotionOcc.Native COMMAND MotionOccNativeSmoke)
+    set_tests_properties(MotionOcc.Native PROPERTIES TIMEOUT 180)
+
+    add_executable(MotionOccNativeBindings tests/MotionOccNativeCases.cpp)
+    target_link_libraries(MotionOccNativeBindings PRIVATE MotionOccData)
+    target_compile_options(MotionOccNativeBindings PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccNativeBindings MotionOccRuntime)
+
+    add_executable(MotionOccNativeCases tests/MotionOccNativeCases.cpp)
+    target_compile_definitions(MotionOccNativeCases PRIVATE MX_NATIVE_SOLVE_CASES)
+    target_link_libraries(MotionOccNativeCases PRIVATE MotionOccRigid)
+    target_compile_options(MotionOccNativeCases PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccNativeCases MotionOccRuntime MotionEngineRuntime)
+
+    add_executable(MotionOccNativeDocumentSmoke tests/MotionOccNativeDocumentSmoke.cpp)
+    target_link_libraries(MotionOccNativeDocumentSmoke PRIVATE MotionOccData)
+    target_compile_options(MotionOccNativeDocumentSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccNativeDocumentSmoke MotionOccRuntime)
+    add_test(NAME MotionOcc.NativeDocument COMMAND MotionOccNativeDocumentSmoke)
+
     add_executable(MotionOccBackendSmoke tests/MotionOccBackendSmoke.cpp)
     target_link_libraries(MotionOccBackendSmoke PRIVATE MotionOccData)
     target_compile_options(MotionOccBackendSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
@@ -162,7 +206,7 @@ if(BUILD_TESTING)
 
     add_executable(MotionOccPlaybackSmoke tests/MotionOccPlaybackSmoke.cpp)
     target_include_directories(MotionOccPlaybackSmoke PRIVATE GUI/src/MxMotionOcc "${model_dir}")
-    target_link_libraries(MotionOccPlaybackSmoke PRIVATE Qt5::Gui)
+    target_link_libraries(MotionOccPlaybackSmoke PRIVATE MotionOccData)
     target_compile_options(MotionOccPlaybackSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_dependencies(MotionOccPlaybackSmoke MotionOccRuntime)
     add_test(NAME MotionOcc.Playback COMMAND MotionOccPlaybackSmoke)

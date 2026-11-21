@@ -8,6 +8,7 @@ add_executable(MxMotion WIN32
     MotionWindow.cpp MotionWindow.h
     MotionRibbon.cpp
     RigidMotionUi.cpp
+    NativeMotionUi.cpp
     RigidPlot.cpp RigidPlot.h
     RigidResultSeries.cpp RigidResultSeries.h
     OccViewport.cpp OccViewport.h
@@ -69,9 +70,14 @@ endif()
 
 if(BUILD_TESTING AND MX_TEST_DESKTOP)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccDesktopSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNativeDesktopSmoke.cpp")
     target_compile_definitions(MxMotion PRIVATE MX_OCC_DESKTOP_SMOKE)
     set(desktop_output "${PROJECT_BINARY_DIR}/desktop-smoke")
     file(MAKE_DIRECTORY "${desktop_output}")
     add_test(NAME MotionOcc.Desktop COMMAND MxMotion --desktop-smoke "${desktop_output}")
     set_tests_properties(MotionOcc.Desktop PROPERTIES TIMEOUT 90 LABELS desktop)
+    set(native_desktop_output "${PROJECT_BINARY_DIR}/native-desktop-smoke")
+    file(MAKE_DIRECTORY "${native_desktop_output}")
+    add_test(NAME MotionOcc.NativeDesktop COMMAND MxMotion --native-desktop-smoke "${native_desktop_output}")
+    set_tests_properties(MotionOcc.NativeDesktop PROPERTIES TIMEOUT 180 LABELS desktop)
 endif()

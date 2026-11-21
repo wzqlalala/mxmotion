@@ -1,5 +1,7 @@
 #include "RigidProject.h"
 #include "CadDocument.h"
+#include "NativeMotionDocument.h"
+#include "NativeMotionSolver.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -16,6 +18,7 @@
 #include <limits>
 #include <map>
 #include <new>
+#include <set>
 #include <utility>
 
 namespace MotionOcc {
@@ -116,7 +119,7 @@ qint64 countSourceMembers(const QByteArray& bytes)
         } else if (c == '"') {
             inString = true;
         } else if (c == '{' || c == '[') {
-            if (++depth > 6) fail(QStringLiteral("Project JSON is nested too deeply."));
+            if (++depth > 32) fail(QStringLiteral("Project JSON is nested too deeply."));
         } else if (c == '}' || c == ']') {
             if (--depth < 0) fail(QStringLiteral("Unbalanced project JSON."));
         } else if (c == ':') {
@@ -276,6 +279,7 @@ const char* curveMetric(RigidCurveMetric metric)
     case RigidCurveMetric::BodyAngularVelocity: return "body_angular_velocity";
     case RigidCurveMetric::JointCoordinate: return "joint_coordinate";
     case RigidCurveMetric::JointRate: return "joint_rate";
+    case RigidCurveMetric::NativeChannel: return "native_channel";
     }
     fail(QStringLiteral("Unknown curve metric."));
 }
@@ -286,7 +290,7 @@ RigidCurveMetric readCurveMetric(const QJsonValue& value)
     for (const auto type : {RigidCurveMetric::BodyPosition, RigidCurveMetric::BodyDisplacement,
             RigidCurveMetric::BodyVelocity, RigidCurveMetric::BodyRotation,
             RigidCurveMetric::BodyAngularVelocity, RigidCurveMetric::JointCoordinate,
-            RigidCurveMetric::JointRate})
+            RigidCurveMetric::JointRate, RigidCurveMetric::NativeChannel})
         if (metric == QLatin1String(curveMetric(type))) return type;
     fail(QStringLiteral("Invalid curve metric."));
 }
@@ -295,12 +299,17 @@ QJsonArray writeCurveRequests(const std::vector<RigidCurveRequest>& requests)
 {
     QJsonArray array;
     for (const auto& request : requests) {
-        array.append(QJsonObject{
+        QJsonObject row{
             {QStringLiteral("id"), request.id},
             {QStringLiteral("metric"), QString::fromLatin1(curveMetric(request.metric))},
             {QStringLiteral("sourceId"), request.sourceId}, {QStringLiteral("component"), request.component},
             {QStringLiteral("name"), checkedName(request.name)}, {QStringLiteral("color"), request.color},
-            {QStringLiteral("visible"), request.visible}});
+            {QStringLiteral("visible"), request.visible}};
+        if (request.metric == RigidCurveMetric::NativeChannel) {
+            row.insert(QStringLiteral("sourceType"), request.sourceType);
+            row.insert(QStringLiteral("variable"), request.variable);
+        }
+        array.append(row);
     }
     return array;
 }
@@ -309,18 +318,46 @@ std::vector<RigidCurveRequest> readCurveRequests(const QJsonValue& value)
 {
     std::vector<RigidCurveRequest> requests;
     for (const auto& item : array(value, kMaxCurvesPerScenario, "curveRequests")) {
-        const auto row = record(item, {"id", "metric", "sourceId", "component", "name", "color", "visible"}, "curve request");
+        auto data = item.toObject();
+        const auto sourceType = data.take(QStringLiteral("sourceType"));
+        const auto variable = data.take(QStringLiteral("variable"));
+        const auto row = record(item.isObject() ? QJsonValue(data) : item,
+            {"id", "metric", "sourceId", "component", "name", "color", "visible"}, "curve request");
+        const auto metric = readCurveMetric(row.value(QStringLiteral("metric")));
+        if (metric == RigidCurveMetric::NativeChannel)
+            require(sourceType.isString() && !sourceType.toString().isEmpty()
+                && variable.isString() && !variable.toString().isEmpty(), QStringLiteral("Missing native curve source."));
+        else require(sourceType.isUndefined() && variable.isUndefined(), QStringLiteral("Unexpected native curve source."));
+        const double component = number(row.value(QStringLiteral("component")), "component");
+        require(std::trunc(component) == component && component >= (metric == RigidCurveMetric::NativeChannel ? -1 : 0)
+            && component <= (metric == RigidCurveMetric::NativeChannel ? 1023 : 3), QStringLiteral("Invalid curve component."));
         require(row.value(QStringLiteral("color")).isString(), QStringLiteral("Expected a curve color string."));
-        requests.push_back({id(row), readCurveMetric(row.value(QStringLiteral("metric"))),
-            id(row, "sourceId"), static_cast<int>(integer(row.value(QStringLiteral("component")), 0, 3, "component")),
+        requests.push_back({id(row), metric,
+            id(row, "sourceId", 0), static_cast<int>(component),
             name(row), row.value(QStringLiteral("color")).toString(),
-            boolean(row.value(QStringLiteral("visible")), "visible")});
+            boolean(row.value(QStringLiteral("visible")), "visible"), sourceType.toString(), variable.toString()});
     }
     return requests;
 }
 
 QJsonObject writeModel(const RigidModel& model)
 {
+    if (model.nativeDocument) {
+        QJsonArray bindings, curves;
+        for (auto it = model.nativeDocument->bodyPartBindings.cbegin(); it != model.nativeDocument->bodyPartBindings.cend(); ++it) {
+            QJsonArray ids;
+            for (int part : it.value()) ids.append(part);
+            bindings.append(QJsonObject{{QStringLiteral("bodyId"), it.key()}, {QStringLiteral("partIds"), ids}});
+        }
+        for (const auto& scenario : model.scenarios)
+            curves.append(QJsonObject{{QStringLiteral("scenarioId"), scenario.id},
+                {QStringLiteral("requests"), writeCurveRequests(scenario.curveRequests)}});
+        return {{QStringLiteral("bodies"), QJsonArray{}}, {QStringLiteral("joints"), QJsonArray{}},
+            {QStringLiteral("drives"), QJsonArray{}}, {QStringLiteral("scenarios"), QJsonArray{}},
+            {QStringLiteral("nativeMotion"), QJsonObject{{QStringLiteral("document"), model.nativeDocument->root},
+                {QStringLiteral("bindings"), bindings}, {QStringLiteral("curveRequests"), curves},
+                {QStringLiteral("baseDirectory"), model.nativeDocument->baseDirectory}}}};
+    }
     QJsonArray bodies, joints, drives, scenarios;
     for (const auto& body : model.bodies) {
         bodies.append(QJsonObject{
@@ -356,8 +393,44 @@ QJsonObject writeModel(const RigidModel& model)
 
 RigidModel readModel(const QJsonValue& value)
 {
-    const auto object = record(value, {"bodies", "joints", "drives", "scenarios"}, "model");
+    auto data = value.toObject();
+    const auto native = data.take(QStringLiteral("nativeMotion"));
+    const auto object = record(value.isObject() ? QJsonValue(data) : value, {"bodies", "joints", "drives", "scenarios"}, "model");
     RigidModel model;
+    if (!native.isUndefined()) {
+        for (const auto* key : {"bodies", "joints", "drives", "scenarios"})
+            require(array(object.value(QLatin1String(key)), 0, key).isEmpty(), QStringLiteral("Native project has duplicate model records."));
+        const auto row = record(native, {"document", "bindings", "curveRequests", "baseDirectory"}, "native motion");
+        auto document = std::make_shared<NativeMotionDocument>();
+        require(row.value(QStringLiteral("document")).isObject() && row.value(QStringLiteral("baseDirectory")).isString(),
+            QStringLiteral("Invalid native document."));
+        document->root = row.value(QStringLiteral("document")).toObject();
+        document->baseDirectory = row.value(QStringLiteral("baseDirectory")).toString();
+        QString detail;
+        if (!validateNativeMotionDocument(*document, detail)) fail(detail);
+        for (const auto& binding : array(row.value(QStringLiteral("bindings")), kMaxParts, "bindings")) {
+            const auto item = record(binding, {"bodyId", "partIds"}, "native binding");
+            const int body = id(item, "bodyId", 0);
+            require(!document->bodyPartBindings.contains(body), QStringLiteral("Duplicate body binding."));
+            QVector<int> ids;
+            for (const auto& part : array(item.value(QStringLiteral("partIds")), kMaxParts, "partIds"))
+                ids.append(static_cast<int>(integer(part, 1, kMaxId, "partId")));
+            document->bodyPartBindings.insert(body, ids);
+        }
+        model.nativeDocument = std::move(document);
+        syncNativeMotionModel(model);
+        std::set<int> seen;
+        for (const auto& curves : array(row.value(QStringLiteral("curveRequests")), kMaxScenarios, "curveRequests")) {
+            const auto item = record(curves, {"scenarioId", "requests"}, "native scenario curves");
+            const int scenarioId = id(item, "scenarioId", 0);
+            require(seen.insert(scenarioId).second, QStringLiteral("Duplicate scenario curves."));
+            const auto scenario = std::find_if(model.scenarios.begin(), model.scenarios.end(),
+                [=](const auto& candidate) { return candidate.id == scenarioId; });
+            require(scenario != model.scenarios.end(), QStringLiteral("Curve request refers to an unknown scenario."));
+            scenario->curveRequests = readCurveRequests(item.value(QStringLiteral("requests")));
+        }
+        return model;
+    }
     for (const auto& item : array(object.value(QStringLiteral("bodies")), kMaxBodies, "bodies")) {
         const auto row = record(item, {"id", "name", "partId", "fixed", "massKg", "densityKgM3"}, "body");
         model.bodies.push_back({id(row), name(row), id(row, "partId"),
@@ -474,8 +547,11 @@ bool saveRigidProject(const QString& path, const CadDocument& cad, const RigidMo
             if (!CadDocument::encodeProjectPart(part, brep, (std::min)(remaining, kMaxPartBytes), detail)) fail(detail);
             remaining -= brep.size();
             const auto encoded = brep.toBase64();
-            parts.append(QJsonObject{{QStringLiteral("id"), part.id}, {QStringLiteral("name"), partName},
-                {QStringLiteral("brep"), QString::fromLatin1(encoded)}});
+            QJsonObject row{{QStringLiteral("id"), part.id}, {QStringLiteral("name"), partName},
+                {QStringLiteral("brep"), QString::fromLatin1(encoded)}};
+            if (!part.sourceName.isEmpty()) row.insert(QStringLiteral("sourceName"), part.sourceName);
+            if (!part.instancePath.isEmpty()) row.insert(QStringLiteral("instancePath"), part.instancePath);
+            parts.append(row);
         }
         const QJsonObject root{{QStringLiteral("format"), QStringLiteral("mxmotion")}, {QStringLiteral("version"), kVersion},
             {QStringLiteral("nextPartId"), static_cast<double>(cad.m_nextId)},
@@ -508,8 +584,14 @@ bool loadRigidProject(const QString& path, CadDocument& cad, RigidModel& model, 
             parts.reserve(static_cast<std::size_t>(items.size()));
             int remaining = kMaxBrepBytes;
             for (const auto& item : items) {
-                const auto row = record(item, {"id", "name", "brep"}, "CAD part");
-                parts.push_back({id(row), name(row), readBrep(row.value(QStringLiteral("brep")), remaining)});
+                auto data = item.toObject();
+                const auto sourceName = data.take(QStringLiteral("sourceName"));
+                const auto instancePath = data.take(QStringLiteral("instancePath"));
+                require((sourceName.isUndefined() || sourceName.isString()) && (instancePath.isUndefined() || instancePath.isString()),
+                    QStringLiteral("Invalid CAD instance metadata."));
+                const auto row = record(item.isObject() ? QJsonValue(data) : item, {"id", "name", "brep"}, "CAD part");
+                parts.push_back({id(row), name(row), readBrep(row.value(QStringLiteral("brep")), remaining),
+                    checkedName(sourceName.toString()), instancePath.toString()});
             }
         }
         CadDocument restoredCad;
@@ -529,6 +611,40 @@ bool exportRigidCsv(const QString& path, const RigidInput& input, const RigidRes
         require(result.scenarioId == input.scenario.id && !result.frames.empty(),
                 QStringLiteral("No results for the input scenario."));
         require(!input.bodies.empty() || !input.joints.empty(), QStringLiteral("No entities to export."));
+
+        if (input.nativeInput) {
+            QSaveFile file(path);
+            openOutput(file);
+            writeBytes(file, "time_s,entity_type,entity_id,name,variable,component,unit,value\r\n");
+            std::set<QString> channelKeys;
+            for (const auto& channel : result.channels) {
+                const QString key = channel.sourceType + QLatin1Char(':') + QString::number(channel.sourceId)
+                    + QLatin1Char(':') + channel.variable;
+                require(channelKeys.insert(key).second && channel.components > 0 && channel.components <= 1024
+                    && channel.values.size() == result.frames.size() * std::size_t(channel.components),
+                    QStringLiteral("Invalid or duplicate native result channel: %1").arg(key));
+                QString label = input.nativeInput->document.entity(channel.sourceType, channel.sourceId)
+                    .value(QStringLiteral("name")).toString();
+                if (label.isEmpty()) label = channel.sourceType + QString::number(channel.sourceId);
+                double previous = -1.0;
+                for (std::size_t frame = 0; frame < result.frames.size(); ++frame) {
+                    const double time = result.frames[frame].seconds;
+                    require(std::isfinite(time) && time >= 0 && time > previous, QStringLiteral("Invalid result frame times."));
+                    previous = time;
+                    for (int component = 0; component < channel.components; ++component) {
+                        QByteArray row = csvNumber(time) + ',' + quoteCsvName(channel.sourceType) + ','
+                            + QByteArray::number(channel.sourceId) + ',' + quoteCsvName(label) + ','
+                            + quoteCsvName(channel.variable) + ',' + QByteArray::number(component) + ','
+                            + quoteCsvName(channel.unit) + ','
+                            + csvNumber(channel.values[frame * std::size_t(channel.components) + std::size_t(component)]) + "\r\n";
+                        writeBytes(file, row);
+                    }
+                }
+            }
+            require(!result.channels.empty(), QStringLiteral("Native result has no channels to export."));
+            if (!file.commit()) fail(file.errorString());
+            return;
+        }
 
         std::map<int, QByteArray> bodyNames;
         for (const auto& item : input.bodies)

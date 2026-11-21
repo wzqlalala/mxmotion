@@ -1,14 +1,18 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 #include <array>
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace MotionOcc {
 
 class CadDocument;
+struct NativeMotionDocument;
+struct NativeMotionInput;
 using Vector3d = std::array<double, 3>;
 using Quaterniond = std::array<double, 4>; // w, x, y, z
 
@@ -50,7 +54,7 @@ struct RigidDrive {
 // curve manager. They do not change the dynamics or invalidate solved samples.
 enum class RigidCurveMetric {
     BodyPosition, BodyDisplacement, BodyVelocity, BodyRotation,
-    BodyAngularVelocity, JointCoordinate, JointRate
+    BodyAngularVelocity, JointCoordinate, JointRate, NativeChannel
 };
 
 struct RigidCurveRequest {
@@ -61,6 +65,8 @@ struct RigidCurveRequest {
     QString name;
     QString color;
     bool visible = true;
+    QString sourceType; // Stable native result collection; not a UI list index.
+    QString variable;
 };
 
 struct RigidScenario {
@@ -77,6 +83,7 @@ struct RigidModel {
     std::vector<RigidJoint> joints;
     std::vector<RigidDrive> drives;
     std::vector<RigidScenario> scenarios;
+    std::shared_ptr<NativeMotionDocument> nativeDocument;
 };
 
 struct BodyProperties {
@@ -95,6 +102,7 @@ struct RigidInput {
     std::vector<RigidJoint> joints;
     std::vector<RigidDrive> drives;
     RigidScenario scenario;
+    std::shared_ptr<NativeMotionInput> nativeInput;
 };
 
 struct BodyState {
@@ -117,9 +125,32 @@ struct RigidFrame {
     std::vector<JointState> joints;
 };
 
+struct ResultChannel {
+    QString sourceType;
+    int sourceId = 0;
+    QString variable;
+    QString unit;
+    int components = 1;
+    std::vector<double> values; // Frame-major, components values per result frame.
+};
+
+struct RigidFlexResult {
+    int flexId = 0;
+    int bodyId = 0;
+    std::vector<double> referenceNodes;
+    std::vector<int> surfaceTriangles;
+    std::vector<std::vector<double>> nodePositions; // Global mm, one node vector per accepted frame.
+};
+
+enum class ResultTermination { EndTime, GeometryBoundary };
+
 struct RigidResult {
     int scenarioId = 0;
     std::vector<RigidFrame> frames;
+    std::vector<ResultChannel> channels;
+    std::vector<RigidFlexResult> flexBodies;
+    ResultTermination termination = ResultTermination::EndTime;
+    QStringList diagnostics;
 };
 
 struct SolverCallbacks {
@@ -130,6 +161,9 @@ struct SolverCallbacks {
 enum class SolveStatus { Completed, Stopped, Failed };
 
 bool rigidBodyProperties(const CadDocument& cad, const RigidBody& body, BodyProperties& out, QString& error);
+// Refresh lightweight UI summaries without losing any native source records.
+// Scenario curve requests are retained by stable scenario ID.
+void syncNativeMotionModel(RigidModel& model);
 bool validateRigidModel(const CadDocument& cad, const RigidModel& model, QString& error);
 bool prepareRigidModel(const CadDocument& cad, const RigidModel& model, int scenarioId, RigidInput& out, QString& error);
 

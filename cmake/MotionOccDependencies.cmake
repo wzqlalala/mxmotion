@@ -7,10 +7,12 @@ function(mx_import_motionengine)
     endif()
     if(WIN32)
         set(engine_library "bin/motionengine.dll")
-        set(engine_byproducts "bin/motionengine.dll;lib/motionengine.lib")
+        set(modal_library "bin/MotionEngine_modal.dll")
+        set(engine_byproducts "bin/motionengine.dll;lib/motionengine.lib;bin/MotionEngine_modal.dll;lib/MotionEngine_modal.lib")
     else()
         set(engine_library "lib/${CMAKE_SHARED_LIBRARY_PREFIX}motionengine${CMAKE_SHARED_LIBRARY_SUFFIX}")
-        set(engine_byproducts "${engine_library}")
+        set(modal_library "lib/${CMAKE_SHARED_LIBRARY_PREFIX}MotionEngine_modal${CMAKE_SHARED_LIBRARY_SUFFIX}")
+        set(engine_byproducts "${engine_library};${modal_library}")
     endif()
     if(NOT WIN32)
         # Do not alter the pinned submodule: apply compile portability fixes
@@ -50,12 +52,12 @@ function(mx_import_motionengine)
                 -DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}
                 -DCMAKE_BUILD_TYPE:STRING=Release
                 -DBUILD_TESTING:BOOL=OFF -DBUILD_DEMOS:BOOL=OFF -DBUILD_BENCHMARKING:BOOL=OFF
-                -DENABLE_MODULE_MODAL:BOOL=OFF -DENABLE_HDF5:BOOL=OFF
+                -DENABLE_MODULE_MODAL:BOOL=ON -DENABLE_HDF5:BOOL=OFF
                 -DUSE_SIMD:BOOL=OFF -DENABLE_OPENMP:BOOL=OFF -DUSE_EIGEN_OPENMP:BOOL=OFF -DENABLE_TBB:BOOL=OFF
                 -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3:BOOL=ON -DCMAKE_DISABLE_FIND_PACKAGE_OpenMP:BOOL=ON
                 -DCMAKE_DISABLE_FIND_PACKAGE_TBB:BOOL=ON -DCMAKE_DISABLE_FIND_PACKAGE_MPI:BOOL=ON
                 -DCMAKE_DISABLE_FIND_PACKAGE_Thrust:BOOL=ON
-            BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --target motionengine --parallel ${MX_ENGINE_BUILD_JOBS}
+            BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --target motionengine MotionEngine_modal --parallel ${MX_ENGINE_BUILD_JOBS}
             INSTALL_COMMAND ""
             BUILD_ALWAYS ON
             BUILD_BYPRODUCTS ${byproducts})
@@ -71,8 +73,17 @@ function(mx_import_motionengine)
             IMPORTED_IMPLIB "${build}/lib/motionengine.lib"
             INTERFACE_COMPILE_OPTIONS "/Zc:__cplusplus")
     endif()
+    add_library(MotionEngine::Modal SHARED IMPORTED GLOBAL)
+    set_target_properties(MotionEngine::Modal PROPERTIES
+        IMPORTED_LOCATION "${build}/${modal_library}"
+        INTERFACE_LINK_LIBRARIES MotionEngine::Core)
+    if(MSVC)
+        set_target_properties(MotionEngine::Modal PROPERTIES
+            IMPORTED_IMPLIB "${build}/lib/MotionEngine_modal.lib")
+    endif()
     if(TARGET MotionEngineBuild)
         add_dependencies(MotionEngine::Core MotionEngineBuild)
+        add_dependencies(MotionEngine::Modal MotionEngineBuild)
     endif()
 endfunction()
 

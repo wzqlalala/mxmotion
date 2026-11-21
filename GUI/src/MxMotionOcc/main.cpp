@@ -12,6 +12,7 @@
 
 #ifdef MX_OCC_DESKTOP_SMOKE
 int runMotionOccDesktopSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccNativeDesktopSmoke(QApplication& app, const QString& outputDirectory);
 #endif
 
 int main(int argc, char* argv[])
@@ -53,13 +54,18 @@ int main(int argc, char* argv[])
     args.addHelpOption();
     args.addVersionOption();
     args.addPositionalArgument(QStringLiteral("CAD"), QStringLiteral("MxMotion project, STEP, IGES or BREP."), QStringLiteral("[CAD]"));
+    const QCommandLineOption motion(QStringLiteral("motion"), QStringLiteral("Import the original Motion JSON after the CAD file."), QStringLiteral("file"));
+    args.addOption(motion);
 #ifdef MX_OCC_DESKTOP_SMOKE
     const QCommandLineOption smoke(QStringLiteral("desktop-smoke"), QStringLiteral("Run the local desktop smoke test."), QStringLiteral("directory"));
     args.addOption(smoke);
+    const QCommandLineOption nativeSmoke(QStringLiteral("native-desktop-smoke"), QStringLiteral("Run the native motion desktop regression."), QStringLiteral("directory"));
+    args.addOption(nativeSmoke);
 #endif
     args.process(app);
 #ifdef MX_OCC_DESKTOP_SMOKE
     if (args.isSet(smoke)) return runMotionOccDesktopSmoke(app, args.value(smoke));
+    if (args.isSet(nativeSmoke)) return runMotionOccNativeDesktopSmoke(app, args.value(nativeSmoke));
 #endif
 
     MotionOcc::MotionWindow window;
@@ -68,6 +74,7 @@ int main(int argc, char* argv[])
         if (path.endsWith(QStringLiteral(".mxmotion"), Qt::CaseInsensitive)) window.openRigidProject(path);
         else window.importCad(path);
     }
+    if (args.isSet(motion)) window.importMotionJson(args.value(motion));
     window.showMaximized();
     return app.exec();
 }

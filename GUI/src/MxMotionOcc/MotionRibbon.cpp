@@ -88,6 +88,8 @@ void buildHome(RibbonPage* page, MotionWindow& window)
     actionButton(files, window, Command::SaveAs, false, 1, 2);
     actionButton(files, window, Command::Import, false, 0, 3);
     actionButton(files, window, Command::Export, false, 1, 3);
+    actionButton(files, window, Command::ImportMotionJson, false, 0, 4);
+    actionButton(files, window, Command::ExportMotionJson, false, 1, 4);
     disabledButtons(group(page, "工具"), {
         { "分析", "homepage/fenxi3x.png" }, { "单位", "homepage/danwei3x.png" },
         { "剖面", "geometry/中面_大@3x.png" }
@@ -139,25 +141,14 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     auto* bodies = group(pages[2], "体");
     actionButton(bodies, window, Command::BatchBodies);
     actionButton(bodies, window, Command::AddBody);
-    disabledButtons(bodies, {
-        { "自动柔性体", "Motion/mnf.png" },
-        { "标记点", "caotu/dian.png" }
-    });
+    actionButton(bodies, window, Command::AddAutoFlex);
+    actionButton(bodies, window, Command::AddMarker);
     disabledButtons(group(pages[2], "飞机专用模块 ▼"), { { "飞机报告", "Motion/aircraftReport.png" } });
     disabledButtons(group(pages[2], "系统建模工具 ▼"), { { "汽车报告", "Motion/automobileReport.png" } });
     auto* joints = group(pages[3], "基本运动副 ▼");
     for (const auto id : {Command::AddRevolute, Command::AddPrismatic, Command::AddFixed}) actionButton(joints, window, id);
-    disabledButtons(joints, {
-        { "圆柱副", "Motion/joint_cylindrical.png" }, { "球副", "Motion/joint_spherical.png" },
-        { "万向副", "Motion/joint_universal.png" }
-    });
-    disabledButtons(group(pages[3], "几何约束 ▼"), {
-        { "点面约束", "Motion/joint_pointPlane.png" }, { "平行约束", "Motion/joint_parallel.png" },
-        { "垂直约束", "Motion/joint_perpendicular.png" }
-    }, false);
-    disabledButtons(group(pages[3], "耦合副 ▼"), {
-        { "耦合副", "Motion/joint_coupling.png" }, { "齿轮副", "Motion/joint_gear.png" }
-    });
+    actionButton(joints, window, Command::AddNativeJoint);
+    actionButton(group(pages[3], "耦合副 ▼"), window, Command::AddCoupling);
     auto* drives = group(pages[4], "运动副驱动");
     actionButton(drives, window, Command::AddPositionDrive);
     actionButton(drives, window, Command::AddSpeedDrive);
@@ -165,21 +156,22 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     disabledButtons(group(pages[4], "运动体驱动"), {
         { "平动驱动", "Motion/drive.png" }, { "转动驱动", "Motion/drive.png" }
     });
-    disabledButtons(group(pages[5], "柔性连接 ▼"), {
-        { "体点弹簧", "Motion/force_spring.png" }, { "梁单元", "Motion/beam.png" },
-        { "拉压弹簧", "Motion/tcSpring.png" }, { "轴承", "Motion/axletree.png" }, { "扭转弹簧", "Motion/torsionSpring.png" }
-    }, false);
-    disabledButtons(group(pages[5], "加载力 ▼"), {
-        { "力", "Motion/force_vector.png" }, { "力矩", "Motion/force_torque.png" },
-        { "重力", "Motion/force_gravity.png" }, { "接触", "Motion/contact.png" }
-    }, false);
-    disabledButtons(group(pages[6], "传感器"), {
-        { "位移传感器", "Motion/sensor_displacement.png" }, { "速度传感器", "Motion/sensor_velocity.png" },
-        { "加速度传感器", "Motion/sensor_acceleration.png" }, { "运动副反力", "Motion/sensor_jointReaction.png" }
-    }, false);
-    disabledButtons(group(pages[6], "控制器"), { { "控制器", "Motion/controlCalculation.png" } });
-    disabledButtons(group(pages[6], "控制模块 ▼"), { { "控制输入", "Motion/controlInput.png" },
-        { "机电耦合", "Motion/electromechanicalCoupling.png" } }, false);
+    auto* flexible = group(pages[5], "柔性连接 ▼");
+    actionButton(flexible, window, Command::AddSpring);
+    actionButton(flexible, window, Command::AddSoftStop);
+    actionButton(flexible, window, Command::AddTensionCable);
+    auto* forces = group(pages[5], "加载力 ▼");
+    actionButton(forces, window, Command::AddVectorForce);
+    auto* scalar = actionButton(forces, window, Command::AddScalarForce);
+    auto* forceMenu = new mUiMenu(scalar);
+    for (const auto id : {Command::AddScalarForce, Command::AddScalarTorque, Command::AddThreePointForce, Command::AddThreePointTorque})
+        forceMenu->addAction(window.command(id));
+    ThemeManager::applyMenuStyle(forceMenu); scalar->setMenu(forceMenu); scalar->setPopupMode(QToolButton::MenuButtonPopup);
+    static_cast<mRibbonButton*>(scalar)->setHasArrow(true);
+    actionButton(forces, window, Command::AddContact);
+    actionButton(group(pages[6], "传感器"), window, Command::AddSensor);
+    actionButton(group(pages[6], "控制器"), window, Command::AddController);
+    actionButton(group(pages[6], "控制输入"), window, Command::AddControlInput);
     auto* solve = group(pages[7], "求解");
     for (const auto id : {Command::NewScenario, Command::Solve, Command::StopSolve, Command::LoadRigidExample})
         actionButton(solve, window, id);
@@ -242,6 +234,7 @@ QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent)
     for (const auto& entry : { std::pair{ "导入", Command::Import }, std::pair{ "导出", Command::Export } }) {
         auto* submenu = new mUiMenu(QString::fromUtf8(entry.first), fileMenu);
         submenu->addAction(window.command(entry.second));
+        submenu->addAction(window.command(entry.second == Command::Import ? Command::ImportMotionJson : Command::ExportMotionJson));
         fileMenu->addMenu(submenu);
     }
     fileMenu->addSeparator();

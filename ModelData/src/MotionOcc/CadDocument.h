@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QVector3D>
 #include <TopoDS_Shape.hxx>
 
@@ -27,6 +28,8 @@ struct CadPart {
     QString name;
     TopoDS_Shape shape;
     DisplayMesh display;
+    QString sourceName;   // STEP product/instance name, without generated suffixes.
+    QString instancePath; // Stable XCAF instance path within its source document.
 };
 
 // Single-threaded document API. IDs are positive and are not reused, even after clear().
@@ -35,6 +38,7 @@ class CadDocument {
 public:
     const std::vector<CadPart>& parts() const;
     const CadPart* part(int id) const;
+    const QStringList& importNotes() const { return m_importNotes; }
     void clear();
     bool remove(int id);
 
@@ -56,12 +60,15 @@ private:
         int id;
         QString name;
         QByteArray brep;
+        QString sourceName;
+        QString instancePath;
     };
     static bool encodeProjectPart(const CadPart&, QByteArray& brep, int maxBytes, QString& error);
     bool restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error);
 
     std::vector<CadPart> m_parts;
     std::uint64_t m_nextId = 1;
+    QStringList m_importNotes;
 };
 
 } // namespace MotionOcc

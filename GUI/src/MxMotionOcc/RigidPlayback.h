@@ -1,6 +1,8 @@
 #pragma once
 
 #include "RigidMotion.h"
+#include "NativeMotionSolver.h"
+#include "FemMesh.h"
 
 #include <QMatrix4x4>
 #include <QQuaternion>
@@ -9,6 +11,7 @@
 #include <cmath>
 #include <iterator>
 #include <map>
+#include <set>
 
 namespace MotionOcc {
 
@@ -19,6 +22,8 @@ struct RigidPlaybackSample {
     double seconds = 0.0;
     int frameIndex = 0;
     std::map<int, QMatrix4x4> partPoses;
+    std::map<int, FemMesh> flexMeshes;
+    std::set<int> flexHiddenParts;
 };
 
 // Validate a result once when entering animation. Keeping this scan out of the
@@ -26,7 +31,7 @@ struct RigidPlaybackSample {
 inline bool validateRigidPlayback(const RigidInput& input, const RigidResult& result,
                                   QString& error)
 {
-    if (input.scenario.id <= 0 || result.scenarioId != input.scenario.id) {
+    if (input.scenario.id < (input.nativeInput ? 0 : 1) || result.scenarioId != input.scenario.id) {
         error = QStringLiteral("动画结果与求解方案编号不一致。");
         return false;
     }
@@ -41,6 +46,23 @@ inline bool validateRigidPlayback(const RigidInput& input, const RigidResult& re
             return false;
         }
     }
+    for (const auto& flex : result.flexBodies) {
+        if (!input.nativeInput || flex.referenceNodes.empty() || flex.referenceNodes.size() % 3
+            || flex.surfaceTriangles.empty() || flex.surfaceTriangles.size() % 3
+            || flex.nodePositions.size() != result.frames.size()
+            || input.nativeInput->document.bodyPartBindings.value(flex.bodyId).isEmpty()) {
+            error = QStringLiteral("柔性体 %1 的动画网格或结果帧不完整。").arg(flex.flexId); return false;
+        }
+        for (int index : flex.surfaceTriangles)
+            if (index < 0 || std::size_t(index) >= flex.referenceNodes.size() / 3) {
+                error = QStringLiteral("柔性体 %1 的表面网格索引无效。").arg(flex.flexId); return false;
+            }
+        for (const auto& nodes : flex.nodePositions)
+            if (nodes.size() != flex.referenceNodes.size()
+                || !std::all_of(nodes.begin(), nodes.end(), [](double value) { return std::isfinite(value); })) {
+                error = QStringLiteral("柔性体 %1 的位移结果不完整或非有限。").arg(flex.flexId); return false;
+            }
+    }
     error.clear();
     return true;
 }
@@ -53,7 +75,7 @@ inline bool sampleRigidPlayback(const RigidInput& input, const RigidResult& resu
                                 QString& error)
 {
     const auto fail = [&error](const QString& reason) { error = reason; return false; };
-    if (input.scenario.id <= 0 || result.scenarioId != input.scenario.id)
+    if (input.scenario.id < (input.nativeInput ? 0 : 1) || result.scenarioId != input.scenario.id)
         return fail(QStringLiteral("动画结果与求解方案编号不一致。"));
     const auto& frames = result.frames;
     if (frames.empty() || !std::isfinite(requestedTime))
@@ -119,8 +141,48 @@ inline bool sampleRigidPlayback(const RigidInput& input, const RigidResult& resu
             for (int column = 0; column < 4; ++column)
                 if (!std::isfinite(pose(row, column)))
                     return fail(QStringLiteral("运动体 %1 的动画位姿超出渲染范围。").arg(body.body.id));
-        if (!next.partPoses.emplace(body.body.partId, pose).second)
-            return fail(QStringLiteral("动画结果中一个部件关联了多个运动体。"));
+        const auto parts = input.nativeInput ? input.nativeInput->document.bodyPartBindings.value(body.body.id)
+            : QVector<int>{body.body.partId};
+        if (parts.isEmpty()) {
+            // A virtual body has physical states and may drive other bodies,
+            // but deliberately has no CAD instance to animate.
+            const auto source = input.nativeInput ? input.nativeInput->document.entity("bodies", body.body.id) : QJsonObject{};
+            if (!source.isEmpty() && source.value("geoEntityIds").toArray().isEmpty()) continue;
+            return fail(QStringLiteral("运动体 %1 缺少几何绑定。").arg(body.body.id));
+        }
+        for (int part : parts)
+            if (!next.partPoses.emplace(part, pose).second)
+                return fail(QStringLiteral("动画结果中一个部件关联了多个运动体。"));
+    }
+    const auto leftIndex = std::size_t(std::distance(frames.begin(), first));
+    const auto rightIndex = std::size_t(std::distance(frames.begin(), second));
+    for (const auto& flex : result.flexBodies) {
+        if (!input.nativeInput || rightIndex >= flex.nodePositions.size())
+            return fail(QStringLiteral("柔性体动画帧缺失。"));
+        const auto parts = input.nativeInput->document.bodyPartBindings.value(flex.bodyId);
+        const auto& a = flex.nodePositions[leftIndex]; const auto& b = flex.nodePositions[rightIndex];
+        if (parts.isEmpty() || a.size() != b.size() || a.size() != flex.referenceNodes.size() || a.size() % 3)
+            return fail(QStringLiteral("柔性体动画网格与绑定不一致。"));
+        FemMesh mesh; mesh.nodes.reserve(a.size() / 3); mesh.surface.reserve(flex.surfaceTriangles.size() / 3);
+        for (std::size_t i = 0; i < a.size(); i += 3) {
+            std::array<double, 3> point{};
+            for (int j = 0; j < 3; ++j) {
+                point[std::size_t(j)] = a[i + std::size_t(j)] + (b[i + std::size_t(j)] - a[i + std::size_t(j)]) * ratio;
+                if (!std::isfinite(point[std::size_t(j)])) return fail(QStringLiteral("柔性体动画包含非有限位置。"));
+            }
+            mesh.nodes.push_back(point);
+        }
+        for (std::size_t i = 0; i + 2 < flex.surfaceTriangles.size(); i += 3) {
+            std::array<std::uint32_t, 3> triangle{};
+            for (int j = 0; j < 3; ++j) {
+                const int index = flex.surfaceTriangles[i + std::size_t(j)];
+                if (index < 0 || std::size_t(index) >= mesh.nodes.size()) return fail(QStringLiteral("柔性体动画表面索引无效。"));
+                triangle[std::size_t(j)] = std::uint32_t(index);
+            }
+            mesh.surface.push_back(triangle);
+        }
+        next.flexMeshes.emplace(parts.first(), std::move(mesh));
+        for (int part : parts) { next.partPoses.erase(part); if (part != parts.first()) next.flexHiddenParts.insert(part); }
     }
     sample = std::move(next);
     error.clear();

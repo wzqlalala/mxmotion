@@ -3,6 +3,7 @@
 #include "CadDocument.h"
 #include "FemMesh.h"
 #include "RigidMotion.h"
+#include "NativeMotionDocument.h"
 
 #include <QElapsedTimer>
 #include <QMainWindow>
@@ -42,8 +43,9 @@ class OccViewport;
 class RigidPlot;
 
 struct ModelNode {
-    enum Kind { None, Part, Body, Joint, Drive, Scenario, Animation, Export, Curves } kind = None;
+    enum Kind { None, Part, Body, Joint, Drive, Scenario, Animation, Export, Curves, Native } kind = None;
     int id = 0;
+    QString collection;
 };
 
 enum class Command {
@@ -55,6 +57,10 @@ enum class Command {
     GenerateMesh, RemoveMesh, ExportMesh,
     AddBody, BatchBodies, AddRevolute, AddPrismatic, AddFixed, AddSpeedDrive, AddPositionDrive,
     NewScenario, Solve, StopSolve, LoadRigidExample,
+    ImportMotionJson, ExportMotionJson, AddNativeJoint, AddCoupling, AddSpring,
+    AddVectorForce, AddScalarForce, AddScalarTorque, AddThreePointForce, AddThreePointTorque,
+    AddContact, AddMarker, AddSensor, AddController, AddControlInput, AddAutoFlex,
+    AddSoftStop, AddTensionCable,
     ResetLayout, ManageLayout, QuickShot, About, Exit
 };
 
@@ -67,6 +73,7 @@ public:
     QAction* command(Command id) const;
     bool importCad(const QString& path);
     bool openRigidProject(const QString& path);
+    bool importMotionJson(const QString& path, bool interactiveBinding = true);
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, long* result) override;
@@ -108,11 +115,11 @@ private:
     void appendRigidNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups);
     void selectRigidNode(ModelNode node);
     void showRigidMenu(ModelNode node, const QPoint& globalPosition);
-    void editBody(int id = 0);
+    void editBody(int id = -1);
     void batchBodies();
-    void editJoint(JointKind kind, int id = 0);
-    void editDrive(DriveKind kind, int id = 0);
-    void editScenario(int id = 0);
+    void editJoint(JointKind kind, int id = -1);
+    void editDrive(DriveKind kind, int id = -1);
+    void editScenario(int id = -1);
     void showEditor(QWidget* editor);
     void closeEditor();
     void removeRigidNode(ModelNode node);
@@ -129,6 +136,14 @@ private:
     void loadRigidExample();
     bool motionBusy() const;
     bool canRemovePart(int id) const;
+    void createNativeCommands();
+    void appendNativeNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups);
+    void editNativeEntity(const QString& collection, int id = -1, const QString& type = {});
+    void removeNativeEntity(const QString& collection, int id);
+    bool ensureNativeModel();
+    void batchNativeBodies();
+    bool commitNativeDocument(NativeMotionDocument document, ModelNode selection);
+    bool resolveNativeBindings(NativeMotionDocument& document, bool interactive);
 
     struct RigidRun {
         RigidInput input;
@@ -146,7 +161,7 @@ private:
     std::map<int, std::shared_ptr<RigidRun>> m_results;
     std::shared_ptr<RigidRun> m_running;
     std::thread m_solverThread;
-    int m_resultScenario = 0;
+    int m_resultScenario = -1;
     bool m_animationActive = false;
     double m_playbackTime = 0.0;
     QElapsedTimer m_playbackClock;

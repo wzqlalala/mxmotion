@@ -3,6 +3,8 @@
 #endif
 
 #include "RigidMotion.h"
+#include "NativeMotionDocument.h"
+#include "NativeMotionSolver.h"
 #include "CadDocument.h"
 
 #include <BRepBndLib.hxx>
@@ -643,8 +645,93 @@ bool rigidBodyProperties(const CadDocument& cad, const RigidBody& body, BodyProp
     });
 }
 
+void syncNativeMotionModel(RigidModel& model)
+{
+    if (!model.nativeDocument) return;
+    const auto oldScenarios = std::move(model.scenarios);
+    model.bodies.clear();
+    model.joints.clear();
+    model.drives.clear();
+    model.scenarios.clear();
+    for (const auto& value : model.nativeDocument->collection(QStringLiteral("bodies"))) {
+        const auto row = value.toObject();
+        const int id = row.value(QStringLiteral("id")).toInt();
+        const auto parts = model.nativeDocument->bodyPartBindings.value(id);
+        model.bodies.push_back({id, row.value(QStringLiteral("name")).toString(),
+            parts.isEmpty() ? 0 : parts.front(), row.value(QStringLiteral("isFixed")).toBool(),
+            row.value(QStringLiteral("mass")).toDouble(1.0), 0.0});
+    }
+    for (const auto& value : model.nativeDocument->collection(QStringLiteral("scenarios"))) {
+        const auto row = value.toObject();
+        const auto gravity = row.value(QStringLiteral("gravity")).toObject();
+        RigidScenario scenario;
+        scenario.id = row.value(QStringLiteral("id")).toInt();
+        scenario.name = row.value(QStringLiteral("name")).toString();
+        scenario.duration = row.value(QStringLiteral("endTime")).toDouble(1.0);
+        scenario.step = row.value(QStringLiteral("stepSize")).toDouble(0.01);
+        scenario.gravityMS2 = {gravity.value(QStringLiteral("x")).toDouble() * 0.001,
+            gravity.value(QStringLiteral("y")).toDouble() * 0.001, gravity.value(QStringLiteral("z")).toDouble(-9810.0) * 0.001};
+        const auto old = std::find_if(oldScenarios.begin(), oldScenarios.end(),
+            [&](const RigidScenario& value) { return value.id == scenario.id; });
+        if (old != oldScenarios.end()) {
+            // An intentionally cleared list must remain empty after model edits.
+            scenario.curveRequests = old->curveRequests;
+        } else {
+            const QMap<QString, QString> sources{
+                {"Body", "bodies"}, {"Joint", "joints"}, {"Marker", "markers"}, {"Drive", "drives"},
+                {"Coupling", "couplings"}, {"Sensor", "sensors"}, {"Controller", "controllers"},
+                {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
+                {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
+                {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"},
+                {"VectorForce", "vectorForces"}, {"AutoFlexBody", "autoFlexBodies"}};
+            for (const auto& value : row.value(QStringLiteral("curveRequests")).toArray()) {
+                const auto curve = value.toObject();
+                RigidCurveRequest request;
+                request.id = curve.value(QStringLiteral("requestId")).toInt();
+                const auto used = [&](int id) {
+                    return std::any_of(scenario.curveRequests.begin(), scenario.curveRequests.end(),
+                        [id](const RigidCurveRequest& existing) { return existing.id == id; });
+                };
+                if (request.id <= 0 || used(request.id)) {
+                    request.id = 1;
+                    while (used(request.id)) ++request.id;
+                }
+                request.metric = RigidCurveMetric::NativeChannel;
+                const auto source = curve.value(QStringLiteral("sourceType")).toString();
+                request.sourceType = sources.value(source, source);
+                request.sourceId = curve.value(QStringLiteral("sourceId")).toInt(-1);
+                request.variable = curve.value(QStringLiteral("variable")).toString();
+                const auto componentValue = curve.value(QStringLiteral("component"));
+                const auto component = componentValue.toString();
+                request.component = componentValue.isDouble() ? componentValue.toInt()
+                    : component == QStringLiteral("Magnitude") ? -1
+                    : component == QStringLiteral("Y") ? 1 : component == QStringLiteral("Z") ? 2 : 0;
+                request.name = curve.value(QStringLiteral("requestName")).toString();
+                request.visible = curve.value(QStringLiteral("visible")).toBool(true);
+                const auto color = curve.value(QStringLiteral("color"));
+                QColor selected;
+                if (color.isString()) selected = QColor(color.toString());
+                else if (color.isObject()) {
+                    const auto rgba = color.toObject();
+                    const int r = rgba.value(QStringLiteral("r")).toInt(-1);
+                    const int g = rgba.value(QStringLiteral("g")).toInt(-1);
+                    const int b = rgba.value(QStringLiteral("b")).toInt(-1);
+                    if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255)
+                        selected = QColor(r, g, b);
+                }
+                if (selected.isValid()) request.color = selected.name();
+                scenario.curveRequests.push_back(std::move(request));
+            }
+        }
+        model.scenarios.push_back(std::move(scenario));
+    }
+}
+
 bool validateRigidModel(const CadDocument& cad, const RigidModel& model, QString& error)
 {
+    if (model.nativeDocument)
+        return validateNativeMotionDocument(*model.nativeDocument, error)
+            && validateNativeMotionBindings(cad, *model.nativeDocument, error);
     return runPreparation(error, [&] {
         checkTopology(model.bodies, model.joints, model.drives);
         checkScenarios(model, 0);
@@ -655,6 +742,32 @@ bool validateRigidModel(const CadDocument& cad, const RigidModel& model, QString
 
 bool prepareRigidModel(const CadDocument& cad, const RigidModel& model, int scenarioId, RigidInput& out, QString& error)
 {
+    if (model.nativeDocument) {
+        auto document = *model.nativeDocument;
+        auto data = document.root.value(QStringLiteral("motionData")).toObject();
+        auto drives = data.value(QStringLiteral("drives")).toArray();
+        const double duration = document.entity(QStringLiteral("scenarios"), scenarioId)
+            .value(QStringLiteral("endTime")).toDouble(1.0);
+        for (int i = 0; i < drives.size(); ++i) {
+            auto drive = drives[i].toObject();
+            if (!drive.contains(QStringLiteral("legacyEndValue"))) continue;
+            drive.insert(QStringLiteral("expression"), QStringLiteral("(%1)*t/(%2)")
+                .arg(drive.value(QStringLiteral("legacyEndValue")).toDouble(), 0, 'g', 17).arg(duration, 0, 'g', 17));
+            drives[i] = drive;
+        }
+        data.insert(QStringLiteral("drives"), drives);
+        document.root.insert(QStringLiteral("motionData"), data);
+        auto native = std::make_shared<NativeMotionInput>();
+        if (!prepareNativeMotion(cad, document, scenarioId, *native, error)) return false;
+        RigidInput prepared;
+        prepared.bodies = native->bodies;
+        prepared.scenario = native->scenario;
+        for (const auto& scenario : model.scenarios)
+            if (scenario.id == scenarioId) prepared.scenario.curveRequests = scenario.curveRequests;
+        prepared.nativeInput = std::move(native);
+        out = std::move(prepared);
+        return true;
+    }
     return runPreparation(error, [&] {
         const auto topology = checkTopology(model.bodies, model.joints, model.drives);
         const auto* scenario = checkScenarios(model, scenarioId);
@@ -679,6 +792,7 @@ bool prepareRigidModel(const CadDocument& cad, const RigidModel& model, int scen
 
 SolveStatus solveRigid(const RigidInput& input, RigidResult& result, QString& error, const SolverCallbacks& callbacks)
 {
+    if (input.nativeInput) return solveNativeMotion(*input.nativeInput, result, error, callbacks);
     error.clear();
     const auto stopRequested = [&] { return callbacks.stopRequested && callbacks.stopRequested(); };
     try {

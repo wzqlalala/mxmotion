@@ -3,6 +3,7 @@
 #include "RigidPlot.h"
 #include "RigidProject.h"
 #include "RigidPlayback.h"
+#include "NativeMotionPresentation.h"
 #include "ThemeManager.h"
 #include "mFoldSection.h"
 #include "mUiMenu.h"
@@ -21,6 +22,7 @@
 #include <QLineEdit>
 #include <QMatrix4x4>
 #include <QProgressBar>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QQuaternion>
 #include <QSignalBlocker>
@@ -148,9 +150,9 @@ void MotionWindow::createRigidCommands()
     add(Command::AddPositionDrive, tr("位移驱动"), "drive.png", [this] { editDrive(DriveKind::Displacement); });
     add(Command::NewScenario, tr("新建求解方案"), "drive.png", [this] { editScenario(); });
     add(Command::Solve, tr("求解"), "solve.png", [this] {
-        int id = m_model.scenarios.empty() ? 0 : m_model.scenarios.back().id;
-        if (m_selectionNode.kind >= ModelNode::Scenario) id = m_selectionNode.id;
-        if (id) startRigidSolve(id);
+        int id = m_model.scenarios.empty() ? -1 : m_model.scenarios.back().id;
+        if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves) id = m_selectionNode.id;
+        if (id >= 0) startRigidSolve(id);
         else editScenario();
     });
     add(Command::StopSolve, tr("停止求解"), "solve.png", [this] {
@@ -158,6 +160,7 @@ void MotionWindow::createRigidCommands()
         updateActions();
     });
     add(Command::LoadRigidExample, tr("刚体示例"), "movingBody.png", [this] { loadRigidExample(); });
+    createNativeCommands();
 }
 
 void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
@@ -255,6 +258,7 @@ void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
         const auto requests = m_rigidPlot->curveRequests(scenarioId);
         for (auto& scenario : m_model.scenarios)
             if (scenario.id == scenarioId) { scenario.curveRequests = requests; m_modified = true; }
+        syncNativeScenarioCurves(m_model, scenarioId);
         const auto result = m_results.find(scenarioId);
         if (result != m_results.end()) result->second->input.scenario.curveRequests = requests;
         updateActions();
@@ -306,6 +310,10 @@ bool MotionWindow::motionBusy() const { return bool(m_running); }
 
 bool MotionWindow::canRemovePart(int id) const
 {
+    if (m_model.nativeDocument) {
+        for (const auto& parts : m_model.nativeDocument->bodyPartBindings) if (parts.contains(id)) return false;
+        return true;
+    }
     return std::none_of(m_model.bodies.begin(), m_model.bodies.end(), [id](const auto& b) { return b.partId == id; });
 }
 
@@ -325,11 +333,25 @@ void MotionWindow::updateRigidActions()
     command(Command::NewScenario)->setEnabled(idle);
     command(Command::LoadRigidExample)->setEnabled(idle);
     command(Command::StopSolve)->setEnabled(m_running && !m_running->stop.load());
+    command(Command::ImportMotionJson)->setEnabled(idle && !m_document.parts().empty());
+    command(Command::ExportMotionJson)->setEnabled(idle && !m_model.bodies.empty());
+    for (const auto id : {Command::AddNativeJoint, Command::AddCoupling, Command::AddSpring,
+            Command::AddVectorForce, Command::AddScalarForce, Command::AddScalarTorque,
+            Command::AddThreePointForce, Command::AddThreePointTorque, Command::AddContact,
+            Command::AddMarker, Command::AddSensor, Command::AddController, Command::AddControlInput,
+            Command::AddAutoFlex, Command::AddSoftStop, Command::AddTensionCable})
+        command(id)->setEnabled(idle && !m_model.bodies.empty());
+    if (m_model.nativeDocument) {
+        const bool joints = !m_model.nativeDocument->collection(QStringLiteral("joints")).isEmpty();
+        command(Command::AddSpeedDrive)->setEnabled(idle && joints);
+        command(Command::AddPositionDrive)->setEnabled(idle && joints);
+    }
     updatePlaybackControls();
 }
 
 void MotionWindow::appendRigidNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups)
 {
+    if (m_model.nativeDocument) { appendNativeNodes(root, groups); return; }
     auto insert = [this](QTreeWidgetItem* parent, const QString& label, ModelNode::Kind kind, int id, const char* image) {
         auto* item = new QTreeWidgetItem(parent, {label});
         item->setIcon(0, motionIcon(image));
@@ -364,6 +386,7 @@ void MotionWindow::selectRigidNode(ModelNode node)
     updateActions();
     if (motionBusy() || m_jobPart >= 0) return;
     switch (node.kind) {
+    case ModelNode::Native: editNativeEntity(node.collection, node.id); break;
     case ModelNode::Body: editBody(node.id); break;
     case ModelNode::Joint: if (const auto* j = byId(m_model.joints, node.id)) editJoint(j->kind, j->id); break;
     case ModelNode::Drive: if (const auto* d = byId(m_model.drives, node.id)) editDrive(d->kind, d->id); break;
@@ -378,7 +401,7 @@ void MotionWindow::selectRigidNode(ModelNode node)
 void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
 {
     mUiMenu menu(this);
-    if (node.kind >= ModelNode::Animation) {
+    if (node.kind >= ModelNode::Animation && node.kind <= ModelNode::Curves) {
         const auto text = node.kind == ModelNode::Animation ? tr("动画") : node.kind == ModelNode::Curves ? tr("运动曲线") : tr("结果导出");
         auto* action = menu.addAction(text);
         action->setEnabled(m_results.count(node.id) > 0);
@@ -409,7 +432,9 @@ void MotionWindow::showEditor(QWidget* editor)
     m_parameterTitle->hide();
     m_parameterDetails->hide();
     m_editor = editor;
-    m_parameterLayout->insertWidget(m_parameterLayout->count() - 1, m_editor);
+    const bool scrollable = qobject_cast<QScrollArea*>(editor) != nullptr;
+    m_parameterLayout->insertWidget(m_parameterLayout->count() - 1, m_editor, scrollable ? 1 : 0);
+    m_parameterLayout->setStretch(m_parameterLayout->count() - 1, scrollable ? 0 : 1);
     openDock(m_parameterDock);
     m_editor->show();
 }
@@ -421,12 +446,14 @@ void MotionWindow::closeEditor()
     m_parameterLayout->removeWidget(m_editor);
     m_editor->deleteLater();
     m_editor = nullptr;
+    m_parameterLayout->setStretch(m_parameterLayout->count() - 1, 1);
     m_parameterTitle->show();
     m_parameterDetails->show();
 }
 
 void MotionWindow::editBody(int id)
 {
+    if (m_model.nativeDocument) { editNativeEntity(QStringLiteral("bodies"), id); return; }
     if (motionBusy() || m_jobPart >= 0) return;
     const auto* current = byId(m_model.bodies, id);
     auto* panel = new QWidget;
@@ -468,6 +495,7 @@ void MotionWindow::editBody(int id)
 
 void MotionWindow::batchBodies()
 {
+    if (m_model.nativeDocument) { batchNativeBodies(); return; }
     if (motionBusy() || m_jobPart >= 0) return;
     RigidModel next = m_model;
     int added = 0, skipped = 0;
@@ -485,6 +513,11 @@ void MotionWindow::batchBodies()
 
 void MotionWindow::editJoint(JointKind kind, int id)
 {
+    if (m_model.nativeDocument) {
+        editNativeEntity(QStringLiteral("joints"), id, kind == JointKind::Revolute ? QStringLiteral("Revolute")
+            : kind == JointKind::Prismatic ? QStringLiteral("Translational") : QStringLiteral("Fixed"));
+        return;
+    }
     if (motionBusy() || m_jobPart >= 0) return;
     const auto* current = byId(m_model.joints, id);
     const RigidJoint initial = current ? *current : RigidJoint{nextId(m_model.joints), {}, kind};
@@ -524,6 +557,10 @@ void MotionWindow::editJoint(JointKind kind, int id)
 
 void MotionWindow::editDrive(DriveKind kind, int id)
 {
+    if (m_model.nativeDocument) {
+        editNativeEntity(QStringLiteral("drives"), id, kind == DriveKind::Speed ? QStringLiteral("Velocity") : QStringLiteral("Displacement"));
+        return;
+    }
     if (motionBusy() || m_jobPart >= 0) return;
     const auto* current = byId(m_model.drives, id);
     const RigidDrive initial = current ? *current : RigidDrive{nextId(m_model.drives), {}, 0, kind, 0};
@@ -562,6 +599,7 @@ void MotionWindow::editDrive(DriveKind kind, int id)
 
 void MotionWindow::editScenario(int id)
 {
+    if (m_model.nativeDocument) { editNativeEntity(QStringLiteral("scenarios"), id); return; }
     if (motionBusy() || m_jobPart >= 0) return;
     const auto* current = byId(m_model.scenarios, id);
     const RigidScenario initial = current ? *current : RigidScenario{nextId(m_model.scenarios)};
@@ -587,6 +625,10 @@ void MotionWindow::editScenario(int id)
 void MotionWindow::removeRigidNode(ModelNode node)
 {
     if (motionBusy()) return;
+    if (m_model.nativeDocument) {
+        removeNativeEntity(node.kind == ModelNode::Scenario ? QStringLiteral("scenarios") : node.collection, node.id);
+        return;
+    }
     RigidModel next = m_model;
     if (node.kind == ModelNode::Body) {
         if (std::any_of(next.joints.begin(), next.joints.end(), [&](const auto& j) { return j.movingBodyId == node.id || j.baseBodyId == node.id; })) {
@@ -623,14 +665,14 @@ void MotionWindow::commitRigid(RigidModel model, ModelNode selection)
     updateTree();
     updateParameters();
     updateActions();
-    setNotice(tr("已更新刚体模型。"));
+    setNotice(tr("已更新运动模型。"));
 }
 
 void MotionWindow::clearResults()
 {
     leaveRigidAnimation();
     m_rigidPlot->setResult(nullptr, nullptr);
-    m_resultScenario = 0;
+    m_resultScenario = -1;
     m_playbackTime = 0.0;
     m_results.clear();
     m_viewport->clearPartPoses();
@@ -687,13 +729,18 @@ void MotionWindow::pollRigidSolve()
         // does not implicitly enter animation or create a result curve.
         if (m_resultScenario == id) {
             m_rigidPlot->setResult(nullptr, nullptr);
-            m_resultScenario = 0;
+            m_resultScenario = -1;
         }
         m_results[id] = run;
         m_selectionNode = {ModelNode::Scenario, id};
         updateTree();
-        setNotice(tr("MotionEngine 求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
-            .arg(run->result.frames.size()).arg(run->result.frames.back().seconds));
+        const auto message = run->result.termination == ResultTermination::GeometryBoundary
+            ? tr("MotionEngine 因几何边界终止：已保留 %1 帧 / %2 s 的有效结果。")
+                .arg(run->result.frames.size()).arg(run->result.frames.back().seconds)
+            : tr("MotionEngine 求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
+                .arg(run->result.frames.size()).arg(run->result.frames.back().seconds);
+        setNotice(message + (run->result.diagnostics.isEmpty() ? QString{} : QLatin1Char('\n') + run->result.diagnostics.join(QLatin1Char('\n'))));
+        if (!run->result.diagnostics.isEmpty()) openDock(m_outputDock);
     } else {
         setNotice(run->status == SolveStatus::Stopped ? tr("已停止求解。") : tr("求解失败：%1").arg(run->error), run->status != SolveStatus::Stopped);
     }
@@ -759,7 +806,18 @@ void MotionWindow::seekRigidTime(double seconds)
         setNotice(error, true);
         return;
     }
+    if (run.input.nativeInput) for (const auto& flex : run.result.flexBodies) {
+        const auto parts = run.input.nativeInput->document.bodyPartBindings.value(flex.bodyId);
+        if (parts.isEmpty() || !m_hidden.count(parts.front())) continue;
+        const auto visible = std::find_if(parts.begin(), parts.end(), [this](int part) { return !m_hidden.count(part); });
+        auto mesh = sample.flexMeshes.extract(parts.front());
+        if (visible != parts.end() && !mesh.empty()) {
+            mesh.key() = *visible; sample.flexMeshes.insert(std::move(mesh));
+            sample.flexHiddenParts.erase(*visible); sample.flexHiddenParts.insert(parts.front());
+        }
+    }
     m_viewport->setPartPoses(sample.partPoses);
+    m_viewport->setDeformedMeshes(sample.flexMeshes, sample.flexHiddenParts);
     m_playbackTime = sample.seconds;
     const QSignalBlocker block(m_timeline);
     m_timeline->setValue(sample.frameIndex);
@@ -865,6 +923,7 @@ bool MotionWindow::openRigidProject(const QString& path)
     updateTree();
     syncViewport(true);
     selectPart(-1);
+    for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
     setNotice(tr("已打开项目：%1").arg(QFileInfo(path).fileName()));
     return true;
 }

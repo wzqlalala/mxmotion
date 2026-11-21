@@ -1,4 +1,5 @@
 #include "RigidPlayback.h"
+#include "NativeMotionPresentation.h"
 
 #include <QCoreApplication>
 #include <QTextStream>
@@ -81,6 +82,70 @@ int main(int argc, char** argv)
         a0.positionMm[0] = 1e300;
         result.frames = {{2, {a0, b}, {}}};
         require(!sampleRigidPlayback(input, result, 2, sample, error), "Finite doubles overflowing render floats must be rejected");
+        // Native IDs may be zero and one body can own several placed CAD
+        // instances. All instances must receive the same physical transform.
+        input.scenario.id = 0;
+        input.nativeInput = std::make_shared<NativeMotionInput>();
+        first.body.id = 0; input.bodies = {first, second};
+        input.nativeInput->document.bodyPartBindings.insert(0, {101, 109});
+        input.nativeInput->document.bodyPartBindings.insert(7, {42});
+        a0.bodyId = a1.bodyId = 0; a0.positionMm = {1000, 2000, 3000};
+        result.scenarioId = 0;
+        result.frames = {{0, {a0, b}, {}}, {2, {b, a1}, {}}};
+        require(validateRigidPlayback(input, result, error), "Native scenario zero was rejected");
+        require(sampleRigidPlayback(input, result, 1, sample, error), "Native multi-part interpolation failed");
+        require(sample.partPoses.size() == 3 && sample.partPoses.at(101) == sample.partPoses.at(109),
+                "A multi-part body lost an instance or received different transforms");
+        PreparedBody virtualBody; virtualBody.body.id = 55; input.bodies.push_back(virtualBody);
+        BodyState virtualState; virtualState.bodyId = 55;
+        for (auto& frame : result.frames) frame.bodies.push_back(virtualState);
+        input.nativeInput->document.root = {{"motionData", QJsonObject{{"bodies", QJsonArray{
+            QJsonObject{{"id", 55}, {"geoEntityIds", QJsonArray{}}}}}}}};
+        require(sampleRigidPlayback(input, result, 1, sample, error) && sample.partPoses.size() == 3,
+                "A virtual body with no CAD must not prevent other bodies from animating");
+        input.nativeInput->document.root = {{"motionData", QJsonObject{{"bodies", QJsonArray{
+            QJsonObject{{"id", 55}, {"geoEntityIds", QJsonArray{901}}}}}}}};
+        require(!sampleRigidPlayback(input, result, 1, sample, error),
+                "A real geometry reference with a missing binding was mistaken for a virtual body");
+        input.bodies.pop_back(); for (auto& frame : result.frames) frame.bodies.pop_back();
+        input.nativeInput->document.root = {};
+        RigidFlexResult flex;
+        flex.flexId = 23; flex.bodyId = 0;
+        flex.referenceNodes = {0, 0, 0, 10, 0, 0, 0, 10, 0};
+        flex.surfaceTriangles = {0, 1, 2};
+        flex.nodePositions = {flex.referenceNodes, {1, 0, 0, 11, 0, 2, 1, 10, 4}};
+        result.flexBodies = {flex};
+        require(validateRigidPlayback(input, result, error), "Complete modal results were rejected");
+        require(sampleRigidPlayback(input, result, 1, sample, error), "Modal node interpolation failed");
+        require(sample.partPoses.count(101) == 0 && sample.partPoses.count(109) == 0
+                && sample.flexMeshes.count(101) == 1 && sample.flexHiddenParts.count(109),
+                "Modal mesh must replace all bound CAD without applying a second rigid transform");
+        const auto& mesh = sample.flexMeshes.at(101);
+        require(mesh.nodes.size() == 3 && mesh.surface.size() == 1 && mesh.nodes[2][0] == .5 && mesh.nodes[2][2] == 2,
+                "Modal surface must interpolate actual engine node positions");
+        result.flexBodies.front().surfaceTriangles[2] = 9;
+        require(!validateRigidPlayback(input, result, error), "Invalid modal surface topology was accepted");
+        result.flexBodies.front() = flex;
+        result.flexBodies.front().nodePositions[1][0] = std::numeric_limits<double>::quiet_NaN();
+        require(!validateRigidPlayback(input, result, error), "Nonfinite modal node result was accepted");
+        RigidModel presentation; presentation.nativeDocument = std::make_shared<NativeMotionDocument>();
+        RigidScenario presentationScenario; presentationScenario.id = 0;
+        RigidCurveRequest forceCurve; forceCurve.id = 4; forceCurve.sourceId = 9;
+        forceCurve.metric = RigidCurveMetric::NativeChannel; forceCurve.sourceType = "softStops"; forceCurve.variable = "Force";
+        RigidCurveRequest bodyCurve = forceCurve; bodyCurve.id = 7; bodyCurve.sourceType = "bodies"; bodyCurve.variable = "Position";
+        presentationScenario.curveRequests = {forceCurve, bodyCurve}; presentation.scenarios = {presentationScenario};
+        const QJsonObject originalBodyCurve{{"requestId", 7}, {"sourceType", "Body"}, {"sourceId", 9}, {"extra", "preserved"}};
+        presentation.nativeDocument->root = {{"motionData", QJsonObject{{"scenarios", QJsonArray{QJsonObject{
+            {"id", 0}, {"curveRequests", QJsonArray{QJsonObject{{"requestId", 4}, {"sourceType", "SoftStop"}, {"sourceId", 9}}, originalBodyCurve}}}}}}}};
+        const auto originalPresentation = presentation;
+        removeNativeEntityCurves(presentation, "softStops", 9);
+        require(presentation.scenarios.front().curveRequests.size() == 1
+                && presentation.scenarios.front().curveRequests.front().sourceType == "bodies"
+                && presentation.nativeDocument->entity("scenarios", 0).value("curveRequests").toArray() == QJsonArray{originalBodyCurve},
+                "Deleting a source must remove only its display requests, including original enum aliases");
+        require(originalPresentation.scenarios.front().curveRequests.size() == 2
+                && originalPresentation.nativeDocument->entity("scenarios", 0).value("curveRequests").toArray().size() == 2,
+                "Preparing deletion mutated the original model before physical dependency validation");
         QTextStream(stdout) << "Playback regression passed: physical time, ID mapping, interpolation, invalid data.\n";
         return 0;
     } catch (const std::exception& exception) {

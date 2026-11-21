@@ -22,7 +22,14 @@ struct RigidCurveSeries {
 bool isBodyCurve(RigidCurveMetric metric);
 QString rigidCurveQuantity(RigidCurveMetric metric, JointKind jointKind = JointKind::Revolute);
 QString rigidCurveUnit(RigidCurveMetric metric, JointKind jointKind = JointKind::Revolute);
-QString rigidCurveTitle(const RigidInput& input, const RigidCurveRequest& request);
+QString rigidChannelSourceType(const QString& sourceType);
+QString rigidChannelSourceLabel(const QString& sourceType);
+QString rigidChannelObjectName(const RigidInput& input, const QString& sourceType, int sourceId);
+QString rigidChannelVariableLabel(const QString& variable);
+QString rigidChannelComponentLabel(int components, int component);
+const ResultChannel* rigidCurveChannel(const RigidResult& result, const RigidCurveRequest& request);
+QString rigidCurveTitle(const RigidInput& input, const RigidCurveRequest& request,
+                        const RigidResult* result = nullptr);
 RigidCurveSeries rigidCurveSeries(const RigidInput& input, const RigidResult& result,
                                  const RigidCurveRequest& request);
 

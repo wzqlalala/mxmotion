@@ -108,7 +108,80 @@ int main(int argc, char** argv)
         invalid = result;
         invalid.scenarioId = 99;
         require(!rigidCurveSeries(input, invalid, request(RigidCurveMetric::BodyPosition, 42)).isValid(), "another scenario's result was shown");
-        qInfo() << "Curve queries: physical timestamps, object IDs, position/displacement, units, rotation unwrap and invalid-data checks passed";
+        {
+            RigidInput nativeInput;
+            nativeInput.scenario.id = 0; // Original documents use nonnegative IDs.
+            RigidResult native;
+            native.scenarioId = 0;
+            native.frames = result.frames;
+            native.channels = {
+                {"sensors", 9, "SensorValue", "N", 3, {-99,-99,-99, -99,-99,-99, -99,-99,-99, -99,-99,-99}},
+                {"drives", 0, "ReactionForce", "N", 6, {1,2,3,4,5,6, 7,8,9,10,11,12, 13,14,15,16,17,18, 19,20,21,22,23,24}},
+                {"sensors", 0, "SensorValue", "N", 3, {3,4,0, 0,0,7, 1,2,2, 0,12,5}},
+                {"controllers", 0, "PidError", {}, 1, {2,1,0,-1}}
+            };
+            auto query = request(RigidCurveMetric::NativeChannel, 0, 5);
+            query.sourceType = QStringLiteral("Drive"); // Legacy enum spelling.
+            query.variable = QStringLiteral("ReactionForce");
+            series = rigidCurveSeries(nativeInput, native, query);
+            require(series.isValid() && series.unit == QStringLiteral("N"), "six-component native drive result missing");
+            near(series.values.front(), 6, "native component six did not read its frame-major column");
+            near(series.values.back(), 24, "native object ID zero was confused with an array index");
+            require(series.times == QVector<double>({0.25,0.35,0.8,1.3}), "native result timestamps changed");
+            query.sourceType = QStringLiteral("sensors");
+            query.variable = QStringLiteral("SensorValue");
+            query.component = -1;
+            series = rigidCurveSeries(nativeInput, native, query);
+            require(series.isValid(), "three-component native magnitude rejected");
+            near(series.values.front(), 5, "native magnitude did not use selected stable source ID");
+            near(series.values.back(), 13, "native magnitude was not computed for each physical frame");
+            query.sourceType = QStringLiteral("controllers");
+            query.variable = QStringLiteral("PidError");
+            query.component = 0;
+            series = rigidCurveSeries(nativeInput, native, query);
+            require(series.isValid() && series.unit.isEmpty(), "dimensionless native scalar was rejected or relabeled");
+            near(series.values.back(), -1, "signed controller value was changed");
+            auto broken = native;
+            broken.channels.push_back(broken.channels.back());
+            require(!rigidCurveSeries(nativeInput, broken, query).isValid(), "duplicate native result key was accepted");
+            broken = native;
+            broken.channels.back().values.pop_back();
+            require(!rigidCurveSeries(nativeInput, broken, query).isValid(), "missing native sample was bridged");
+            broken = native;
+            broken.channels.back().values[1] = std::numeric_limits<double>::infinity();
+            require(!rigidCurveSeries(nativeInput, broken, query).isValid(), "nonfinite native sample was accepted");
+            broken = native;
+            broken.frames[1].seconds = broken.frames[0].seconds;
+            require(!rigidCurveSeries(nativeInput, broken, query).isValid(), "duplicate native sample time was accepted");
+            query.sourceId = -1;
+            require(!rigidCurveSeries(nativeInput, native, query).isValid(), "negative native entity ID was accepted");
+            query.sourceId = 0;
+            query.component = 1;
+            require(!rigidCurveSeries(nativeInput, native, query).isValid(), "scalar channel accepted a second component");
+            query.sourceType = QStringLiteral("drives");
+            query.variable = QStringLiteral("ReactionForce");
+            query.component = -1;
+            require(!rigidCurveSeries(nativeInput, native, query).isValid(), "mixed six-component result accepted an undefined magnitude");
+            ResultChannel modal{"autoFlexBodies", 0, "ModalCoordinates", "mm", 18, std::vector<double>(72,0)};
+            modal.values[17] = 9.0;
+            native.channels.push_back(modal);
+            query.sourceType = modal.sourceType;
+            query.variable = modal.variable;
+            query.component = 17;
+            series = rigidCurveSeries(nativeInput, native, query);
+            require(series.isValid(), "modal result was incorrectly limited to six components");
+            near(series.values.front(), 9, "modal component index was truncated");
+            native.channels.push_back({"bodies",0,"Rotation","°",3,{0,0,170, 0,0,-170, 0,0,-90, 0,0,10}});
+            query.sourceType = QStringLiteral("bodies");
+            query.variable = QStringLiteral("Rotation");
+            query.component = 2;
+            series = rigidCurveSeries(nativeInput, native, query);
+            require(series.isValid(), "native Euler curve missing");
+            for (int i = 0; i < 4; ++i) near(series.values[i], angles[i], "native Euler curve did not preserve original continuous-angle display");
+            query.component = -1;
+            require(!rigidCurveSeries(nativeInput, native, query).isValid(), "native Euler magnitude was accepted as a physical angle");
+        }
+        qInfo() << "Curve queries: physical timestamps, stable IDs, legacy and native channel components, units and invalid-data checks passed";
         return 0;
     } catch (const std::exception& e) {
         qCritical() << e.what();

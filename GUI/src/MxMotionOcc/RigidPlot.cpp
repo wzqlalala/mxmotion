@@ -22,6 +22,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSignalBlocker>
+#include <QSet>
 #include <QSpinBox>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -172,7 +173,12 @@ bool RigidPlot::hasVisibleCurves() const { return !m_visible.empty(); }
 QString RigidPlot::displayTitle(const RigidCurveRequest& request) const
 {
     if (!m_input) return {};
-    QString title = rigidCurveTitle(*m_input, request);
+    QString title = rigidCurveTitle(*m_input, request, m_result);
+    if (request.metric == RigidCurveMetric::NativeChannel) {
+        const auto* channel = m_result ? rigidCurveChannel(*m_result, request) : nullptr;
+        if (channel && !channel->unit.isEmpty()) title += QStringLiteral(" (%1)").arg(channel->unit);
+        return title;
+    }
     JointKind kind = JointKind::Revolute;
     if (!isBodyCurve(request.metric)) {
         const auto it = std::find_if(m_input->joints.begin(), m_input->joints.end(),
@@ -188,7 +194,7 @@ QString RigidPlot::uniqueCurveTitle(const QString& base) const
 {
     auto used = [&](const QString& title) {
         return std::any_of(m_requests.begin(), m_requests.end(), [&](const RigidCurveRequest& request) {
-            return rigidCurveTitle(*m_input, request) == title;
+            return rigidCurveTitle(*m_input, request, m_result) == title;
         });
     };
     QString title = base;
@@ -196,17 +202,13 @@ QString RigidPlot::uniqueCurveTitle(const QString& base) const
     return title;
 }
 
-void RigidPlot::addCurve(RigidCurveMetric metric, int sourceId, int component, const QString& name)
+void RigidPlot::addCurve(RigidCurveRequest request, const QString& name)
 {
     if (!m_input || !m_result) return;
     if (m_requests.size() >= 256) { showMessage(tr("每个方案最多配置 256 条曲线。")); return; }
-    RigidCurveRequest request;
-    request.metric = metric;
-    request.sourceId = sourceId;
-    request.component = component;
     const auto series = rigidCurveSeries(*m_input, *m_result, request);
     if (!series.isValid()) { showMessage(series.error); return; }
-    request.name = uniqueCurveTitle(name.trimmed().isEmpty() ? rigidCurveTitle(*m_input, request) : name.trimmed());
+    request.name = uniqueCurveTitle(name.trimmed().isEmpty() ? rigidCurveTitle(*m_input, request, m_result) : name.trimmed());
     request.color = curveColor(m_requests.size()).name();
     // Reuse a free scenario-local ID instead of overflowing after edits/imports.
     request.id = 1;
@@ -351,9 +353,30 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
 
     auto populateVariables = [this, source, object, variable, add] {
         const QSignalBlocker block(variable);
-        const int old = variable->currentData().toInt();
+        const auto old = variable->currentData();
         variable->clear();
-        if (m_input && source->currentData().toInt() == 0) {
+        const auto nativeType = source->currentData(Qt::UserRole + 1).toString();
+        if (m_input && m_result && !nativeType.isEmpty() && object->currentIndex() >= 0) {
+            QSet<QString> variables;
+            for (const auto& channel : m_result->channels) {
+                if (rigidChannelSourceType(channel.sourceType) != nativeType
+                    || channel.sourceId != object->currentData().toInt() || channel.variable.isEmpty()
+                    || channel.components < 1 || channel.components > 1024 || variables.contains(channel.variable)) continue;
+                variables.insert(channel.variable);
+                const bool magnitude = channel.components == 3 && channel.variable != QStringLiteral("Rotation")
+                    && channel.variable != QStringLiteral("RotationJ");
+                for (int option = 0; option < channel.components + int(magnitude); ++option) {
+                    const int component = option == channel.components ? -1 : option;
+                    QString caption = rigidChannelVariableLabel(channel.variable);
+                    const auto axis = rigidChannelComponentLabel(channel.components, component);
+                    if (!axis.isEmpty()) caption += QLatin1Char(' ') + axis;
+                    if (!channel.unit.isEmpty()) caption += QStringLiteral(" (%1)").arg(channel.unit);
+                    variable->addItem(caption, channel.variable + QLatin1Char(':') + QString::number(component));
+                    variable->setItemData(variable->count() - 1, channel.variable, Qt::UserRole + 1);
+                    variable->setItemData(variable->count() - 1, component, Qt::UserRole + 2);
+                }
+            }
+        } else if (m_input && nativeType.isEmpty() && source->currentData().toInt() == 0) {
             for (const auto metric : {RigidCurveMetric::BodyPosition, RigidCurveMetric::BodyVelocity,
                  RigidCurveMetric::BodyRotation, RigidCurveMetric::BodyAngularVelocity, RigidCurveMetric::BodyDisplacement}) {
                 const int components = metric == RigidCurveMetric::BodyRotation ? 3 : 4;
@@ -363,7 +386,7 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
                                       int(metric) * 4 + component);
                 }
             }
-        } else if (m_input && object->currentIndex() >= 0) {
+        } else if (m_input && nativeType.isEmpty() && object->currentIndex() >= 0) {
             const auto id = object->currentData().toInt();
             const auto it = std::find_if(m_input->joints.begin(), m_input->joints.end(), [id](const RigidJoint& joint) { return joint.id == id; });
             if (it != m_input->joints.end()) {
@@ -373,18 +396,30 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
         }
         const int restored = variable->findData(old);
         if (restored >= 0) variable->setCurrentIndex(restored);
-        variable->setToolTip(variable->currentText() + QLatin1Char('\n')
-            + tr("位置为世界坐标；位移增量相对初始帧。欧拉角沿用原界面约定并展开 ±180° 跳变；运动副相对转角为连续关节坐标。"));
+        variable->setToolTip(variable->currentText() + QLatin1Char('\n') + (nativeType.isEmpty()
+            ? tr("位置为世界坐标；位移增量相对初始帧。欧拉角沿用原界面约定并展开 ±180° 跳变；运动副相对转角为连续关节坐标。")
+            : tr("按所选对象的求解通道显示实际采样和单位；多分量数据可分别添加。")));
         add->setEnabled(object->currentIndex() >= 0 && variable->count() > 0 && m_result && !m_result->frames.empty());
     };
     auto populateObjects = [this, source, object, populateVariables] {
         const QSignalBlocker block(object);
         const int old = object->currentData().toInt();
         object->clear();
-        if (m_input && source->currentData().toInt() == 0) {
+        const auto nativeType = source->currentData(Qt::UserRole + 1).toString();
+        if (m_input && m_result && !nativeType.isEmpty()) {
+            QSet<int> ids;
+            for (const auto& channel : m_result->channels) {
+                if (rigidChannelSourceType(channel.sourceType) != nativeType || channel.sourceId < 0
+                    || ids.contains(channel.sourceId)) continue;
+                ids.insert(channel.sourceId);
+                QString caption = rigidChannelObjectName(*m_input, nativeType, channel.sourceId);
+                if (caption.isEmpty()) caption = rigidChannelSourceLabel(nativeType);
+                object->addItem(QStringLiteral("%1 [%2]").arg(caption).arg(channel.sourceId), channel.sourceId);
+            }
+        } else if (m_input && nativeType.isEmpty() && source->currentData().toInt() == 0) {
             for (const auto& body : m_input->bodies)
                 object->addItem(QStringLiteral("%1 [B%2]").arg(body.body.name).arg(body.body.id), body.body.id);
-        } else if (m_input) {
+        } else if (m_input && nativeType.isEmpty()) {
             for (const auto& joint : m_input->joints)
                 if (joint.kind != JointKind::Fixed)
                     object->addItem(QStringLiteral("%1 [J%2]").arg(joint.name).arg(joint.id), joint.id);
@@ -393,6 +428,28 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
         if (restored >= 0) object->setCurrentIndex(restored);
         object->setToolTip(object->currentText());
         populateVariables();
+    };
+    auto populateSources = [this, source, populateObjects] {
+        const QSignalBlocker block(source);
+        const auto old = source->currentData();
+        source->clear();
+        if (m_result && !m_result->channels.empty()) {
+            QSet<QString> types;
+            for (const auto& channel : m_result->channels) {
+                const auto collection = rigidChannelSourceType(channel.sourceType);
+                if (collection.isEmpty() || channel.sourceId < 0 || types.contains(collection)) continue;
+                types.insert(collection);
+                source->addItem(rigidChannelSourceLabel(collection), collection);
+                source->setItemData(source->count() - 1, collection, Qt::UserRole + 1);
+            }
+        } else {
+            source->addItem(tr("运动体"), 0);
+            source->addItem(tr("运动副"), 1);
+        }
+        const int restored = source->findData(old);
+        if (restored >= 0) source->setCurrentIndex(restored);
+        source->setToolTip(source->currentText());
+        populateObjects();
     };
     auto refresh = [this, panel, list, start, end, clear, exportButton, feedback] {
         list->clear();
@@ -448,13 +505,24 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
     };
     connect(source, qOverload<int>(&QComboBox::currentIndexChanged), panel, [populateObjects](int) { populateObjects(); });
     connect(object, qOverload<int>(&QComboBox::currentIndexChanged), panel, [populateVariables](int) { populateVariables(); });
-    connect(this, &RigidPlot::resultChanged, panel, populateObjects);
+    connect(this, &RigidPlot::resultChanged, panel, populateSources);
     connect(this, &RigidPlot::configurationChanged, panel, refresh);
     connect(this, &RigidPlot::messageChanged, feedback, &QLabel::setText);
-    connect(add, &QPushButton::clicked, panel, [this, object, variable, name] {
+    connect(add, &QPushButton::clicked, panel, [this, source, object, variable, name] {
         if (object->currentIndex() < 0 || variable->currentIndex() < 0) return;
-        const int value = variable->currentData().toInt();
-        addCurve(static_cast<RigidCurveMetric>(value / 4), object->currentData().toInt(), value % 4, name->text());
+        RigidCurveRequest request;
+        request.sourceId = object->currentData().toInt();
+        request.sourceType = source->currentData(Qt::UserRole + 1).toString();
+        if (!request.sourceType.isEmpty()) {
+            request.metric = RigidCurveMetric::NativeChannel;
+            request.variable = variable->currentData(Qt::UserRole + 1).toString();
+            request.component = variable->currentData(Qt::UserRole + 2).toInt();
+        } else {
+            const int value = variable->currentData().toInt();
+            request.metric = static_cast<RigidCurveMetric>(value / 4);
+            request.component = value % 4;
+        }
+        addCurve(std::move(request), name->text());
     });
     connect(clear, &QPushButton::clicked, panel, [this] { m_requests.clear(); requestsEdited(); });
     auto changeWindow = [this, start, end] { setTimeWindow(start->value(), end->value()); };
@@ -467,7 +535,7 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
         QString error;
         feedback->setText(exportCurvesCsv(path, error, interval->value()) ? tr("已导出：%1").arg(QFileInfo(path).fileName()) : error);
     });
-    populateObjects();
+    populateSources();
     refresh();
     return panel;
 }
@@ -495,9 +563,9 @@ void RigidPlot::replotCurves()
             if (lo >= hi) continue;
             series.times = series.times.mid(int(lo), int(hi - lo));
             series.values = series.values.mid(int(lo), int(hi - lo));
-            VisibleCurve item{rigidCurveTitle(*m_input, request), QColor(request.color), std::move(series)};
+            VisibleCurve item{rigidCurveTitle(*m_input, request, m_result), QColor(request.color), std::move(series)};
             if (!item.color.isValid()) item.color = curveColor(index);
-            auto* curve = new QwtPlotCurve(QStringLiteral("%1 (%2)").arg(item.title, item.series.unit));
+            auto* curve = new QwtPlotCurve(item.series.unit.isEmpty() ? item.title : QStringLiteral("%1 (%2)").arg(item.title, item.series.unit));
             curve->setRenderHint(QwtPlotItem::RenderAntialiased);
             curve->setPen(item.color, 1.75);
             curve->setSamples(item.series.times, item.series.values);
@@ -520,11 +588,12 @@ void RigidPlot::replotCurves()
         return;
     }
     QString yTitle;
-    if (m_visible.size() == 1) yTitle = QStringLiteral("%1 (%2)").arg(m_visible.front().title, m_visible.front().series.unit);
+    if (m_visible.size() == 1) yTitle = m_visible.front().series.unit.isEmpty() ? m_visible.front().title
+        : QStringLiteral("%1 (%2)").arg(m_visible.front().title, m_visible.front().series.unit);
     else {
         const QString unit = m_visible.front().series.unit;
         const bool sameUnit = std::all_of(m_visible.begin(), m_visible.end(), [&](const VisibleCurve& item) { return item.series.unit == unit; });
-        yTitle = sameUnit ? tr("数值 (%1)").arg(unit) : tr("数值（单位见图例）");
+        yTitle = sameUnit ? (unit.isEmpty() ? tr("数值") : tr("数值 (%1)").arg(unit)) : tr("数值（单位见图例）");
     }
     m_plot->setAxisTitle(QwtPlot::yLeft, yTitle);
     const double pad = m_end == m_start ? 0.5 : 0.0;
@@ -574,7 +643,8 @@ bool RigidPlot::exportCurvesCsv(const QString& path, QString& error, int interva
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) { error = file.errorString(); return false; }
     QByteArray header = csvLabel(QStringLiteral("time_s"));
-    for (const auto& curve : m_visible) header += ',' + csvLabel(QStringLiteral("%1 (%2)").arg(curve.title, curve.series.unit));
+    for (const auto& curve : m_visible) header += ',' + csvLabel(curve.series.unit.isEmpty() ? curve.title
+        : QStringLiteral("%1 (%2)").arg(curve.title, curve.series.unit));
     header += "\r\n";
     bool ok = file.write(header) == header.size();
     const qint64 step = qint64(interval) + 1;

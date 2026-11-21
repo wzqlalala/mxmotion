@@ -66,14 +66,15 @@ const auto projectFilter = QStringLiteral("MxMotion 刚体项目 (*.mxmotion)");
 ModelNode treeNode(const QTreeWidgetItem* item)
 {
     if (!item) return {};
-    return { static_cast<ModelNode::Kind>(item->data(0, nodeKindRole).toInt()), item->data(0, partRole).toInt() };
+    return { static_cast<ModelNode::Kind>(item->data(0, nodeKindRole).toInt()), item->data(0, partRole).toInt(),
+        item->data(0, Qt::UserRole + 2).toString() };
 }
 
 QString treeStateKey(const QTreeWidgetItem* item)
 {
     const auto node = treeNode(item);
     if (node.kind != ModelNode::None)
-        return QStringLiteral("%1:%2").arg(int(node.kind)).arg(node.id);
+        return QStringLiteral("%1:%2:%3").arg(int(node.kind)).arg(node.id).arg(node.collection);
     if (!item->parent()) return QStringLiteral("root");
     return treeStateKey(item->parent()) + QLatin1Char('/') + item->text(0);
 }
@@ -826,7 +827,9 @@ bool MotionWindow::importCad(const QString& path)
     updateTree();
     syncViewport(true);
     selectPart(m_partId);
-    setNotice(tr("已导入 %1 · %2 个部件").arg(QFileInfo(path).fileName()).arg(ids.size()));
+    for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
+    setNotice(tr("已导入 %1 · %2 个部件").arg(QFileInfo(path).fileName()).arg(ids.size())
+        + (m_document.importNotes().isEmpty() ? QString{} : tr(" · %1 条导入说明").arg(m_document.importNotes().size())));
     return true;
 }
 
