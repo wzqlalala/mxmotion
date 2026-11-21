@@ -26,4 +26,10 @@ bool prepareNativeMotion(const CadDocument& cad, const NativeMotionDocument& doc
 SolveStatus solveNativeMotion(const NativeMotionInput& input, RigidResult& result,
                               QString& error, const SolverCallbacks& callbacks = {});
 
+// Computes the selected flexible body's actual basis from its mesh, material
+// and attachment patches. Does not run a transient solve or mutate the model.
+SolveStatus inspectNativeFlexModes(const NativeMotionInput& input, int flexId,
+                                  RigidFlexResult& result, QString& error,
+                                  const SolverCallbacks& callbacks = {});
+
 } // namespace MotionOcc

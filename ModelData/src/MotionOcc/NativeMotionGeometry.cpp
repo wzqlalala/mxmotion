@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <sstream>
@@ -424,6 +425,182 @@ NativeFlexGeometry prepareFlex(const CadDocument& cad, const NativeMotionDocumen
     return out;
 }
 
+// Expand independent interfaces in the solver snapshot only. Original body,
+// joint and load IDs in the saved design remain untouched.
+void prepareIndependentInterfaces(NativeMotionInput& input,NativeMotionGeometry& geometry)
+{
+    auto data=input.document.root.value("motionData").toObject();
+    int nextBodyId=0;
+    for(const auto& body:input.bodies){
+        if(body.body.id>=std::numeric_limits<int>::max()-10000)
+            fail("运动体 ID 过大，无法分配独立柔性接口 ID。");
+        nextBodyId=std::max(nextBodyId,body.body.id+1);
+    }
+    std::set<int> targets;
+    const auto pointObject=[](const Vector3d& p){return QJsonObject{{"x",p[0]},{"y",p[1]},{"z",p[2]}};};
+    const auto distance=[](const Vector3d& a,const Vector3d& b){return std::hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);};
+    for(auto& flex:geometry.flexBodies){
+        if(!targets.insert(flex.bodyId).second)fail("一个运动体不能被重复转换为多个自动柔性体。");
+        const auto mode=flex.definition.value("interfaceMode").toString("SharedBody");
+        if(mode!="SharedBody"&&mode!="Independent")fail("自动柔性体接口模式无效。");
+        if(mode=="SharedBody")continue;
+        flex.independentInterfaces=true;
+        const auto originalIt=std::find_if(input.bodies.begin(),input.bodies.end(),[&](const PreparedBody& b){return b.body.id==flex.bodyId;});
+        if(originalIt==input.bodies.end())fail("独立接口的原运动体不存在。");
+        const PreparedBody original=*originalIt;
+        const auto originalDefinition=input.document.entity("bodies",flex.bodyId);
+        auto joints=data.value("joints").toArray();
+        std::map<int,QJsonObject> bodyJoints;
+        for(const auto& value:joints){
+            const auto joint=value.toObject();
+            const bool action=joint.value("actionBodyId").toInt(-1)==flex.bodyId;
+            const bool base=joint.value("baseBodyId").toInt(-1)==flex.bodyId;
+            if(!action&&!base)continue;
+            const auto type=joint.value("jointType").toString();
+            if((base&&(type=="PointOnCurve"||type=="PointOnSurface"))||type=="CurveOnCurve")
+                fail(QStringLiteral("柔性体 %1 的 CAD 曲线/曲面几何副尚未采用变形网格，不可作为独立接口的约束面。请将几何导轨设为独立刚体。").arg(flex.id));
+            bodyJoints.emplace(joint.value("id").toInt(),joint);
+        }
+        for(const auto& value:data.value("contacts").toArray()){
+            const auto contact=value.toObject();
+            if(contact.value("enabled").toBool(true)&&(contact.value("actionBodyId").toInt(-1)==flex.bodyId||contact.value("baseBodyId").toInt(-1)==flex.bodyId))
+                fail(QStringLiteral("柔性体 %1 的独立接口全有限元目前不支持将原刚体 CAD 接触壳当作变形接触面。请移除该接触或保留刚体接触部件。").arg(flex.id));
+        }
+        std::vector<Vector3d> centers;
+        std::map<int,int> jointPort;
+        const auto explicitGroups=flex.definition.value("interfaceJointGroups").toArray();
+        if(!explicitGroups.isEmpty()){
+            for(const auto& value:explicitGroups){
+                if(!value.isArray()||value.toArray().isEmpty())fail("interfaceJointGroups 每组需要至少一个有效运动副 ID。");
+                std::vector<int> group;Vector3d center{};
+                for(const auto& item:value.toArray()){
+                    const double numeric=item.toDouble(-1);const int id=item.toInt(-1);
+                    if(numeric!=id||!bodyJoints.count(id)||jointPort.count(id))fail("独立接口副分组包含无效、重复或不属于目标运动体的 ID。");
+                    jointPort[id]=static_cast<int>(centers.size());group.push_back(id);
+                    const auto p=vector(bodyJoints.at(id).value("origin"));for(int d=0;d<3;++d)center[d]+=p[d];
+                }
+                for(double& v:center)v/=group.size();
+                centers.push_back(center);flex.interfaceJointGroups.push_back(std::move(group));
+            }
+            if(jointPort.size()!=bodyJoints.size())fail("interfaceJointGroups 必须覆盖目标运动体的全部运动副端点。");
+            if(!flex.attachGroups.empty()&&flex.attachGroups.size()!=centers.size())fail("显式附着节点组数量必须与独立接口副分组数量一致。");
+            if(flex.attachGroups.empty()){
+                flex.attachPositions.clear();for(const auto& p:centers)flex.attachPositions.insert(flex.attachPositions.end(),p.begin(),p.end());
+            }
+        }else if(!flex.attachGroups.empty()){
+            if(flex.nodes.empty())fail("独立接口使用显式节点组时必须提供当前网格，以便核对接口中心。");
+            for(const auto& group:flex.attachGroups){
+                Vector3d center{};
+                for(int node:group)for(int d=0;d<3;++d)center[d]+=flex.nodes[3*node+d];
+                for(double& v:center)v/=group.size();centers.push_back(center);
+            }
+        }else{
+            // Repeated joints at a common pin share one port; distinct pins
+            // retain relative deformation instead of being welded to one body.
+            for(std::size_t i=0;i+2<flex.attachPositions.size();i+=3){
+                const Vector3d p{flex.attachPositions[i],flex.attachPositions[i+1],flex.attachPositions[i+2]};
+                if(std::none_of(centers.begin(),centers.end(),[&](const Vector3d& c){return distance(c,p)<1e-8;}))centers.push_back(p);
+            }
+            flex.attachPositions.clear();for(const auto& p:centers)flex.attachPositions.insert(flex.attachPositions.end(),p.begin(),p.end());
+        }
+        if(centers.size()<2)fail(QStringLiteral("自动柔性体 %1 的独立接口模式至少需要两个不同接口；请设置两个运动副作用点或两个附着节点组。").arg(flex.id));
+        const auto nearest=[&](const Vector3d& p,const QJsonObject& object,const QString& field){
+            const QString overrideKey=field+"InterfaceIndex";
+            const auto override=object.contains(overrideKey)?object.value(overrideKey):object.value("flexInterfaceIndex");
+            if(!override.isUndefined()){
+                const int index=override.toInt(-1);
+                if(!override.isDouble()||override.toDouble()!=index||index<0||index>=static_cast<int>(centers.size()))
+                    fail("独立柔性接口索引无效（从 0 开始）。");
+                return index;
+            }
+            int best=-1;double first=std::numeric_limits<double>::infinity(),second=first;
+            for(std::size_t i=0;i<centers.size();++i){const double d=distance(centers[i],p);if(d<first){second=first;first=d;best=static_cast<int>(i);}else second=std::min(second,d);}
+            if(std::abs(first-second)<=1e-9*std::max(1.0,first))
+                fail(QStringLiteral("柔性体 %1 的 %2 位于两个接口等距位置，不能猜测绑定；请设置 %3 或 flexInterfaceIndex。").arg(flex.id).arg(field,overrideKey));
+            return best;
+        };
+        if(explicitGroups.isEmpty()){
+            flex.interfaceJointGroups.resize(centers.size());
+            for(const auto& item:bodyJoints){
+                const int port=nearest(vector(item.second.value("origin")),item.second,"joint");
+                jointPort[item.first]=port;flex.interfaceJointGroups[port].push_back(item.first);
+            }
+        }
+        auto bodyDefinitions=data.value("bodies").toArray();
+        const auto velocity=vector(originalDefinition.value("initialVelocity"));
+        const auto angular=vector(originalDefinition.value("initialAngularVelocity"));
+        const Eigen::Vector3d omega(angular[0]*3.14159265358979323846/180,angular[1]*3.14159265358979323846/180,angular[2]*3.14159265358979323846/180);
+        for(std::size_t i=0;i<centers.size();++i){
+            if(i==0){flex.interfaceBodyIds.push_back(flex.bodyId);continue;}
+            PreparedBody port=original;port.body.id=nextBodyId++;port.body.fixed=false;port.body.partId=-1;
+            port.body.name=QStringLiteral("%1 / 接口 %2").arg(original.body.name).arg(i+1);
+            port.properties.centerMm=centers[i];
+            // Atomic port mass is cleared by BuildFlexBody before any solve.
+            // This placeholder is only for the parser's body construction.
+            input.bodies.push_back(port);flex.interfaceBodyIds.push_back(port.body.id);
+            auto source=originalDefinition;source["id"]=port.body.id;source["name"]=port.body.name;source["isFixed"]=false;
+            source["geoEntityIds"]=QJsonArray{};source["geoEntityNames"]=QJsonArray{};source["centerOfMass"]=pointObject(centers[i]);
+            const Eigen::Vector3d r(centers[i][0]-original.properties.centerMm[0],centers[i][1]-original.properties.centerMm[1],centers[i][2]-original.properties.centerMm[2]);
+            const auto induced=omega.cross(r);
+            source["initialVelocity"]=pointObject({velocity[0]+induced[0],velocity[1]+induced[1],velocity[2]+induced[2]});
+            source["internalFlexPortOf"]=flex.id;source["internalFlexPortIndex"]=static_cast<int>(i);
+            bodyDefinitions.append(source);
+        }
+        data["bodies"]=bodyDefinitions;
+        for(int i=0;i<joints.size();++i){auto o=joints[i].toObject();const auto found=jointPort.find(o.value("id").toInt(-1));if(found==jointPort.end())continue;
+            for(const auto* key:{"actionBodyId","baseBodyId"})if(o.value(key).toInt(-1)==flex.bodyId)o[key]=flex.interfaceBodyIds[found->second];
+            joints[i]=o;
+        }
+        data["joints"]=joints;
+        const std::map<QString,std::vector<std::pair<QString,QString>>> endpoints{
+            {"markers",{{"bodyId","localPosition"}}}, {"vectorForces",{{"bodyId","actionPoint"},{"baseBodyId","actionPoint"}}},
+            {"springs",{{"bodyIId","localI"},{"bodyJId","localJ"}}},
+            {"scalarForces",{{"bodyIId","localI"},{"bodyJId","localJ"}}},{"scalarTorques",{{"bodyIId","localI"},{"bodyJId","localJ"}}},
+            {"tensionCables",{{"bodyIId","localI"},{"bodyJId","localJ"}}},{"softStops",{{"bodyIId","localI"},{"bodyJId","localJ"}}},
+            {"threePointForces",{{"bodyIId","localI"},{"originBodyId","localOrigin"},{"targetBodyId","localTarget"}}},
+            {"threePointTorques",{{"bodyIId","localI"},{"originBodyId","localOrigin"},{"targetBodyId","localTarget"}}}
+        };
+        for(const auto& collection:endpoints){
+            auto values=data.value(collection.first).toArray();
+            for(int i=0;i<values.size();++i){auto o=values[i].toObject();if(!o.value("enabled").toBool(true))continue;
+                for(const auto& field:collection.second)if(o.value(field.first).toInt(-1)==flex.bodyId){
+                    const int port=nearest(vector(o.value(field.second)),o,field.first);o[field.first]=flex.interfaceBodyIds[port];
+                }
+                values[i]=o;
+            }
+            if(data.contains(collection.first))data[collection.first]=values;
+        }
+        // Point sensor coordinates are COM-local, unlike force/marker origins.
+        // Preserve their initial world point while changing a port reference.
+        auto sensors=data.value("sensors").toArray();
+        for(int i=0;i<sensors.size();++i){auto sensor=sensors[i].toObject();
+            const auto routePoint=[&](QJsonObject& object,const QString& bodyField,const QString& pointField){
+                if(object.value(bodyField).toInt(-1)!=flex.bodyId)return;
+                auto p=vector(object.value(pointField));for(int d=0;d<3;++d)p[d]+=original.properties.centerMm[d];
+                const int port=nearest(p,object,bodyField);
+                object[bodyField]=flex.interfaceBodyIds[port];
+                const auto& center=port==0?original.properties.centerMm:centers[port];
+                for(int d=0;d<3;++d)p[d]-=center[d];object[pointField]=pointObject(p);
+            };
+            const auto type=sensor.value("sensorType").toString();
+            if(type=="Distance")for(const auto* key:{"pointA","pointB"}){auto point=sensor.value(key).toObject();routePoint(point,"bodyId","localPos");sensor[key]=point;}
+            if(type=="BodyDisplacement"||type=="BodyVelocity"||type=="BodyAcceleration")routePoint(sensor,"targetBodyId","referencePoint");
+            // An orientation reference has no material point. Its documented
+            // default is the first interface; explicit indices select another.
+            for(const auto* field:{"referenceBodyId","bodyAId","bodyBId","axisBodyId"})if(sensor.value(field).toInt(-1)==flex.bodyId){
+                const QString indexKey=QString::fromLatin1(field)+"InterfaceIndex";
+                const int port=sensor.value(indexKey).toInt(0);
+                if(port<0||port>=static_cast<int>(centers.size()))fail("柔性体传感器参考接口索引越界。");
+                sensor[field]=flex.interfaceBodyIds[port];
+            }
+            sensors[i]=sensor;
+        }
+        if(data.contains("sensors"))data["sensors"]=sensors;
+        geometry.diagnostics.append(QStringLiteral("自动柔性体 %1 使用 %2 个独立接口和真实共回转 tetra4 全有限元；原刚体质量由网格质量替换。接口首项保留原体参考系；点载荷按施力位置绑定接口，模态基仅用于检查。").arg(flex.id).arg(centers.size()));
+        input.document.root["motionData"]=data;
+    }
+}
+
 } // namespace
 
 bool prepareNativeMotion(const CadDocument& cad, const NativeMotionDocument& document,
@@ -515,6 +692,7 @@ bool prepareNativeMotion(const CadDocument& cad, const NativeMotionDocument& doc
             const auto definition=value.toObject();
             if (definition.value("enabled").toBool(true)) geometry->flexBodies.push_back(prepareFlex(cad,document,definition));
         }
+        prepareIndependentInterfaces(next,*geometry);
         next.geometry=std::move(geometry);
         input=std::move(next); error.clear(); return true;
     } catch (const Standard_Failure& e) { error=QStringLiteral("OCC 几何准备失败：%1").arg(e.GetMessageString()); }

@@ -148,6 +148,7 @@ private:
     bool commitNativeDocument(NativeMotionDocument document, ModelNode selection);
     bool resolveNativeBindings(NativeMotionDocument& document, bool interactive);
     void ensureNativeFlexMesh(int flexId);
+    void inspectFlexModes(int flexId);
     void snapshotNativeFlexMeshes();
     void updateNativeFlexMeshForPart(int partId);
     void restoreNativeFlexMeshes();
@@ -157,6 +158,7 @@ private:
         RigidResult result;
         QString error;
         SolveStatus status = SolveStatus::Failed;
+        int inspectionFlexId = -1; // Standalone basis analysis, not a time history.
         std::atomic_bool stop{false};
         std::atomic_bool done{false};
         std::atomic<double> progress{0};
@@ -209,6 +211,7 @@ private:
     QComboBox* m_playbackSpeed = nullptr;
     QComboBox* m_flexContour = nullptr;
     QComboBox* m_flexRange = nullptr;
+    QPushButton* m_modeInspectButton = nullptr;
     std::map<std::pair<int,int>,double> m_flexGlobalMax;
     QCheckBox* m_followCurveMarker = nullptr;
     QCheckBox* m_clickCurveJump = nullptr;

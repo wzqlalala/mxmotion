@@ -1,0 +1,47 @@
+[ModalDesktop]
+Saved CAD + native JSON -> standalone real modal solve -> 4 frequencies, clamp node map, mode/phase/overlay/playback and CSV passed
+Modal inspection left model and transient results unchanged
+Independent full FEM -> real static solve -> single-frame deformed mesh / elastic contour passed, no fake internal modes
+PASS
+
+[NativeDesktop]
+Typed panels: actual Scenario grouped controls, exact initial/final frame counts, preset/custom active settings, static/preload modes; sensor type/variable/target/unit switching; scalar PID feedback rejection, trajectory/constant targets, physical torque units and limits; original extensions and COM-local point preserved through save/reopen
+Original pickers: real viewport vertex -> joint origin/marker, two-vertex axis, reverse, Esc rollback, editor retention, no whole-part leakage, exact CAD topology + reversed direction restored after save/reopen
+Sensor point: world CAD (30,5,4) picked, COM-local (15,5,4) stored, reopened field restored to world (30,5,4)
+Original force builders: time-dependent vector force sets Expression mode; scalar force accepts actual x/v state law; both compiled fields persist in the native model
+Automatic mass: actual 2400 mm3 solid -> 0.01884 kg steel / 0.00648 kg at 2.7e-6 density, global COM, invalid selection rejection and explicit custom mass fallback persisted
+Public STEP + original JSON import: two bodies, native IDs 0/37, geometry IDs 901/205, scenario ID 0
+Original model tree icons: 27 nonblank rendered icons, including fixed/moving bodies, groups, results and new force elements
+New stop/cable/body-point spring commands: edited parameters, references and project round trip passed
+Load export UI: double-click result tree -> actual joint frame 50 / 0.5 s -> finite nonzero physical CSV, matching FORCE/MOMENT BDF at grid 42, and I/J action-reaction sign verified
+Real native solve + four requested curves/CSV + frame-indexed CAD animation + play/pause/stop passed
+Native source deletion with saved curves: removed only the stop and its display request, preserved same-ID cable/spring
+AutoFlex viewport node picking: real CAD corner maps to actual mesh node 2, field remains open, Esc rolls back, finished selection feeds the attachment editor
+AutoFlex attachment transitions: active node picker -> automatic clears nodes, active node picker -> list commits the real face nodes, subsequent Esc preserves both results
+AutoFlex animation cloud UI: elastic and total displacement colors/legends, current-frame adaptive range and whole-history fixed range produce verified framebuffer updates
+AutoFlex mesh lifecycle: failed worker and cancelled real Netgen preserve accepted mesh; deletion invalidates manual node IDs; regeneration and explicit automatic attachment recover cleanly
+AutoFlex external VOL: renumbered real Netgen mesh rejects old in-range attachment groups, preserves them for reselection, explicit automatic attachment solves, first external mesh with its own groups stays valid; narrow mesh status fully visible
+AutoFlex real STEP/JSON import -> material 42 editing -> save/Netgen preview -> 70 nodes/138 tets persisted -> Modal solve -> 0.36681448 mm elastic displacement -> visible node animation -> reopen/solve and JSON reimport/existing-mesh solve without mesh worker passed
+Native desktop regression passed
+
+[Desktop]
+Saved requests loaded before first display: visible legends, hidden request and accessible row controls passed
+Desktop OpenGL 4.5 core initialized
+ADS model, parameters and viewport visible; 10 Motion ribbon tabs
+STEP import, part picking, orbit, zoom and fit passed
+部件编号：1
+几何状态：显示
+节点：295
+三角面：440
+四面体：994
+MotionEngine solve, explicit multi-curve configuration/CSV, frame indexing, pause/stop, independent curve linkage and CAD restoration passed
+Desktop smoke test passed
+
+[Picking]
+OCC vertex, edge, face, part IDs; representative coordinates, face hit, axis, selection filter and right-click undo passed
+Actual-node IDs, multi-pick, session restore, Ctrl rectangle, hover, Esc and whole-part signal isolation passed
+Posed geometry picking retained initial world CAD coordinates passed
+Real FEM edge, surface face and volume-element connectivity IDs, centroid and direction passed
+Per-node scalar interpolation, color legend and restoration passed
+Circular-edge center/axis and cylindrical-face axis passed
+PASS; selection changes=14

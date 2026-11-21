@@ -22,6 +22,7 @@ struct RigidPlaybackSample {
     double seconds = 0.0;
     int frameIndex = 0;
     std::map<int, QMatrix4x4> partPoses;
+    std::map<int, QMatrix4x4> bodyPoses; // Includes virtual and flexible interface bodies.
     std::map<int, FemMesh> flexMeshes;
     std::set<int> flexHiddenParts;
 };
@@ -231,6 +232,7 @@ inline bool sampleRigidPlayback(const RigidInput& input, const RigidResult& resu
         next.flexMeshes.emplace(parts.first(), std::move(mesh));
         for (int part : parts) { next.partPoses.erase(part); if (part != parts.first()) next.flexHiddenParts.insert(part); }
     }
+    next.bodyPoses=std::move(bodyPoses);
     sample = std::move(next);
     error.clear();
     return true;

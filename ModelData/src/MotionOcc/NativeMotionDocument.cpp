@@ -281,9 +281,20 @@ public:
             enumeration(object, "driveType", {"JointDrive"}, where);
             enumeration(object, "targetType", {"Joint", "Body"}, where);
             enumeration(object, "motionType", {"Rotation", "Translation"}, where);
-            enumeration(object, "controlMode", {"Position", "Velocity", "Acceleration"}, where);
+            enumeration(object, "controlMode", {"Position", "Velocity", "Acceleration", "Force", "Torque"}, where);
+            for(const auto* key:{"effortLimit","powerLimit","noLoadSpeed"})number(object,key,where,0);
+            const auto control=object.value("controlMode").toString();
+            if((control=="Force"&&object.value("motionType").toString()!="Translation")
+                ||(control=="Torque"&&object.value("motionType").toString()!="Rotation"))
+                issue(where,QStringLiteral("力执行器需要平移类型，力矩执行器需要旋转类型"));
+            if((control=="Force"||control=="Torque")&&object.value("noLoadSpeed").toDouble()>0&&object.value("effortLimit").toDouble()<=0)
+                issue(where,QStringLiteral("启用空载速度包络时必须指定正的 effortLimit"));
             ref(object, "targetJointId", "joints", where, false, object.value("targetType").toString("Joint") == "Joint");
             ref(object, "targetBodyId", "bodies", where);
+            const auto jointType=doc.entity("joints",object.value("targetJointId").toInt(-1)).value("jointType").toString();
+            const bool rotation=object.value("motionType").toString()=="Rotation";
+            if((jointType=="Revolute"&&!rotation)||(jointType=="Translational"&&rotation))
+                issue(where,QStringLiteral("驱动方向与目标副的自由度不一致：旋转副只能旋转，移动副只能平移"));
             table(object, "driveTableX", "driveTableY", where);
         } else if (kind == "markers") {
             ref(object, "bodyId", "bodies", where, true);
@@ -342,7 +353,12 @@ public:
                 enumeration(object, "variable", {"ReactionForce", "ReactionTorque"}, where);
             } else if (type == "DriveActuation") {
                 ref(object, "targetDriveId", "drives", where, false, true);
-                enumeration(object, "variable", {"ActuationForce", "ActuationTorque", "ImposedValue", "ImposedSpeed", "ImposedAcc", "ReactionForce", "ReactionTorque"}, where);
+                enumeration(object, "variable", {"ActuationForce", "ActuationTorque", "ImposedValue", "ImposedSpeed", "ImposedAcc", "Coordinate", "Rate", "CoordinateAcceleration", "ReactionForce", "ReactionTorque"}, where);
+                const auto drive=doc.entity("drives",object.value("targetDriveId").toInt(-1));
+                const auto mode=drive.value("controlMode").toString(),variable=object.value("variable").toString();
+                const bool effort=mode=="Force"||mode=="Torque";
+                if(effort&&variable.startsWith("Imposed"))issue(where,QStringLiteral("力/力矩执行器没有指定运动量，请选实际坐标、速度或加速度"));
+                if(!effort&&(variable=="Coordinate"||variable=="Rate"||variable=="CoordinateAcceleration"))issue(where,QStringLiteral("当前运动驱动请使用 ImposedValue/ImposedSpeed/ImposedAcc；实际坐标变量用于力/力矩执行器"));
             } else if (type == "Distance") {
                 for (const auto* key : {"pointA", "pointB"}) {
                     if (!object.value(QLatin1String(key)).isObject()) { issue(where, QStringLiteral("距离传感器缺少端点 %1").arg(QLatin1String(key))); continue; }
@@ -361,7 +377,16 @@ public:
             ref(object, "feedbackSensorId", "sensors", where, true);
             enumeration(object, "feedbackType", {"Position", "Velocity"}, where);
             enumeration(object, "feedbackSource", {"DriveDof", "Sensor"}, where);
-            for (const auto* key : {"targetValue", "feedbackSign", "kp", "ki", "kd", "outputLimit"}) number(object, key, where);
+            if(object.value("enabled").toBool(true)&&object.value("feedbackSource").toString()=="Sensor"){
+                const auto sensor=doc.entity("sensors",object.value("feedbackSensorId").toInt(-1));
+                const auto sensorType=sensor.value("sensorType").toString();
+                if(sensorType!="Distance"&&sensorType!="Angle"&&sensor.value("componentMode").toString()=="All")
+                    issue(where,QStringLiteral("PID 反馈需要一个标量，请选择 X/Y/Z 或模长，不能使用全部分量"));
+                if(sensorType=="JointReaction"||sensorType=="DriveActuation")
+                    issue(where,QStringLiteral("关节反力/驱动力传感器尚无 PID 步内采样契约，可用于结果曲线，不能作为反馈"));
+            }
+            for (const auto* key : {"targetValue", "feedbackSign", "kp", "ki", "kd"}) number(object, key, where);
+            number(object,"outputLimit",where,0);
         } else if (kind == "controlInputs") {
             enumeration(object, "inputType", {"Constant", "Linear", "Quadratic", "Cubic", "CustomCurve"}, where, true);
             number(object, "timeStart", where); number(object, "timeEnd", where); numericArray(object, "polyCoeffs", where);
@@ -384,6 +409,11 @@ public:
             // preparing the flexible solve must resolve the actual dependencies.
         } else if (kind == "scenarios") {
             positive(object, "endTime", where); positive(object, "stepSize", where); vector(object, "gravity", where);
+            enumeration(object,"analysisType",{"Dynamic","Static","PreloadedDynamics"},where);
+            for(const auto* key:{"staticMaxIterations","staticTolerance","staticConstraintTolerance","staticStepDamping"})positive(object,key,where);
+            if(object.value("staticMaxIterations").toDouble(100)>1000||std::floor(object.value("staticMaxIterations").toDouble(100))!=object.value("staticMaxIterations").toDouble(100))
+                issue(where,QStringLiteral("staticMaxIterations 必须为 1…1000 的整数"));
+            if(object.value("staticStepDamping").toDouble(1)>1)issue(where,QStringLiteral("staticStepDamping 不能大于 1"));
             enumeration(object, "presetMode", {"FAST", "CONTACT", "ROBUST", "HIGH_PRECISION"}, where);
             enumeration(object, "integratorType", {"EULER_IMPLICIT_LINEARIZED", "EULER_IMPLICIT_PROJECTED", "EULER_IMPLICIT",
                 "TRAPEZOIDAL", "TRAPEZOIDAL_LINEARIZED", "HHT", "HEUN", "RUNGEKUTTA45", "EULER_EXPLICIT", "LEAPFROG", "NEWMARK", "CUSTOM_INTEGRATOR"}, where);

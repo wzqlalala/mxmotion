@@ -1,5 +1,7 @@
 # 可公开复测的原生运动回归
 
+本文记录 GUI 提交 `31c9413`、引擎提交 `fff3dd3` 的界面恢复阶段，包括当时的测试数量、截图和数值。后续真实模态、独立接口、静力预载与受限执行器的实现及复测记录见[分析工作流](native-analysis-workflow.md)和[新增分析验证](native-analysis-verification.md)。下文“本轮”均指该恢复阶段，旧模态位移数值不作为新特征求解器的基准值。
+
 ## 云端构建
 
 Linux x64 构建使用 Debian 13 SDK：GCC 14、Qt 5.15.15、OCCT 7.8.1、Netgen 6.2.2501、Qwt 6.1.4，以及仓库锁定的 Qt ADS。

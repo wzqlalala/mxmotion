@@ -1,4 +1,5 @@
 #include "NativeMotionRuntime.h"
+#include "NativeMotionStatics.h"
 
 #include "motion/utils/ParserAdams.h"
 #include "motion/utils/ContactInputSettings.h"
@@ -271,9 +272,13 @@ private:
             if(joint->second->type!="REVOLUTE"&&joint->second->type!="TRANSLATIONAL"&&joint->second->type!="CYLINDRICAL"&&joint->second->type!="SCREW")fail(QStringLiteral("驱动 %1 的目标副不可驱动。").arg(id));
             motion::adams_motion_struct d;d.id=key(id);d.marker_I=joint->second->marker_I;d.marker_J=joint->second->marker_J;d.resolved_joint_id=joint->first;
             d.is_rotation=o.value("motionType").toString()=="Rotation";d.is_translation=!d.is_rotation;
+            if((joint->second->type=="REVOLUTE"&&!d.is_rotation)||(joint->second->type=="TRANSLATIONAL"&&d.is_rotation))
+                fail(QStringLiteral("驱动 %1 的方向不属于目标运动副的自由度。").arg(id));
             const auto mode=o.value("controlMode").toString("Position");d.is_speed=mode=="Velocity";d.is_position=mode=="Position";
-            if(!d.is_speed&&!d.is_position)fail(QStringLiteral("驱动 %1 的加速度模式没有引擎接口（原求解线程也不支持）。").arg(id));
+            const bool effort=mode=="Force"||mode=="Torque";
+            if(!d.is_speed&&!d.is_position&&!effort)fail(QStringLiteral("驱动 %1 的加速度模式没有引擎接口（原求解线程也不支持）。").arg(id));
             if(!controlled.emplace(target,d.is_rotation).second)fail("同一自由度不能被两个驱动重复控制。");
+            if(effort)continue; // Actual force motors are created after parser assembly.
             const double scale=d.is_rotation?d2r:1;
             d.x_table=array(o.value("driveTableX"));d.f_table=array(o.value("driveTableY"),scale);d.has_table=!d.x_table.empty()||!d.f_table.empty();
             bool number=false;const QString expression=o.value("expression").toString("0");const double constant=expression.toDouble(&number);
@@ -423,6 +428,7 @@ private:
 
 void recordNestedBodies(NativeMotionSystem& system)
 {
+    recordNativeEffortMotors(system);
     // Modal assemblies take ownership of their interface bodies. The engine's
     // standard recorder visits top-level bodies only, so record these same real
     // body/marker states here without duplicating top-level samples.
@@ -524,6 +530,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         auto config=configuration(input.document.entity("scenarios",input.scenario.id));
         Assembly assembly(system,input,config);assembly.build();
         motion::utils::MotionParserAdams parser;parser.SetVisualizationType(motion::utils::MotionParserAdams::NONE);parser.Parse(system);
+        createNativeEffortMotors(system,input);
         for(const auto& joint:system.joints_map){
             bool created=false;for(const auto& link:system.Get_linklist())if(!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)&&link->GetNameString()==joint.first){created=true;system.nativeJoints.emplace(joint.first,link);break;}
             if(!created)fail(QStringLiteral("引擎没有创建运动副 %1 (%2)，已中止，避免约束被静默丢弃。").arg(QString::fromStdString(joint.first),QString::fromStdString(joint.second->type)));
@@ -548,7 +555,9 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         system.Set_G_acc(Vec(input.scenario.gravityMS2[0]*1000,input.scenario.gravityMS2[1]*1000,input.scenario.gravityMS2[2]*1000));
         if(!input.geometry->flexBodies.empty()){
             config.use_preset=false;config.integrator.type=motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED;
-            config.solver.type=motion::MotionSolver::Type::MINRES;config.solver.max_iters=std::max(500,config.solver.max_iters);system.SetPositionAssemblyPerStep(true);
+            const bool independent=std::any_of(input.geometry->flexBodies.begin(),input.geometry->flexBodies.end(),[](const NativeFlexGeometry& body){return body.independentInterfaces;});
+            config.solver.type=independent?motion::MotionSolver::Type::SPARSE_QR:motion::MotionSolver::Type::MINRES;
+            config.solver.max_iters=std::max(500,config.solver.max_iters);system.SetPositionAssemblyPerStep(true);
         }
         system.InitSolver(config);
         if(system.GetSolver()->GetType()!=system.config.solver.type||system.GetTimestepper()->GetType()!=system.config.integrator.type)
@@ -563,10 +572,18 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         auto flex=buildNativeFlex(system,input,callbacks);
         if(callbacks.stopRequested&&callbacks.stopRequested()){error.clear();return SolveStatus::Stopped;}
         system.SetMaxiter(50);
-        assembleInitialState(system);
-        system.configureControllers(input);
-        if(!system.controllers.empty())assembleInitialState(system);
         const auto scenario=input.document.entity("scenarios",input.scenario.id);
+        const auto analysisType=scenario.value("analysisType").toString("Dynamic");
+        const bool staticOnly=analysisType=="Static",preload=staticOnly||analysisType=="PreloadedDynamics";
+        if(staticOnly)for(const auto& value:input.document.collection("controllers"))
+            if(value.toObject().value("enabled").toBool(true))fail("静力方案不能运行离散 PID 反馈；请选择“预载后动力学”，在静力平衡后启动控制器。");
+        assembleInitialState(system);
+        std::optional<NativeStaticReport> staticReport;
+        if(preload)staticReport=equilibrateNativeMotion(system,scenario,callbacks);
+        if(!staticOnly){
+            system.configureControllers(input);
+            if(!system.controllers.empty()||preload)assembleInitialState(system);
+        }
         const bool projectPositions=scenario.value("positionAssemblyPerStep").toBool(!system.joints_map.empty())||!flex.empty();
         // The engine's fixed-count assembly cannot detect whether a closed
         // mechanism has converged. The adapter performs the same mass-weighted
@@ -598,12 +615,14 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         });
         std::optional<NativeGeometryBoundary> boundary;
         std::optional<NativeFlexDivergence> divergence;
-        try { system.StartSolver(config); }
+        try { if(!staticOnly)system.StartSolver(config); }
         catch(const NativeGeometryBoundary& reached) { boundary=reached; }
         catch(const NativeFlexDivergence& rejected) { divergence=rejected; }
         if(stopped||(callbacks.stopRequested&&callbacks.stopRequested())){error.clear();return SolveStatus::Stopped;}
         RigidResult next;extractNativeResults(input,system,flex,next);
         next.diagnostics=input.geometry->diagnostics;
+        if(staticReport)next.diagnostics.append(staticReport->description());
+        if(staticOnly){next.termination=ResultTermination::StaticEquilibrium;if(callbacks.progress)callbacks.progress(1);}
         if(next.frames.empty())fail("引擎未生成任何有效结果帧。");
         if(boundary){
             next.termination=ResultTermination::GeometryBoundary;
@@ -622,7 +641,8 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
             fail(QStringLiteral("求解在 t=%1 s 提前结束，尚未达到方案终时 %2 s，且没有几何边界终止原因；未将不完整结果标为正常完成。")
                 .arg(next.frames.back().seconds,0,'g',12).arg(input.scenario.duration,0,'g',12));
         result=std::move(next);error.clear();if(callbacks.progress)callbacks.progress(1);return SolveStatus::Completed;
-    }catch(const std::exception& e){error=QString::fromUtf8(e.what());}
+    }catch(const NativeStaticCancelled&){error.clear();return SolveStatus::Stopped;}
+     catch(const std::exception& e){error=QString::fromUtf8(e.what());}
      catch(...){error=QStringLiteral("原生运动求解失败（未知引擎异常）。");}
     return SolveStatus::Failed;
 }

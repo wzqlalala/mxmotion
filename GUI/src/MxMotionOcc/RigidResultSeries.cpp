@@ -120,6 +120,8 @@ QString rigidChannelVariableLabel(const QString& variable)
         {"ReactionForce", "约束反力"}, {"ReactionTorque", "约束反力矩"},
         {"ActuationForce", "驱动力"}, {"ActuationTorque", "驱动力矩"},
         {"ImposedValue", "驱动位移"}, {"ImposedSpeed", "驱动速度"}, {"ImposedAcc", "驱动加速度"},
+        {"CoordinateAcceleration", "实际坐标加速度"}, {"EffortCommand", "执行器请求力/力矩"},
+        {"EffortApplied", "执行器实际力/力矩"}, {"MechanicalPower", "执行器机械功率"}, {"EffortLimited", "执行器限幅状态"},
         {"SensorValue", "传感器值"}, {"PidTarget", "控制目标"}, {"PidFeedback", "控制反馈"},
         {"PidError", "控制误差"}, {"PidOutput", "控制输出"}, {"Magnitude", "幅值"},
         {"SignedForce", "有向力"}, {"Coordinate", "坐标"}, {"Deformation", "变形量"},

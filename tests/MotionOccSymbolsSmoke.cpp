@@ -72,6 +72,14 @@ int main(int argc,char** argv)
         const auto source=doc.root;
         nativeMotionSymbols(cad,doc,{{part,pose}});
         require(doc.root==source,"display helper changed solver data");
+        // A flexible interface is a real body without a distinct CAD part;
+        // glyphs must follow its own pose after the CAD rigid pose is removed.
+        auto portDoc=doc;portDoc.bodyPartBindings.clear();
+        const auto independent=nativeMotionSymbols(cad,portDoc,{},"joints",4,{{7,pose}});
+        const auto& portJoint=find(independent,"joints",4);
+        near(portJoint.origin[0],97,1e-5,"independent port joint x stayed at rest");
+        near(portJoint.origin[1],22,1e-5,"independent port joint y stayed at rest");
+        near(find(independent,"sensors",11).origin[2],48,1e-5,"independent port sensor did not follow its actual body pose");
         qInfo()<<"Native symbols: topology-independent glyphs, global coordinates and separate body/ground animation passed";
         return 0;
     }catch(const std::exception& failure){qCritical()<<failure.what();return 1;}

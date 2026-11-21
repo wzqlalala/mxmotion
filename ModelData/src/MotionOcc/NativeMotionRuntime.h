@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NativeMotionGeometry.h"
+#include "NativeMotionActuators.h"
 #include "motion/physics/SystemSMC.h"
 #include "motion/physics/LinkMotor.h"
 #include "motion/functions/Function_Setpoint.h"
@@ -39,6 +40,8 @@ struct NativePidRuntime {
     QJsonObject sensor;
     std::shared_ptr<motion::MotionLinkMotor> motor;
     std::shared_ptr<motion::MotionFunction_Setpoint> setpoint;
+    std::shared_ptr<NativeEffortRuntime> effort;
+    QString feedbackUnit,outputUnit;
     double integral=0, lastFeedback=0, lastTime=0, unwrappedAngle=0;
     bool hasSample=false, hasAngle=false;
     std::vector<NativePidSample> history;
@@ -49,6 +52,7 @@ public:
     std::vector<NativePidRuntime> controllers;
     std::map<int, std::shared_ptr<motion::MotionBody>> nativeBodies;
     std::map<int, std::shared_ptr<motion::MotionLinkMotor>> nativeMotors;
+    std::map<int, std::shared_ptr<NativeEffortRuntime>> effortMotors;
     std::map<std::string, std::shared_ptr<motion::MotionLinkBase>> nativeJoints;
     double acceptedStepSize=0, acceptedEndTime=0;
     std::uint64_t acceptedStepIndex=0;
@@ -58,6 +62,7 @@ public:
     std::function<void(double)> captureFlexState;
     int positionIterations=50;
     void configureControllers(const NativeMotionInput& input);
+    void prepareStaticDescriptor(){DescriptorPrepareInject(*GetSystemDescriptor());}
     void projectAcceptedPositions();
     void CustomEndOfStep() override;
 };
@@ -74,10 +79,13 @@ struct NativeFlexRuntime {
     std::vector<int> tetrahedra;
     double densityKgMm3=0;
     std::vector<std::vector<double>> interfacePoses;
+    std::vector<double> referenceInterfacePoses;
+    bool reducedDynamics=true;
+    FlexModalBasis modalBasis;
 };
 
 std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system, const NativeMotionInput& input,
-                                             const SolverCallbacks& callbacks);
+                                             const SolverCallbacks& callbacks, bool inspectionOnly=false);
 void captureNativeFlex(std::vector<NativeFlexRuntime>& flex, double time);
 void validateNativeFlex(const std::vector<NativeFlexRuntime>& flex, double time);
 void extractNativeResults(const NativeMotionInput& input, const NativeMotionSystem& system,

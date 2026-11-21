@@ -83,9 +83,9 @@ std::vector<double> evaluateNativeSensor(const QJsonObject& o,const std::map<int
         if(variable=="ActuationTorque")return coordinate(vec(r.actuation_torque)*.001);
         if(variable=="ReactionForce")return coordinate(vec(r.reaction_force)*.001);
         if(variable=="ReactionTorque")return coordinate(vec(r.reaction_torque)*.001);
-        if(variable=="ImposedValue")return {r.imposed_value};
-        if(variable=="ImposedSpeed")return {r.imposed_speed};
-        if(variable=="ImposedAcc")return {r.imposed_acc};
+        if(variable=="ImposedValue"||variable=="Coordinate")return {r.imposed_value};
+        if(variable=="ImposedSpeed"||variable=="Rate")return {r.imposed_speed};
+        if(variable=="ImposedAcc"||variable=="CoordinateAcceleration")return {r.imposed_acc};
     }
     throw std::runtime_error(QStringLiteral("传感器 %1 的类型/变量没有求值实现：%2/%3。").arg(o.value("id").toInt()).arg(type,variable).toStdString());
 }

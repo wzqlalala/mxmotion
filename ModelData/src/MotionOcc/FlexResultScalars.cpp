@@ -1,6 +1,7 @@
 #include "RigidMotion.h"
 
 #include <Eigen/Eigenvalues>
+#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <cmath>
@@ -97,6 +98,39 @@ bool flexNodeScalarsAt(const RigidFlexResult& result,std::size_t left,std::size_
                 }
                 next[i]=std::hypot(displacement[0],displacement[1],displacement[2]);
             }
+        }else if(!result.reducedDynamics){
+            // Real full-FEM dynamics has no reduced q. Express each node's
+            // displacement in the first interface's material frame, removing
+            // its rigid translation/rotation. The other interfaces may move
+            // independently and their elastic contribution must be retained.
+            // Reference poses precede static preload, so preload deformation
+            // remains visible. Interpolate these vectors before their norm.
+            if(result.interfaceCount<1 || result.initialInterfacePoses.size()!=std::size_t(7*result.interfaceCount)
+                || left>=result.interfacePoses.size() || right>=result.interfacePoses.size())
+                fail("全有限元弹性位移缺少参考接口位姿。");
+            const auto& initial=result.initialInterfacePoses;
+            if(!finite(initial))fail("柔性体参考接口位姿无效。");
+            const Eigen::Vector3d origin(initial[0],initial[1],initial[2]);
+            Eigen::Quaterniond initialRotation(initial[3],initial[4],initial[5],initial[6]);
+            if(initialRotation.norm()<1e-12)fail("柔性体参考接口旋转无效。");
+            initialRotation.normalize();
+            const auto vectors=[&](std::size_t frame){
+                const auto& pose=result.interfacePoses[frame];
+                if(pose.size()!=initial.size() || !finite(pose))fail("全有限元接口位姿与接口数不一致。");
+                Eigen::Quaterniond rotation(pose[3],pose[4],pose[5],pose[6]);
+                if(rotation.norm()<1e-12)fail("柔性体接口旋转无效。");
+                rotation.normalize();
+                const Eigen::Vector3d current(pose[0],pose[1],pose[2]);
+                std::vector<Eigen::Vector3d> values(coordinates/3);
+                for(std::size_t node=0;node<values.size();++node)
+                    values[node]=rotation.conjugate()*(point(result.nodePositions[frame],node)-current)
+                        -initialRotation.conjugate()*(point(result.referenceNodes,node)-origin);
+                return values;
+            };
+            const auto first=vectors(left),last=vectors(right);
+            for(std::size_t node=0;node<next.size();++node)next[node]=((1-fraction)*first[node]+fraction*last[node]).norm();
+            if(kind==FlexContourKind::LegacyFreeModeProjection)next=legacyProjection(result,next);
+            else if(kind!=FlexContourKind::ElasticDisplacement)fail("未知柔性体云图类型。");
         }else{
             if(result.modeCount<=0||result.interfaceCount<0||left>=result.modalCoordinates.size()||right>=result.modalCoordinates.size())
                 fail("柔性体结果缺少模态坐标。");

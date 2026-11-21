@@ -57,7 +57,7 @@ struct Fixture {
         doc.root={{"formatVersion",1},{"motionData",QJsonObject{{"bodies",QJsonArray{body(0,part)}},{"scenarios",QJsonArray{QJsonObject{{"id",0},{"name","native"},{"endTime",.02},{"stepSize",.001},{"gravity",xyz(0,0,0)},{"usePreset",false},{"integratorType","EULER_IMPLICIT_LINEARIZED"},{"solverType","SPARSE_QR"},{"solverTolerance",1e-10}}}}}}};
         doc.bodyPartBindings.insert(0,{part});
     }
-    RigidResult solve(){NativeMotionInput input;QString error;require(prepareNativeMotion(cad,doc,0,input,error),"prepare: "+error);RigidResult result;require(solveNativeMotion(input,result,error)==SolveStatus::Completed,"solve: "+error);
+    RigidResult solve(){NativeMotionInput input;QString error;const bool prepared=prepareNativeMotion(cad,doc,0,input,error);require(prepared,"prepare: "+error);RigidResult result;const auto status=solveNativeMotion(input,result,error);require(status==SolveStatus::Completed,"solve: "+error);
         require(result.scenarioId==0&&result.frames.size()>=2,"native zero IDs lost");near(result.frames.front().seconds,0,1e-12,"initial time");near(result.frames.back().seconds,input.scenario.duration,1e-10,"terminal time");
         for(const auto& channel:result.channels)require(channel.values.size()==result.frames.size()*channel.components,"unaligned channel");return result;}
     void scenario(double duration,double step){auto s=doc.entity("scenarios",0);s["endTime"]=duration;s["stepSize"]=step;collection(doc,"scenarios",{s});}
@@ -425,7 +425,25 @@ void flexReductionAndAutomaticMesh(){
     auto stale=referenced; stale["attachmentMeshChanged"]=true; collection(f.doc,"autoFlexBodies",{stale});
     require(!prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError) && preparationError.contains("旧附着节点"),
         "a mesh replacement reused stale attachment IDs without explicit reselection");
-    flex.remove("mesh");flex.remove("attachGroups");collection(f.doc,"autoFlexBodies",{flex});result=f.solve();
+    // A single node is a point connection, not the finite rigid patch this
+    // CMS path promises. Keep this negative case independent of mesher layout.
+    auto insufficient=flex;insufficient["attachGroups"]=QJsonArray{QJsonArray{0}};
+    collection(f.doc,"autoFlexBodies",{insufficient});
+    require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
+    QString solveError;RigidResult rejected;
+    const auto insufficientStatus=solveNativeMotion(prepared,rejected,solveError);
+    require(insufficientStatus==SolveStatus::Failed&&solveError.contains("实际有 1 个")&&solveError.contains("非共线"),
+        "underconstrained rigid attachment was silently accepted: "+solveError);
+    flex.remove("mesh");flex.remove("attachGroups");collection(f.doc,"autoFlexBodies",{flex});
+    require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
+    const auto smallRadiusStatus=solveNativeMotion(prepared,rejected,solveError);
+    if(smallRadiusStatus==SolveStatus::Failed){
+        require(solveError.contains("共享刚性附着区实际有")&&solveError.contains("非共线"),"unexpected automatic attachment failure: "+solveError);
+        qInfo().noquote()<<"Small-radius automatic patch diagnostic:"<<solveError;
+    }else require(smallRadiusStatus==SolveStatus::Completed&&!rejected.flexBodies.empty(),"automatic attachment probe returned no real result");
+    // The verified finite patch uses an explicitly larger radius. Production
+    // never silently grows the user's radius or invents attachment nodes.
+    flex["connectionRadius"]=6.0;collection(f.doc,"autoFlexBodies",{flex});result=f.solve();
     require(result.flexBodies.size()==1&&result.flexBodies[0].referenceNodes.size()>24,"automatic OCC Netgen tetra mesh did not run");
 }
 

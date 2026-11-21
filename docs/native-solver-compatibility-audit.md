@@ -1,5 +1,7 @@
 # 原多体求解、柔性结果和载荷导出的兼容核对
 
+本文为 GUI `31c9413` / 引擎 `fff3dd3` 的恢复阶段记录。“本轮未替换引擎算法”和模态结果布局等说明以该阶段及共用参考体缩减路径为准。后续版本增加真实固定接口特征求解、独立接口全有限元和静力/执行器功能，准确行为见[分析工作流](native-analysis-workflow.md)及[新增分析验证](native-analysis-verification.md)。
+
 本文核对仓库中的原 [mMotionSolverThread](../GUI/src/MainWindow/mMotionSolverThread.cpp)、[mMotionFlexBridge](../GUI/src/MainWindow/mMotionFlexBridge.cpp)、[mMotionAnimationPanel](../GUI/src/MainWindow/mMotionAnimationPanel.cpp) 和 [mMotionLoadExportPanel](../GUI/src/MainWindow/mMotionLoadExportPanel.cpp)，以及当前 OCC 适配入口。原界面中存在某个枚举或按钮，不等于原求解线程已经实现对应物理模型。
 
 本轮没有替换 MotionEngine 算法，也没有用演示位移模拟柔性体。以下回归使用实际 Core / Modal 求解和实际 CAD 几何。它们验证表中具体工况，不构成所有材料、网格、机构或积分器组合的通用精度保证。界面拾取和完整导入工作流的独立记录见 [验证说明](native-motion-verification.md)。

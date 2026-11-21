@@ -39,6 +39,11 @@ struct NativeFlexGeometry {
     std::vector<int> tetrahedra;
     std::vector<std::vector<int>> attachGroups;
     std::vector<double> attachPositions;
+    // Independent mode is expanded only in the immutable prepared document.
+    // Every patch then owns one real rigid port, joined by the full FEM mesh.
+    bool independentInterfaces = false;
+    std::vector<int> interfaceBodyIds;
+    std::vector<std::vector<int>> interfaceJointGroups;
     QByteArray sourceBrep; // Snapshot for automatic tetra meshing in worker thread.
     QString meshWorkerPath;
 };

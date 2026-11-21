@@ -6,6 +6,7 @@
 #include "NativeMotionPickWidgets.h"
 #include "NativeBodyMass.h"
 #include "NativeFunctionEditor.h"
+#include "NativeMotionTypedPanels.h"
 #include "mFoldSection.h"
 
 #include <BRepAdaptor_Curve.hxx>
@@ -63,6 +64,7 @@ QString label(const QString& key)
         {"bodyIId", "连接体 I"}, {"bodyJId", "连接体 J"}, {"bodyId", "运动体"},
         {"actionBodyId", "动作体"}, {"baseBodyId", "基本体"}, {"targetBodyId", "目标体"},
         {"referenceBodyId", "参考体"}, {"originBodyId", "方向原点体"},
+        {"axisBodyId", "轴参考体"}, {"bodyAId", "测量体 A"}, {"bodyBId", "测量体 B"},
         {"localI", "作用点 I (初始全局 mm)"}, {"localJ", "作用点 J (初始全局 mm)"},
         {"localTarget", "方向目标点 (mm)"}, {"localOrigin", "方向原点 (mm)"},
         {"localPosition", "标记点位置 (mm)"}, {"localRotation", "标记点姿态 (四元数)"},
@@ -95,6 +97,7 @@ QString label(const QString& key)
         {"forceFunction", "力函数"}, {"dampingFunction", "阻尼函数"}, {"torqueFunction", "力矩函数"},
         {"controlMode", "驱动模式"}, {"targetJointId", "目标运动副"}, {"targetDriveId", "目标驱动"},
         {"motionType", "运动类型"}, {"expression", "函数表达式 (时间 t，秒)"},
+        {"effortLimit", "额定力 / 力矩"}, {"powerLimit", "功率限制 (W)"}, {"noLoadSpeed", "空载速度"},
         {"driveTableX", "驱动时间表 (s)"}, {"driveTableY", "驱动数值表"},
         {"couplingType", "耦合类型"}, {"firstJointId", "第一运动副"}, {"secondJointId", "第二运动副"},
         {"gearRatio", "传动比"}, {"ratio", "传动比"}, {"radius", "节圆半径 (mm)"},
@@ -119,6 +122,9 @@ QString label(const QString& key)
         {"inputType", "输入类型"}, {"timeStart", "起始时间 (s)"}, {"timeEnd", "终止时间 (s)"},
         {"polyCoeffs", "多项式系数 (常数项在前)"}, {"curvePoints", "时间—输入值"},
         {"endTime", "终止时间 (s)"}, {"stepSize", "步长 (s)"}, {"gravity", "重力 (mm/s²)"},
+        {"analysisType", "分析类型"}, {"staticMaxIterations", "静力最大迭代数"},
+        {"staticTolerance", "相对平衡残差容差"}, {"staticConstraintTolerance", "约束残差容差 (mm / rad)"},
+        {"staticStepDamping", "Newton 步长系数 (0 < 值 ≤ 1)"},
         {"usePreset", "使用求解预设"}, {"presetMode", "求解预设"}, {"solverType", "线性求解器"},
         {"solverTolerance", "求解容差"}, {"solverMaxIters", "最大求解迭代数"},
         {"integratorType", "积分器"}, {"integratorTol", "积分容差"}, {"integratorMaxIters", "最大积分迭代数"},
@@ -130,6 +136,7 @@ QString label(const QString& key)
         {"modalDampingRatio", "模态阻尼比"}, {"rayleighMass", "瑞利质量系数"},
         {"rayleighStiffness", "瑞利刚度系数"},
         {"meshFile", "四面体网格文件"}, {"attachPoints", "连接点编号"},
+        {"interfaceMode", "接口耦合方式"}, {"interfaceJointGroups", "独立接口的运动副分组"},
         {"occSurfaceFaces", "曲面绑定 (部件 / 面序号)"}, {"occCurveEdges", "曲线绑定 (部件 / 边序号)"},
         {"occCurveIEdges", "曲线 I 绑定"}, {"occCurveJEdges", "曲线 J 绑定"},
         {"partId", "部件编号"}, {"index", "面 / 边序号 (从 1 开始)"}
@@ -151,6 +158,9 @@ QString enumLabel(const QString& value)
         {"PointOnCurve", "点在曲线上"}, {"PointOnSurface", "点在曲面上"}, {"CurveOnCurve", "曲线在曲线上"},
         {"GearRack", "齿轮齿条"}, {"Cable", "双向线缆耦合"}, {"BodyPoint", "体点弹簧"}, {"Torsional", "扭转弹簧"},
         {"Position", "位置 / 位移"}, {"Velocity", "速度"}, {"Acceleration", "加速度"},
+        {"Dynamic", "动力学"}, {"Static", "静力平衡"}, {"PreloadedDynamics", "静力预载后动力学"},
+        {"FAST", "FAST · 快速"}, {"CONTACT", "CONTACT · 接触"}, {"ROBUST", "ROBUST · 稳健"}, {"HIGH_PRECISION", "HIGH_PRECISION · 高精度"},
+        {"SharedBody", "共用参考体 · 模态缩减"}, {"Independent", "独立接口 · 共回转全有限元"},
         {"Rotation", "转动"}, {"Translation", "平动"}, {"GlobalFixed", "全局固定"}, {"BodyFixed", "随体"},
         {"Constant", "常量"}, {"Expression", "函数"}, {"Force", "力"}, {"Torque", "力矩"}, {"Bushing", "衬套"},
         {"Bidirectional", "双向"}, {"PositiveOnly", "正向"}, {"NegativeOnly", "负向"},
@@ -443,7 +453,9 @@ QStringList choices(const QString& key)
     static const QMap<QString, QStringList> values{
         {"couplingType", {"Gear", "GearRack", "Cable"}}, {"springType", {"BodyPoint", "Translational", "Torsional"}},
         {"inertiaConvention", {"auto", "tensor", "products"}},
-        {"controlMode", {"Position", "Velocity"}}, {"motionType", {"Rotation", "Translation"}},
+        {"controlMode", {"Position", "Velocity", "Force", "Torque"}}, {"motionType", {"Rotation", "Translation"}},
+        {"analysisType", {"Dynamic", "Static", "PreloadedDynamics"}},
+        {"interfaceMode", {"SharedBody", "Independent"}},
         {"loadType", {"Force", "Torque", "Bushing"}}, {"magnitudeMode", {"Constant", "Expression"}},
         {"directionMode", {"GlobalFixed", "BodyFixed"}}, {"coordSystem", {"GlobalFixed", "BodyFixed"}},
         {"springDirectionMode", {"Bidirectional", "PositiveOnly", "NegativeOnly"}},
@@ -741,6 +753,88 @@ bool selectFlexNodes(QWidget* parent, QJsonObject& mesh, QJsonArray& selected)
     selected={};
     for (int i=0; i<list->count(); ++i) if (list->item(i)->checkState()==Qt::Checked) selected.append(list->item(i)->data(Qt::UserRole).toInt());
     mesh.insert("nodeIds", nodeIds); return true;
+}
+
+bool selectFlexInterfaceGroups(QWidget* parent, const NativeMotionDocument& document,
+                               int bodyId, QJsonArray& selected)
+{
+    QDialog dialog(parent); dialog.setWindowTitle(QStringLiteral("独立接口的运动副分组")); dialog.resize(760, 520);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* help = new QLabel(QStringLiteral("同一组的运动副连接同一个刚性接口片；不同组由柔性实体传力。每个副最多属于一组。选择自动时，按该目标体各运动副的作用点位置建立接口。"));
+    help->setWordWrap(true); layout->addWidget(help);
+    auto* automatic = new QCheckBox(QStringLiteral("按运动副位置自动分组")); automatic->setObjectName("nativeInterfaceGroupsAutomatic");
+    automatic->setChecked(selected.isEmpty()); layout->addWidget(automatic);
+    auto* editor = new QWidget; auto* horizontal = new QHBoxLayout(editor); horizontal->setContentsMargins(0,0,0,0);
+    auto* groups = new QListWidget; groups->setObjectName("nativeInterfaceGroups"); horizontal->addWidget(groups, 1);
+    auto* joints = new QListWidget; joints->setObjectName("nativeInterfaceGroupJoints"); horizontal->addWidget(joints, 2);
+    layout->addWidget(editor, 1);
+    auto values = std::make_shared<QVector<QSet<int>>>();
+    for (const auto& group : selected) { QSet<int> ids; for (const auto& id : group.toArray()) ids.insert(id.toInt()); values->append(ids); }
+    auto* buttonsRow = new QHBoxLayout;
+    auto* add = new QPushButton(QStringLiteral("新增接口组")); add->setObjectName("nativeInterfaceGroupAdd");
+    auto* remove = new QPushButton(QStringLiteral("删除接口组")); remove->setObjectName("nativeInterfaceGroupRemove");
+    buttonsRow->addWidget(add); buttonsRow->addWidget(remove); layout->addLayout(buttonsRow);
+    auto* status = new QLabel; status->setWordWrap(true); layout->addWidget(status);
+    QSet<int> available;
+    for (const auto& value : document.collection("joints")) {
+        const auto joint = value.toObject();
+        if (joint.value("actionBodyId").toInt(-1) != bodyId && joint.value("baseBodyId").toInt(-1) != bodyId) continue;
+        const int id = joint.value("id").toInt(); available.insert(id);
+        auto* item = new QListWidgetItem(QStringLiteral("%1 [%2] · %3").arg(joint.value("name").toString()).arg(id).arg(enumLabel(joint.value("jointType").toString())),joints);
+        item->setData(Qt::UserRole,id); item->setFlags(item->flags() | Qt::ItemIsUserCheckable); item->setCheckState(Qt::Unchecked);
+    }
+    const auto populate = [=] {
+        const QSignalBlocker block(joints);
+        const int current = groups->currentRow();
+        for (int i = 0; i < joints->count(); ++i) {
+            auto* item = joints->item(i); const int id = item->data(Qt::UserRole).toInt();
+            bool used = false;
+            for (int g = 0; g < values->size(); ++g) if (g != current && values->at(g).contains(id)) used = true;
+            item->setFlags(used || current < 0 ? item->flags() & ~Qt::ItemIsEnabled : item->flags() | Qt::ItemIsEnabled);
+            item->setCheckState(current >= 0 && current < values->size() && values->at(current).contains(id) ? Qt::Checked : Qt::Unchecked);
+        }
+    };
+    const auto refresh = [=](int selectedRow) {
+        const QSignalBlocker block(groups); groups->clear();
+        for (int g = 0; g < values->size(); ++g) groups->addItem(QStringLiteral("接口 %1 · %2 个副").arg(g+1).arg(values->at(g).size()));
+        groups->setCurrentRow(std::clamp(selectedRow, -1, values->size()-1)); populate();
+    };
+    QObject::connect(groups, &QListWidget::currentRowChanged, &dialog, [populate] { populate(); });
+    QObject::connect(joints, &QListWidget::itemChanged, &dialog, [=](QListWidgetItem* item) {
+        const int current = groups->currentRow(); if (current < 0 || current >= values->size()) return;
+        const int id = item->data(Qt::UserRole).toInt();
+        if (item->checkState() == Qt::Checked) (*values)[current].insert(id); else (*values)[current].remove(id);
+        refresh(current);
+    });
+    QObject::connect(add, &QPushButton::clicked, &dialog, [=] { values->append(QSet<int>{}); refresh(values->size()-1); });
+    QObject::connect(remove, &QPushButton::clicked, &dialog, [=] { const int current = groups->currentRow(); if (current >= 0) values->removeAt(current); refresh(current-1); });
+    const auto mode = [=] { editor->setEnabled(!automatic->isChecked()); add->setEnabled(!automatic->isChecked()); remove->setEnabled(!automatic->isChecked()); };
+    QObject::connect(automatic, &QCheckBox::toggled, &dialog, [mode] { mode(); });
+    refresh(values->isEmpty() ? -1 : 0); mode();
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [=, &dialog] {
+        if (!automatic->isChecked()) {
+            if (values->size() < 2) { status->setText(QStringLiteral("独立接口需要至少两个组；也可选择自动分组。")); return; }
+            QSet<int> used;
+            for (const auto& ids : *values) {
+                if (ids.isEmpty()) { status->setText(QStringLiteral("每个显式接口组至少选择一个运动副。")); return; }
+                for (int id : ids) {
+                    if (!available.contains(id) || used.contains(id)) { status->setText(QStringLiteral("接口组包含缺失、未连接目标体或重复分组的运动副，请重新选择。")); return; }
+                    used.insert(id);
+                }
+            }
+            if (used != available) { status->setText(QStringLiteral("请把连接该柔性体的所有运动副都分配到接口组，避免遗漏连接。")); return; }
+        }
+        dialog.accept();
+    });
+    if (dialog.exec() != QDialog::Accepted) return false;
+    selected = {};
+    if (!automatic->isChecked()) for (const auto& ids : *values) {
+        auto sorted = ids.values(); std::sort(sorted.begin(), sorted.end()); QJsonArray group;
+        for (int id : sorted) group.append(id); selected.append(group);
+    }
+    return true;
 }
 
 } // namespace
@@ -1091,6 +1185,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             QStringLiteral("occCurveEdges"), QStringLiteral("occCurveIEdges"), QStringLiteral("occCurveJEdges")})
         if (!row.contains(key) && defaults.contains(key)) row.insert(key, defaults.value(key));
     const bool autoFlex=collection=="autoFlexBodies";
+    completeNativeTypedRecord(row, collection, document);
     QStringList missingFlexMaterialProperties;
     const bool missingMaterial=autoFlex && row.value("material").toObject().isEmpty()
         && document.entity("materials", row.value("materialId").toInt(-1)).isEmpty();
@@ -1098,6 +1193,8 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         for (const auto& key : {"enabled", "elementSize", "modeCount", "meshFile", "attachPoints", "connectionRadius",
                 "freqCutoff", "dampingType", "modalDampingRatio", "rayleighMass", "rayleighStiffness"})
             if (!row.contains(key)) row.insert(key, defaults.value(key));
+        if (!row.contains("interfaceMode")) row.insert("interfaceMode", "SharedBody");
+        if (!row.contains("interfaceJointGroups")) row.insert("interfaceJointGroups", QJsonArray{});
         auto material=row.value("material").toObject();
         int materialId=row.value("materialId").toInt(-1);
         const auto referenced=document.entity("materials", materialId);
@@ -1193,11 +1290,18 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     const QStringList hidden{"id", "isUserRename", "geoEntityIds", "geoEntityNames", "currentCurveRequest", "curveNode", "curveRequests",
         "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds", "occPickReferences"};
     if (row.contains("name")) fields.insert("name", addField(form, "name", row.value("name"), document, collection));
+    const auto specialisedFields = addNativeTypedFields(panel, form, row, collection, document,
+        [&, picker](QFormLayout* target, const QString& field, const QJsonValue& value) {
+            return addField(target, field, value, document, collection, 0, picker);
+        }, fields);
+    if (collection == "sensors") for (const auto& key : {"sensorType", "variable"})
+        if (auto* selector = panel->findChild<QComboBox*>(QStringLiteral("native_") + key))
+            connect(selector, qOverload<int>(&QComboBox::currentIndexChanged), panel, [picker] { picker->finish(); });
     for (auto it = row.begin(); it != row.end(); ++it) {
-        if (it.key() == "name" || hidden.contains(it.key())) continue;
+        if (it.key() == "name" || hidden.contains(it.key()) || specialisedFields.contains(it.key())) continue;
         if (collection=="vectorForces" && row.value("loadType").toString()=="Bushing"
             && QStringList{"expression","magnitude","magnitudeMode","direction","directionMode"}.contains(it.key())) continue;
-        if (autoFlex && QStringList{"mesh", "materialId", "meshSourceFile", "attachGroups", "attachPointPositions", "attachmentMeshChanged", "meshType", "minElementSize", "curvatureRefinement",
+        if (autoFlex && QStringList{"mesh", "materialId", "meshSourceFile", "attachGroups", "attachPointPositions", "attachmentMeshChanged", "interfaceJointGroups", "meshType", "minElementSize", "curvatureRefinement",
                 "solverType", "freqLower", "freqUpper", "rigidBodyModeFilter", "connectionType", "interfaceDofs",
                 "outputModeShapes", "outputStressStrain", "outputFormat"}.contains(it.key())) continue;
         if (autoFlex && it.key()=="dampingType") {
@@ -1285,6 +1389,38 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         connect(parts,&QListWidget::itemChanged,panel,[recalculate](QListWidgetItem*) { recalculate(); });
     }
     if (autoFlex) {
+        auto interfaces = std::make_shared<QJsonArray>(row.value("interfaceJointGroups").toArray());
+        fields.insert("interfaceJointGroups", [interfaces] { return *interfaces; });
+        auto* interfaceInfo = new QLabel; interfaceInfo->setObjectName("nativeFlexInterfaceInfo"); interfaceInfo->setWordWrap(true); form->addRow(interfaceInfo);
+        auto* groupState = new QLabel; groupState->setObjectName("nativeFlexInterfaceGroupsState"); groupState->setWordWrap(true); form->addRow(groupState);
+        auto* selectGroups = new QPushButton(tr("设置独立接口的运动副分组…")); selectGroups->setObjectName("nativeFlexInterfaceGroups"); form->addRow(selectGroups);
+        auto* mode = panel->findChild<QComboBox*>("native_interfaceMode");
+        auto* damping = panel->findChild<QComboBox*>("native_dampingType");
+        const auto updateInterface = [=] {
+            const bool independent = mode->currentData().toString() == "Independent";
+            selectGroups->setVisible(independent); groupState->setVisible(independent);
+            groupState->setText(interfaces->isEmpty() ? QStringLiteral("接口分组：按运动副作用点自动建立独立接口。")
+                : QStringLiteral("接口分组：已指定 %1 组。更换目标体后请重新分组。").arg(interfaces->size()));
+            interfaceInfo->setText(independent
+                ? damping->currentData().toInt() == 1
+                    ? QStringLiteral("独立接口采用共回转全有限元，至少两个互不重叠、各含 3 个不共线节点的接口片。当前模态阻尼比不能用于全有限元，请选择无阻尼或瑞利阻尼。")
+                    : QStringLiteral("独立接口采用共回转全有限元：各运动副端点可相对变形，节点与接口真实参与求解。至少两个接口片；每片至少 3 个不共线节点。自动附着按最近接口划分。模态数量与截止频率仅用于检查器，动力学保留全部节点自由度。")
+                : QStringLiteral("共用参考体采用原模态缩减流程：全部附着组刚性夹持到同一参考体，合并去重后至少需要 3 个不共线节点；目前不支持单点或共线节点作为铰接接口。多个片之间不提供独立端点运动。无附着自由体可单独检查自由模态。"));
+            interfaceInfo->setToolTip(interfaceInfo->text());
+            for (const auto& key : {"modalDampingRatio"})
+                if (auto* field = panel->findChild<QLineEdit*>(QStringLiteral("native_") + key)) field->setEnabled(!independent);
+        };
+        connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), panel, [=] { picker->finish(); updateInterface(); });
+        connect(damping, qOverload<int>(&QComboBox::currentIndexChanged), panel, [updateInterface] { updateInterface(); });
+        connect(selectGroups, &QPushButton::clicked, panel, [=] {
+            picker->finish();
+            const int body = panel->findChild<QComboBox*>("native_targetBodyId")->currentData().toInt();
+            if (selectFlexInterfaceGroups(this, document, body, *interfaces)) updateInterface();
+        });
+        updateInterface();
+        auto* inspect = new QPushButton(tr("检查已保存柔性体的真实模态…")); inspect->setObjectName("nativeInspectModes");
+        inspect->setEnabled(!creating); inspect->setToolTip(tr("使用已保存模型。请先保存此面板的修改；新建柔性体保存并生成网格后可检查。")); form->addRow(inspect);
+        connect(inspect, &QPushButton::clicked, panel, [this, picker, id] { picker->finish(); inspectFlexModes(id); });
         for (const auto& key : missingFlexMaterialProperties)
             if (auto* input=panel->findChild<QLineEdit*>("native_"+key)) { input->clear(); input->setPlaceholderText(tr("必填材料参数")); }
         auto* attachState=new QLabel(*attachmentMeshChanged ? tr("体网格或目标几何已经改变。旧节点编号尚未重新映射，请重新选择附着节点或明确改为自动附着后求解。")
@@ -1356,7 +1492,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                     input->setText(material.value(key).isDouble() ? QString::number(material.value(key).toDouble(), 'g', 17) : QString{});
         });
         if (auto* body=panel->findChild<QComboBox*>("native_targetBodyId"))
-            connect(body, qOverload<int>(&QComboBox::currentIndexChanged), panel, [panel, picker, document, body, flexMesh, attachState, clearAttachments, this] {
+            connect(body, qOverload<int>(&QComboBox::currentIndexChanged), panel, [panel, picker, document, body, flexMesh, attachState, clearAttachments, interfaces, updateInterface, this] {
                 // The active session captures node IDs and positions from the old mesh.
                 // Detach it before replacing that mesh, even when node counts coincide.
                 picker->finish();
@@ -1364,6 +1500,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                 panel->findChild<QLabel*>("nativeFlexMeshStatus")->setText(flexMeshSummary(*flexMesh));
                 if (auto* file=panel->findChild<QLineEdit*>("native_meshFile")) file->clear();
                 clearAttachments();
+                *interfaces={}; updateInterface();
                 attachState->setText(tr("目标体已变更，请重新选择附着节点；留空将按新目标体的运动副自动附着。"));
             });
     }
@@ -1379,10 +1516,10 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             } return values; };
             try {
                 auto text=expression->text(); auto tx=read(x), ty=read(y);
-                const bool rotation=panel->findChild<QComboBox*>("native_motionType")->currentData().toString()=="Rotation";
-                const bool velocity=panel->findChild<QComboBox*>("native_controlMode")->currentData().toString()=="Velocity";
+                const QJsonObject drive{{"motionType", panel->findChild<QComboBox*>("native_motionType")->currentData().toString()},
+                    {"controlMode", panel->findChild<QComboBox*>("native_controlMode")->currentData().toString()}};
                 const auto scenarios=document.collection("scenarios"); const double duration=scenarios.isEmpty() ? 10 : scenarios.first().toObject().value("endTime").toDouble(10);
-                if (!editNativeFunction(this,text,tx,ty,rotation ? (velocity ? "°/s" : "°") : (velocity ? "mm/s" : "mm"),duration)) return;
+                if (!editNativeFunction(this,text,tx,ty,nativeDriveCommandUnit(drive),duration)) return;
                 expression->setText(text);
                 const auto write=[](QTableWidget* table,const QJsonArray& values) { table->setRowCount(values.size());
                     for (int r=0;r<values.size();++r) table->setItem(r,0,new QTableWidgetItem(QString::number(values[r].toDouble(),'g',17))); };
@@ -1401,6 +1538,18 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             }
             auto next = row;
             for (auto it = fields.begin(); it != fields.end(); ++it) next.insert(it.key(), it.value()());
+            const auto typedIssue = nativeTypedRecordIssue(next, collection, document);
+            if (!typedIssue.isEmpty()) {
+                setNotice(typedIssue, true); // Full reason remains in the output log and tooltip.
+                m_notice->setText(tr("上次保存未通过检查；悬停查看具体原因。"));
+                return;
+            }
+            if (collection == "controllers") {
+                const auto* targetSource = panel->findChild<QComboBox*>("native_targetSource");
+                if (targetSource && targetSource->currentData().toString() == "Input" && next.value("targetInputId").toInt(-1) < 0) {
+                    setNotice(tr("目标来源为控制输入时，必须选择一条有效轨迹。"), true); return;
+                }
+            }
             if (collection=="sensors") convertSensorPoints(next,document,false);
             if (parts && !next.value("isCustomMassProps").toBool()
                 && (next.value("densityKgMm3")!=row.value("densityKgMm3") || row.value("isCustomMassProps").toBool()
@@ -1409,6 +1558,9 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                 if (!updateNativeBodyMass(m_document,selectedParts(parts),next,next.value("densityKgMm3").toDouble(),error)) { setNotice(error,true); return; }
             }
             if (collection=="autoFlexBodies") {
+                if (next.value("interfaceMode").toString() == "Independent" && next.value("dampingType").toInt() == 1) {
+                    setNotice(tr("独立接口的全有限元求解不能使用模态阻尼比，请选择无阻尼或瑞利阻尼。"), true); return;
+                }
                 if (next.value("targetBodyId")!=row.value("targetBodyId")) next.remove("meshSourceFile");
                 const auto properties=next.value("material").toObject();
                 const double e=properties.value("youngModulus").toDouble(NAN), nu=properties.value("poissonRatio").toDouble(NAN), rho=properties.value("density").toDouble(NAN);
@@ -1448,7 +1600,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* scroll = new QScrollArea;
     scroll->setObjectName(QStringLiteral("nativeParameterScroll"));
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
-    if (autoFlex) {
+    if (autoFlex || !specialisedFields.isEmpty()) {
         // Keep the ordinary form-label layout, wrapping only rows that do not
         // fit. Material/body names must not widen the complete parameter dock.
         for (auto* layout : panel->findChildren<QFormLayout*>()) layout->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -1460,6 +1612,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         for (auto* text : panel->findChildren<QLabel*>()) {
             text->setWordWrap(true);
         }
+        fitNativeFormToWidth(panel);
     }
     scroll->setWidget(panel); showEditor(scroll);
 }

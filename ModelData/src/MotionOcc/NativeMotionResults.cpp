@@ -66,8 +66,8 @@ QString sensorUnit(const QJsonObject& o,const NativeMotionDocument& doc)
     if(v=="AngularVelocity")return "°/s";if(v=="AngularAcceleration")return "°/s²";
     if(v.endsWith("Force"))return "N";if(v.endsWith("Torque"))return "N·mm";
     const bool angular=type=="DriveActuation"&&doc.entity("drives",o.value("targetDriveId").toInt(-1)).value("motionType").toString()=="Rotation";
-    if(v=="Velocity"||v=="RelVelocity"||v=="ImposedSpeed")return angular?"°/s":"mm/s";
-    if(v=="Acceleration"||v=="RelAcceleration"||v=="ImposedAcc")return angular?"°/s²":"mm/s²";
+    if(v=="Velocity"||v=="RelVelocity"||v=="ImposedSpeed"||v=="Rate")return angular?"°/s":"mm/s";
+    if(v=="Acceleration"||v=="RelAcceleration"||v=="ImposedAcc"||v=="CoordinateAcceleration")return angular?"°/s²":"mm/s²";
     return angular?"°":"mm";
 }
 }
@@ -126,10 +126,21 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
         for(const auto& item:system.motion_results){
             bool numeric=false;const int id=QString::fromStdString(item.first).toInt(&numeric);if(!numeric)continue;
             const auto& value=sample(item.second,fi,time);const bool angular=input.document.entity("drives",id).value("motionType").toString()=="Rotation";const double scale=angular?radToDeg:1;
+            const auto effort=system.effortMotors.find(id);const bool isEffort=effort!=system.effortMotors.end();
             channels.kinematic("drives",id,value.abscoord);
-            channels.scalar("drives",id,"ImposedValue",angular?"°":"mm",value.imposed_value*scale);
-            channels.scalar("drives",id,"ImposedSpeed",angular?"°/s":"mm/s",value.imposed_speed*scale);
-            channels.scalar("drives",id,"ImposedAcc",angular?"°/s²":"mm/s²",value.imposed_acc*scale);
+            channels.scalar("drives",id,isEffort?"Coordinate":"ImposedValue",angular?"°":"mm",value.imposed_value*scale);
+            channels.scalar("drives",id,isEffort?"Rate":"ImposedSpeed",angular?"°/s":"mm/s",value.imposed_speed*scale);
+            channels.scalar("drives",id,isEffort?"CoordinateAcceleration":"ImposedAcc",angular?"°/s²":"mm/s²",value.imposed_acc*scale);
+            if(isEffort){
+                const auto& history=effort->second->history;
+                if(fi>=history.size() || std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                    throw std::runtime_error("力/力矩执行器输出与结果时间轴不同步。");
+                const auto& applied=history[fi];
+                channels.scalar("drives",id,"EffortCommand",angular?"N·mm":"N",applied.requested);
+                channels.scalar("drives",id,"EffortApplied",angular?"N·mm":"N",applied.applied);
+                channels.scalar("drives",id,"MechanicalPower","W",applied.power);
+                channels.scalar("drives",id,"EffortLimited","",applied.limited?1:0);
+            }
             channels.add("drives",id,"ActuationForce","N",values(value.actuation_force,.001));channels.add("drives",id,"ActuationTorque","N·mm",values(value.actuation_torque,.001));
             channels.add("drives",id,"ReactionForce","N",values(value.reaction_force,.001));channels.add("drives",id,"ReactionTorque","N·mm",values(value.reaction_torque,.001));
             auto sensorState=value;sensorState.imposed_value*=scale;sensorState.imposed_speed*=scale;sensorState.imposed_acc*=scale;driveStates.emplace(id,sensorState);
@@ -157,11 +168,11 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
             channels.add("sensors",id,"SensorValue",sensorUnit(definition,input.document),values);
         }
         for(const auto& controller:system.controllers){
-            if(controller.history.empty())throw std::runtime_error("PID 控制器没有实际采样历史。");
-            auto it=std::upper_bound(controller.history.begin(),controller.history.end(),time,[](double t,const NativePidSample& s){return t<s.time;});
-            if(it==controller.history.begin())it=controller.history.begin();else --it;
-            channels.scalar("controllers",controller.id,"PidTarget","",it->target);channels.scalar("controllers",controller.id,"PidFeedback","",it->feedback);
-            channels.scalar("controllers",controller.id,"PidError","",it->error);channels.scalar("controllers",controller.id,"PidOutput","",it->output);
+            if(fi>=controller.history.size()||std::abs(controller.history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                throw std::runtime_error("PID 采样与结果帧时间轴不同步，没有沿用旧反馈填补缺失采样。");
+            const auto& value=controller.history[fi];
+            channels.scalar("controllers",controller.id,"PidTarget",controller.feedbackUnit,value.target);channels.scalar("controllers",controller.id,"PidFeedback",controller.feedbackUnit,value.feedback);
+            channels.scalar("controllers",controller.id,"PidError",controller.feedbackUnit,value.error);channels.scalar("controllers",controller.id,"PidOutput",controller.outputUnit,value.output);
         }
         result.frames.push_back(std::move(frame));
     }
@@ -172,9 +183,11 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
         output.interfaceCount=static_cast<int>(runtime.result.interface_bodies.size());
         output.densityKgMm3=runtime.densityKgMm3;
         output.psiInternal=runtime.result.psi_internal;
+        output.reducedDynamics=runtime.reducedDynamics;
+        output.modalBasis=runtime.modalBasis;
         if(runtime.interfacePoses.empty())throw std::runtime_error("柔性体没有初始接口位姿。");
-        output.initialInterfacePoses=runtime.interfacePoses.front();
-        if(output.psiInternal.size()!=output.referenceNodes.size()*static_cast<std::size_t>(6*output.interfaceCount+output.modeCount))
+        output.initialInterfacePoses=runtime.referenceInterfacePoses.empty()?runtime.interfacePoses.front():runtime.referenceInterfacePoses;
+        if(output.reducedDynamics && output.psiInternal.size()!=output.referenceNodes.size()*static_cast<std::size_t>(6*output.interfaceCount+output.modeCount))
             throw std::runtime_error("柔性体模态矩阵尺寸与节点/接口/模态数不一致。");
         for(const auto& frame:result.frames){
             const auto found=std::lower_bound(runtime.times.begin(),runtime.times.end(),frame.seconds-1e-9);
@@ -182,7 +195,7 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
             const std::size_t index=static_cast<std::size_t>(found-runtime.times.begin());output.nodePositions.push_back(runtime.nodePositions[index]);
             output.interfacePoses.push_back(runtime.interfacePoses.at(index));
             output.modalCoordinates.push_back(runtime.modalCoordinates.at(index));
-            channels.add("autoFlexBodies",runtime.id,"ModalCoordinates","",runtime.modalCoordinates[index]);
+            if(output.modeCount>0)channels.add("autoFlexBodies",runtime.id,"ModalCoordinates","",runtime.modalCoordinates[index]);
         }
         result.flexBodies.push_back(std::move(output));
     }

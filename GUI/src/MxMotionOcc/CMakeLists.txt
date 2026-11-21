@@ -9,6 +9,8 @@ add_executable(MxMotion WIN32
     MotionRibbon.cpp
     RigidMotionUi.cpp
     NativeMotionUi.cpp
+    NativeMotionTypedPanels.cpp NativeMotionTypedPanels.h
+    NativeModeInspector.cpp NativeModeInspector.h NativeModeInspectorFlow.cpp
     NativeMotionPickWidgets.cpp NativeMotionPickWidgets.h
     NativeFunctionEditor.cpp NativeFunctionEditor.h
     NativeMotionSymbols.cpp NativeMotionSymbols.h
@@ -76,6 +78,7 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNativeDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccPickingSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccModalDesktopSmoke.cpp")
     target_compile_definitions(MxMotion PRIVATE MX_OCC_DESKTOP_SMOKE)
     set(desktop_output "${PROJECT_BINARY_DIR}/desktop-smoke")
     file(MAKE_DIRECTORY "${desktop_output}")
@@ -87,4 +90,6 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     set_tests_properties(MotionOcc.NativeDesktop PROPERTIES TIMEOUT 180 LABELS desktop)
     add_test(NAME MotionOcc.Picking COMMAND MxMotion --picking-smoke "${PROJECT_BINARY_DIR}/picking-smoke")
     set_tests_properties(MotionOcc.Picking PROPERTIES TIMEOUT 90 LABELS desktop)
+    add_test(NAME MotionOcc.ModalDesktop COMMAND MxMotion --modal-desktop-smoke "${PROJECT_BINARY_DIR}/modal-desktop-smoke")
+    set_tests_properties(MotionOcc.ModalDesktop PROPERTIES TIMEOUT 120 LABELS desktop)
 endif()

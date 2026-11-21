@@ -62,10 +62,12 @@ double feedback(NativePidRuntime& rt,NativeMotionSystem& system)
         if(rt.sensor.value("sensorType").toString()=="Angle"){
             if(rt.hasAngle)value+=360*std::floor((rt.unwrappedAngle-value)/360+.5);
             rt.unwrappedAngle=value;rt.hasAngle=true;
-            if(const auto motor=std::dynamic_pointer_cast<motion::MotionLinkMotorRotation>(rt.motor))motor->SetMotorRot(value*.017453292519943295*rt.definition.value("feedbackSign").toDouble(1));
+            if(!rt.effort)if(const auto motor=std::dynamic_pointer_cast<motion::MotionLinkMotorRotation>(rt.motor))motor->SetMotorRot(value*.017453292519943295*rt.definition.value("feedbackSign").toDouble(1));
         }
-    }else if(const auto motor=std::dynamic_pointer_cast<motion::MotionLinkMotorRotation>(rt.motor))
+    }else if(const auto motor=std::dynamic_pointer_cast<motion::MotionLinkMotorRotation>(rt.motor)){
         value=rt.definition.value("feedbackType").toString()=="Velocity"?motor->GetMotorRot_dt():motor->GetMotorRot();
+        if(rt.effort)value*=57.2957795130823208768;
+    }
     else if(const auto motor=std::dynamic_pointer_cast<motion::MotionLinkMotorLinear>(rt.motor))
         value=rt.definition.value("feedbackType").toString()=="Velocity"?motor->GetMotorPos_dt():motor->GetMotorPos();
     else throw std::runtime_error("PID 目标驱动不是线性或旋转电机。");
@@ -76,6 +78,32 @@ void update(NativePidRuntime& rt,NativeMotionSystem& system,double t)
 {
     if(rt.hasSample&&t<=rt.lastTime)return;
     const auto target=targetAt(rt,t);const double fb=feedback(rt,system);
+    if(rt.effort){
+        // Effort servos work in user engineering units. The plant remains
+        // dynamic: this applies F/T, never a hidden velocity prescription.
+        const double error=target.first-fb,dt=rt.hasSample?t-rt.lastTime:0;
+        const double kp=rt.definition.value("kp").toDouble(1),ki=rt.definition.value("ki").toDouble(),kd=rt.definition.value("kd").toDouble();
+        const double derivative=dt>1e-12?-kd*(fb-rt.lastFeedback)/dt:0;
+        const double limit=rt.definition.value("outputLimit").toDouble();
+        const double sign=rt.definition.value("feedbackSign").toDouble(1);
+        const auto command=[&](double integral){return kp*error+ki*integral+derivative;};
+        const auto controllerLimit=[&](double value){return limit>0?std::clamp(value,-limit,limit):value;};
+        const double candidate=rt.integral+error*dt;
+        double raw=command(candidate);
+        double requested=controllerLimit(raw)*sign;
+        double applied=limitNativeEffort(*rt.effort,requested);
+        // Conditional integration covers both the controller's output bound
+        // and the physical motor effort/power/torque-speed saturation.
+        if(std::abs(applied-raw*sign)>1e-12&&error*raw>0){
+            raw=command(rt.integral);requested=controllerLimit(raw)*sign;
+            applied=limitNativeEffort(*rt.effort,requested);
+        }else rt.integral=candidate;
+        if(!std::isfinite(raw)||!std::isfinite(applied))throw std::runtime_error("力/力矩 PID 输出为非有限值。");
+        rt.setpoint->SetSetpointAndDerivatives(requested,0,0);
+        rt.lastFeedback=fb;rt.lastTime=t;rt.hasSample=true;
+        rt.history.push_back({t,target.first,fb,error,applied});
+        return;
+    }
     const auto variable=rt.sensor.value("variable").toString();
     const bool angular=!rt.sensor.isEmpty()&&(rt.sensor.value("sensorType").toString()=="Angle"||variable=="Rotation"||variable=="AngularVelocity"||variable=="AngularAcceleration");
     const double scale=angular?.017453292519943295:1;
@@ -107,7 +135,9 @@ void NativeMotionSystem::configureControllers(const NativeMotionInput& input)
         NativePidRuntime rt;rt.id=o.value("id").toInt();rt.driveId=o.value("targetDriveId").toInt(-1);rt.definition=o;
         if(!controlled.insert(rt.driveId).second)throw std::runtime_error("两个启用的 PID 控制器不能接管同一驱动。");
         const auto drive=input.document.entity("drives",rt.driveId);
-        if(drive.isEmpty()||drive.value("controlMode").toString()!="Velocity")throw std::runtime_error("PID 控制器需要有效的速度控制驱动。");
+        const auto mode=drive.value("controlMode").toString();
+        if(drive.isEmpty()||(mode!="Velocity"&&mode!="Force"&&mode!="Torque"))throw std::runtime_error("PID 控制器需要速度驱动或真实的力/力矩执行器。");
+        const auto effort=effortMotors.find(rt.driveId);if(effort!=effortMotors.end())rt.effort=effort->second;
         // Joint and drive IDs occupy different source collections and can be
         // numerically equal. SearchLink alone returns the first passive joint.
         for(const auto& link:Get_linklist()){
@@ -125,8 +155,25 @@ void NativeMotionSystem::configureControllers(const NativeMotionInput& input)
             if(rt.sensor.isEmpty()||!rt.sensor.value("enabled").toBool(true))throw std::runtime_error("PID 反馈传感器不存在或未启用。");
             const auto type=rt.sensor.value("sensorType").toString();
             if(type=="JointReaction"||type=="DriveActuation")throw std::runtime_error("原 PID 控制线程只支持体、距离和角度传感器反馈；反力反馈尚无步内采样接口。");
+            if(type!="Distance"&&type!="Angle"&&rt.sensor.value("componentMode").toString()=="All")
+                throw std::runtime_error("PID 反馈需要标量，请明确选择 X/Y/Z 或模长，不能使用全部分量。");
         }
-        rt.setpoint=std::make_shared<motion::MotionFunction_Setpoint>();rt.motor->SetMotorFunction(rt.setpoint);
+        const bool angular=drive.value("motionType").toString()=="Rotation";
+        const bool speed=o.value("feedbackType").toString()=="Velocity";
+        rt.outputUnit=rt.effort?(angular?QStringLiteral("N·mm"):QStringLiteral("N")):(angular?QStringLiteral("rad/s"):QStringLiteral("mm/s"));
+        if(rt.sensor.isEmpty())rt.feedbackUnit=angular?(rt.effort?QStringLiteral("°"):QStringLiteral("rad")):QStringLiteral("mm");
+        if(rt.sensor.isEmpty()&&speed)rt.feedbackUnit+="/s";
+        if(!rt.sensor.isEmpty()){
+            const auto type=rt.sensor.value("sensorType").toString(),variable=rt.sensor.value("variable").toString();
+            const bool angularSensor=type=="Angle"||variable=="Rotation"||variable.startsWith("Angular");
+            rt.feedbackUnit=angularSensor?QStringLiteral("°"):QStringLiteral("mm");
+            if(type!="Angle"){
+                if(variable.contains("Acceleration"))rt.feedbackUnit+=QStringLiteral("/s²");
+                else if(variable.contains("Velocity"))rt.feedbackUnit+=QStringLiteral("/s");
+            }
+        }
+        rt.setpoint=std::make_shared<motion::MotionFunction_Setpoint>();
+        if(rt.effort)rt.effort->command=rt.setpoint;else rt.motor->SetMotorFunction(rt.setpoint);
         update(rt,*this,GetMotionTime());controllers.push_back(std::move(rt));
     }
 }

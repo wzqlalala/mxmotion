@@ -30,6 +30,7 @@ struct MotionSymbol {
 QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,
     const NativeMotionDocument& document,
     const std::map<int, QMatrix4x4>& partPoses = {},
-    const QString& selectedCollection = {}, int selectedId = -1);
+    const QString& selectedCollection = {}, int selectedId = -1,
+    const std::map<int, QMatrix4x4>& bodyPoses = {});
 
 } // namespace MotionOcc

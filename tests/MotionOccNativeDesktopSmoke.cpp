@@ -512,6 +512,182 @@ void originalPickerAndMassWorkflow(const QDir& output,const QString& cadPath,con
     log("Automatic mass: actual 2400 mm3 solid -> 0.01884 kg steel / 0.00648 kg at 2.7e-6 density, global COM, invalid selection rejection and explicit custom mass fallback persisted");
 }
 
+void typedPanelWorkflow(const QDir& output, const QString& cadPath, const QString& motionPath,
+                        const std::function<void(const QString&)>& log)
+{
+    NativeMotionDocument source; QString error;
+    require(readNativeMotionDocument(motionPath,source,error),error);
+    auto data = source.root.value("motionData").toObject();
+    auto drives = data.value("drives").toArray(); auto drive = drives[0].toObject();
+    drive.insert("controlMode","Torque"); drive.insert("effortLimit",10.0);
+    drive.insert("vendorExtension",QJsonObject{{"calibration",17},{"tags",QJsonArray{"original","keep"}}});
+    drives[0] = drive; data.insert("drives",drives);
+    data.insert("sensors",QJsonArray{
+        QJsonObject{{"id",101},{"name","body position"},{"sensorType","BodyDisplacement"},{"targetBodyId",0},
+            {"referencePoint",xyz(15,5,4)},{"variable","Position"},{"componentMode","Z"},{"enabled",true},
+            {"coordSystem","GlobalFixed"},{"vendorExtension",QJsonObject{{"note","retain measurement metadata"}}}},
+        QJsonObject{{"id",102},{"name","reaction output"},{"sensorType","JointReaction"},{"targetJointId",23},
+            {"variable","ReactionForce"},{"componentMode","Z"},{"enabled",true}},
+        QJsonObject{{"id",103},{"name","actual motor angle"},{"sensorType","DriveActuation"},{"targetDriveId",9},
+            {"variable","Coordinate"},{"componentMode","Z"},{"enabled",true}},
+        QJsonObject{{"id",104},{"name","legacy angle variable"},{"sensorType","Angle"},
+            {"bodyAId",0},{"bodyBId",37},{"axisBodyId",-1},{"axisDirection",xyz(0,0,1)},
+            {"variable","AngularVelocity"},{"enabled",true}}});
+    data.insert("controlInputs",QJsonArray{QJsonObject{{"id",7},{"name","target trajectory"},{"inputType","CustomCurve"},
+        {"curvePoints",QJsonArray{QJsonArray{0,0},QJsonArray{1,45}}}}});
+    data.insert("controllers",QJsonArray{QJsonObject{{"id",3},{"name","effort servo"},{"controllerType","PID"},
+        {"targetDriveId",9},{"targetInputId",-1},{"feedbackSource","DriveDof"},{"feedbackType","Position"},
+        {"feedbackSensorId",101},{"targetValue",0.0},{"kp",1.0},{"ki",0.0},{"kd",0.0},{"outputLimit",0.0},{"enabled",true},
+        {"vendorExtension",QJsonObject{{"tuningRevision",3}}}}});
+    auto scenarios = data.value("scenarios").toArray(); auto scenario = scenarios[0].toObject();
+    scenario.insert("vendorExtension",QJsonObject{{"study","keep original"}}); scenarios[0]=scenario; data.insert("scenarios",scenarios);
+    source.root.insert("motionData",data);
+    const auto fixture = output.filePath("typed-panels.motion.json");
+    require(writeNativeMotionDocument(fixture,source,error),error);
+    MotionWindow window; show(window);
+    require(window.importCad(cadPath) && window.importMotionJson(fixture,false),"Typed panel STEP/JSON import failed");
+    auto* tree = widget<QTreeWidget>(window,"mTreeView");
+    const auto select = [&](const QString& collection,int id) {
+        auto* item = node(*tree, collection=="scenarios" ? ModelNode::Scenario : ModelNode::Native,id,
+            collection=="scenarios" ? QString{} : collection);
+        require(item,"Typed panel model item missing: "+collection);
+        // Applying an edit closes its form while retaining the tree selection.
+        // Re-enter through the existing selection-change path when revisiting
+        // that same entity; setCurrentItem(sameItem) emits no Qt signal.
+        if (tree->currentItem() == item) tree->setCurrentItem(nullptr);
+        tree->setCurrentItem(item); QApplication::processEvents();
+        return widget<QWidget>(window,"nativeEditor_"+collection);
+    };
+    const auto option = [](QWidget& editor,const QString& key,const QString& value) {
+        auto* combo = widget<QComboBox>(editor,"native_"+key); const int index=combo->findData(value);
+        require(index>=0,"Typed choice missing: "+key+"="+value); combo->setCurrentIndex(index);
+    };
+    const auto apply = [&](QWidget* editor) {
+        QPointer<QWidget> previous=editor; widget<QPushButton>(*editor,"motionApplyButton")->click();
+        require(waitFor([&]{return previous.isNull();}),"Typed editor did not commit: "+error);
+    };
+    auto* editor=select("scenarios",0);
+    for (const auto& group:{"nativeScenarioAnalysis","nativeScenarioTime","nativeScenarioEnvironment","nativeScenarioPreset","nativeScenarioAdvanced"})
+        require(widget<QGroupBox>(*editor,group),"Specialised scenario group missing");
+    require(widget<QLabel>(*editor,"nativeScenarioFrameCount")->text().contains("101"),"Initial frame was omitted from expected frame count");
+    number(*editor,"endTime",.105); number(*editor,"stepSize",.01);
+    require(widget<QLabel>(*editor,"nativeScenarioFrameCount")->text().contains("12"),"Partial final step missing from frame estimate");
+    option(*editor,"analysisType","Static");
+    require(!widget<QGroupBox>(*editor,"nativeScenarioStatic")->isHidden()
+        && !widget<QLineEdit>(*editor,"native_endTime")->isEnabled()
+        && widget<QLabel>(*editor,"nativeScenarioFrameCount")->text().contains(QStringLiteral("1 帧"))
+        && widget<QLabel>(*editor,"nativeTypedIssue")->text().contains("PID"),"Static scenario controls do not reflect one equilibrium frame / incompatible active PID");
+    option(*editor,"analysisType","PreloadedDynamics");
+    widget<QCheckBox>(*editor,"native_usePreset")->setChecked(true); option(*editor,"presetMode","FAST");
+    require(!widget<QComboBox>(*editor,"native_solverType")->isEnabled()
+        && !widget<QLineEdit>(*editor,"native_integratorTol")->isEnabled()
+        && widget<QLabel>(*editor,"nativeScenarioEffectiveSettings")->text().contains("PSOR"),"Preset shadowed parameters look editable or actual rule missing");
+    option(*editor,"presetMode","ROBUST");
+    require(!widget<QLineEdit>(*editor,"native_solverTolerance")->isEnabled()
+        && widget<QLabel>(*editor,"nativeScenarioEffectiveSettings")->text().contains("HHT"),"ROBUST active settings were not exposed");
+    widget<QCheckBox>(*editor,"native_usePreset")->setChecked(false); option(*editor,"integratorType","HHT");
+    require(widget<QComboBox>(*editor,"native_solverType")->isEnabled()
+        && widget<QLineEdit>(*editor,"native_integratorAlpha")->isEnabled(),"Custom HHT controls do not enable meaningful parameters");
+    require(waitFor([&] {
+        auto* help=widget<QLabel>(*editor,"nativeScenarioAnalysisHelp");
+        auto* environment=widget<QGroupBox>(*editor,"nativeScenarioEnvironment");
+        auto* equilibrium=widget<QGroupBox>(*editor,"nativeScenarioStatic");
+        auto* reverse=widget<QPushButton>(*editor,"native_reverse_gravity");
+        const int reverseBottom=reverse->mapTo(environment,QPoint(0,reverse->height())).y();
+        return help->height()>=help->heightForWidth(help->width())
+            && reverseBottom<environment->height()
+            && environment->geometry().bottom()<equilibrium->geometry().top();
+    }),"Narrow scenario dock clips wrapped help or overlaps the gravity controls with the static section");
+    require(window.grab().save(output.filePath("native-scenario-panel.png")),"Cannot capture scenario panel"); apply(editor);
+
+    editor=select("sensors",101);
+    require(widget<QComboBox>(*editor,"native_sensorType")->isEnabled(),"Sensor type is not editable");
+    requireVector(*editor,"referencePoint",{30,5,4});
+    option(*editor,"sensorType","Distance"); option(*editor,"variable","RelVelocity");
+    require(widget<QGroupBox>(*editor,"nativeSensorBody")->isHidden()
+        && !widget<QGroupBox>(*editor,"nativeSensorDistance")->isHidden()
+        && widget<QGroupBox>(*editor,"nativeSensorCoordinates")->isHidden()
+        && widget<QLabel>(*editor,"nativeSensorQuantity")->text().contains("mm/s"),"Distance sensor did not switch targets/variables/units");
+    option(*editor,"sensorType","Angle");
+    require(!widget<QGroupBox>(*editor,"nativeSensorAngle")->isHidden()
+        && widget<QLabel>(*editor,"nativeSensorQuantity")->text().contains(QStringLiteral("°")),"Angle sensor does not show actual reference-axis contract");
+    option(*editor,"sensorType","BodyVelocity");
+    require(widget<QComboBox>(*editor,"native_variable")->findData("Position")<0,"Velocity sensor exposes incompatible displacement choice");
+    option(*editor,"variable","AngularVelocity");
+    require(widget<QLabel>(*editor,"nativeSensorQuantity")->text().contains(QStringLiteral("°/s")),"Angular velocity unit missing");
+    option(*editor,"sensorType","BodyDisplacement");
+    require(widget<QComboBox>(*editor,"native_variable")->currentData().toString()=="Position","Returning to sensor type lost its previous selection");
+    requireVector(*editor,"referencePoint",{30,5,4});
+    require(window.grab().save(output.filePath("native-sensor-panel.png")),"Cannot capture sensor panel"); apply(editor);
+
+    editor=select("sensors",103);
+    auto* variables=widget<QComboBox>(*editor,"native_variable");
+    require(variables->findData("Coordinate")>=0 && variables->findData("Rate")>=0 && variables->findData("ImposedValue")<0,
+        "Effort actuator sensor confused imposed motion with measured motion");
+    option(*editor,"variable","Rate");
+    require(widget<QLabel>(*editor,"nativeSensorQuantity")->text().contains(QStringLiteral("°/s")),"Actual angular rate sensor unit incorrect"); apply(editor);
+
+    editor=select("controllers",3);
+    require(widget<QLabel>(*editor,"nativePidUnits")->text().contains(QStringLiteral("N·mm"))
+        && widget<QLabel>(*editor,"nativePidUnits")->text().contains(QStringLiteral("°")),"Effort PID units are not user degree / physical torque");
+    option(*editor,"feedbackSource","Sensor"); choose(*editor,"feedbackSensorId",102);
+    require(widget<QLabel>(*editor,"nativeTypedIssue")->text().contains(QStringLiteral("反力")),"Unsupported reaction feedback has no configuration-time explanation");
+    widget<QPushButton>(*editor,"motionApplyButton")->click();
+    require(editor->isVisible(),"Unsupported feedback configuration was committed");
+    choose(*editor,"feedbackSensorId",104);
+    require(widget<QLabel>(*editor,"nativeTypedIssue")->text().isEmpty()
+        && widget<QLabel>(*editor,"nativePidUnits")->text().contains(QStringLiteral("目标与反馈：°；")),
+        "Legacy Angle variable incorrectly blocks angle feedback or changes its unit");
+    choose(*editor,"feedbackSensorId",101);
+    require(widget<QLabel>(*editor,"nativeTypedIssue")->text().isEmpty(),"Valid kinematic feedback remains rejected");
+    option(*editor,"targetSource","Input"); choose(*editor,"targetInputId",7);
+    require(!widget<QLineEdit>(*editor,"native_targetValue")->isEnabled()
+        && widget<QComboBox>(*editor,"native_targetInputId")->isEnabled(),"Trajectory target left constant field active");
+    require(window.grab().save(output.filePath("native-pid-panel.png")),"Cannot capture PID panel"); apply(editor);
+    editor=select("controllers",3); option(*editor,"targetSource","Constant"); option(*editor,"feedbackSource","DriveDof");
+    number(*editor,"targetValue",45); number(*editor,"outputLimit",5); apply(editor);
+
+    editor=select("sensors",104);
+    require(widget<QComboBox>(*editor,"native_variable")->currentData().toString()=="Angle"
+        && widget<QLabel>(*editor,"nativeSensorQuantity")->text().contains(QStringLiteral("单位 °"))
+        && widget<QLabel>(*editor,"nativeTypedIssue")->text().isEmpty(),
+        "Legacy Angle sensor did not canonicalise the ignored variable to actual angle");
+    apply(editor);
+
+    editor=select("drives",9);
+    require(!widget<QGroupBox>(*editor,"nativeDriveLimits")->isHidden()
+        && widget<QLabel>(*editor,"nativeDriveCommandUnits")->text().contains(QStringLiteral("N·mm")),"Effort actuator limits or units missing");
+    option(*editor,"controlMode","Force");
+    require(!widget<QLabel>(*editor,"nativeTypedIssue")->text().isEmpty(),"Rotational Force mismatch not diagnosed");
+    widget<QPushButton>(*editor,"motionApplyButton")->click(); require(editor->isVisible(),"Force/rotation mismatch saved");
+    option(*editor,"controlMode","Torque"); number(*editor,"effortLimit",12); number(*editor,"powerLimit",20); number(*editor,"noLoadSpeed",300); apply(editor);
+    const auto project=output.filePath("native-typed-panels.mxmotion"); saveThroughUi(window,project);
+    CadDocument storedCad; RigidModel model; require(loadRigidProject(project,storedCad,model,error) && model.nativeDocument,error);
+    const auto& saved=*model.nativeDocument;
+    require(saved.entity("sensors",104).value("variable").toString()=="Angle",
+        "Legacy Angle variable was not canonicalised when saving the sensor");
+    require(saved.entity("scenarios",0).value("analysisType").toString()=="PreloadedDynamics"
+        && saved.entity("scenarios",0).value("vendorExtension")==scenario.value("vendorExtension"),"Scenario edit lost new mode or original extension");
+    require(saved.entity("sensors",101).value("referencePoint").toObject()==xyz(15,5,4)
+        && saved.entity("sensors",101).value("vendorExtension")==data.value("sensors").toArray()[0].toObject().value("vendorExtension"),
+        "Sensor switching changed COM-local reference or extension metadata");
+    require(saved.entity("controllers",3).value("targetInputId").toInt()!=7
+        && saved.entity("controllers",3).value("targetInputId").toInt()==-1
+        && saved.entity("controllers",3).value("targetValue").toDouble()==45
+        && saved.entity("controllers",3).value("outputLimit").toDouble()==5
+        && saved.entity("controllers",3).value("vendorExtension")==data.value("controllers").toArray()[0].toObject().value("vendorExtension"),
+        "PID target-source switch did not persist exactly or lost extensions");
+    require(saved.entity("drives",9).value("effortLimit").toDouble()==12
+        && saved.entity("drives",9).value("powerLimit").toDouble()==20
+        && saved.entity("drives",9).value("noLoadSpeed").toDouble()==300
+        && saved.entity("drives",9).value("vendorExtension")==drive.value("vendorExtension"),"Actuator limits or original metadata lost on save");
+    MotionWindow reopened; show(reopened); require(reopened.openRigidProject(project),"Typed panel project did not reopen");
+    auto* reopenedTree=widget<QTreeWidget>(reopened,"mTreeView"); reopenedTree->setCurrentItem(node(*reopenedTree,ModelNode::Scenario,0));
+    require(widget<QComboBox>(*widget<QWidget>(reopened,"nativeEditor_scenarios"),"native_analysisType")->currentData().toString()=="PreloadedDynamics",
+        "Preloaded scenario did not restore its specialised controls");
+    log("Typed panels: actual Scenario grouped controls, exact initial/final frame counts, preset/custom active settings, static/preload modes; sensor type/variable/target/unit switching; scalar PID feedback rejection, trajectory/constant targets, physical torque units and limits; original extensions and COM-local point preserved through save/reopen");
+}
+
 void loadExportWorkflow(MotionWindow& window,QTreeWidget& tree,const QDir& output,
                         const std::function<void(const QString&)>& log)
 {
@@ -653,6 +829,16 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
         && stored.entity("materials",42).value("youngModulus").toDouble()==100.0,
         "AutoFlex material edits were not written back to the referenced material object");
     auto* meshPanel=widget<QWidget>(window,"nativeEditor_autoFlexBodies");
+    require(widget<QPushButton>(*meshPanel,"nativeInspectModes")->isEnabled(),"Saved AutoFlex has no modal inspection entry");
+    auto* interfaceMode=widget<QComboBox>(*meshPanel,"native_interfaceMode");
+    require(interfaceMode->currentData().toString()=="SharedBody" && interfaceMode->findData("Independent")>=0,
+        "AutoFlex lost compatible shared-body mode or genuine independent-interface choice");
+    interfaceMode->setCurrentIndex(interfaceMode->findData("Independent"));
+    require(!widget<QPushButton>(*meshPanel,"nativeFlexInterfaceGroups")->isHidden()
+        && widget<QLineEdit>(*meshPanel,"native_modeCount")->isEnabled()
+        && widget<QLabel>(*meshPanel,"nativeFlexInterfaceInfo")->text().contains(QStringLiteral("全有限元")),
+        "Independent mode does not expose grouping or labels reduced/full-order semantics incorrectly");
+    interfaceMode->setCurrentIndex(interfaceMode->findData("SharedBody"));
     auto* meshStatus=widget<QLabel>(*meshPanel,"nativeFlexMeshStatus");
     auto* meshScroll=widget<QScrollArea>(window,"nativeParameterScroll");
     for(const auto& field:std::vector<std::pair<QWidget*,QString>>{
@@ -974,6 +1160,7 @@ int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory
     try {
         QString cadPath, motionPath;
         makeFixture(output.absolutePath(), cadPath, motionPath);
+        typedPanelWorkflow(output,cadPath,motionPath,log);
         originalPickerAndMassWorkflow(output,cadPath,motionPath,log);
         MotionWindow window;
         show(window);

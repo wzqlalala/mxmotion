@@ -6,6 +6,7 @@
 #include "RigidPlayback.h"
 #include "NativeMotionPresentation.h"
 #include "NativeMotionSymbols.h"
+#include "NativeModeInspector.h"
 #include "ThemeManager.h"
 #include "mFoldSection.h"
 #include "mUiMenu.h"
@@ -232,6 +233,14 @@ void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
     m_flexRange = new QComboBox(controls); m_flexRange->setObjectName("motionFlexRange");
     m_flexRange->addItem(tr("当前帧自适应"),0); m_flexRange->addItem(tr("整个时程统一范围"),1);
     flexDisplay->addRow(tr("显示量"),m_flexContour); flexDisplay->addRow(tr("色标范围"),m_flexRange);
+    m_modeInspectButton=new QPushButton(tr("检查真实模态…"));m_modeInspectButton->setObjectName("motionInspectModes");
+    flexDisplay->addRow(m_modeInspectButton);
+    connect(m_modeInspectButton,&QPushButton::clicked,this,[this]{
+        const auto run=m_results.find(m_resultScenario);
+        if(run==m_results.end() || !run->second->input.nativeInput)return;
+        setPlayback(false);
+        openNativeModeInspector(this,m_document,run->second->input.nativeInput->document,run->second->result.flexBodies);
+    });
     layout->addWidget(flexDisplay);
     connect(m_flexContour,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int) { seekRigidTime(m_playbackTime); });
     connect(m_flexRange,qOverload<int>(&QComboBox::currentIndexChanged),this,[this](int) { seekRigidTime(m_playbackTime); });
@@ -747,6 +756,14 @@ void MotionWindow::pollRigidSolve()
     m_rigidPoll->stop();
     m_progress->hide();
     m_progress->setRange(0, 0);
+    if(run->inspectionFlexId>=0){
+        if(run->status==SolveStatus::Completed && !run->result.flexBodies.empty()){
+            const auto& basis=run->result.flexBodies.front().modalBasis;
+            setNotice(tr("真实模态检查完成：请求 %1 阶，保留 %2 阶。").arg(basis.requestedCount).arg(basis.frequenciesHz.size()));
+            openNativeModeInspector(this,m_document,run->input.nativeInput->document,run->result.flexBodies);
+        }else setNotice(run->status==SolveStatus::Stopped?tr("已停止模态检查。"):tr("模态检查失败：%1").arg(run->error),run->status!=SolveStatus::Stopped);
+        updateParameters();updateActions();return;
+    }
     if (run->status == SolveStatus::Completed && !run->result.frames.empty()) {
         const int id = run->result.scenarioId;
         // Replacing this result must release the plot's pointers first. A solve
@@ -758,7 +775,9 @@ void MotionWindow::pollRigidSolve()
         m_results[id] = run;
         m_selectionNode = {ModelNode::Scenario, id};
         updateTree();
-        const auto message = run->result.termination != ResultTermination::EndTime
+        const auto message = run->result.termination == ResultTermination::StaticEquilibrium
+            ? tr("MotionEngine 静力平衡完成。已保存平衡构型与载荷，可打开动画查看变形或导出结果。")
+            : run->result.termination != ResultTermination::EndTime
             ? (run->result.termination == ResultTermination::FlexDivergence
                 ? tr("MotionEngine 因柔性体模态发散终止：已保留 %1 帧 / %2 s 的有效结果。")
                 : tr("MotionEngine 因几何边界终止：已保留 %1 帧 / %2 s 的有效结果。"))
@@ -844,7 +863,7 @@ void MotionWindow::seekRigidTime(double seconds)
         }
     }
     m_viewport->setPartPoses(sample.partPoses);
-    if (run.input.nativeInput) m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,run.input.nativeInput->document,sample.partPoses));
+    if (run.input.nativeInput) m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,run.input.nativeInput->document,sample.partPoses,{},-1,sample.bodyPoses));
     m_viewport->setDeformedMeshes(sample.flexMeshes, sample.flexHiddenParts);
     if (m_flexContour->currentData().toInt()>=0 && !run.result.flexBodies.empty()) {
         const auto kind=FlexContourKind(m_flexContour->currentData().toInt());
@@ -948,6 +967,8 @@ void MotionWindow::updatePlaybackControls()
     m_loopPlayback->setEnabled(multiple);
     m_followCurveMarker->setEnabled(available);
     m_clickCurveJump->setEnabled(available);
+    if(m_modeInspectButton)m_modeInspectButton->setEnabled(available && !it->second->result.flexBodies.empty()
+        && std::any_of(it->second->result.flexBodies.begin(),it->second->result.flexBodies.end(),[](const auto& flex){return !flex.modalBasis.frequenciesHz.empty();}));
 }
 
 void MotionWindow::saveProject(bool choosePath)

@@ -119,11 +119,15 @@ double modelScale(const CadDocument& cad)
 }
 
 QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMotionDocument& document,
-    const std::map<int,QMatrix4x4>& partPoses,const QString& selectedCollection,int selectedId)
+    const std::map<int,QMatrix4x4>& partPoses,const QString& selectedCollection,int selectedId,
+    const std::map<int,QMatrix4x4>& explicitBodyPoses)
 {
     QVector<MotionSymbol> output;
     const double scale=modelScale(cad);
-    std::map<int,QMatrix4x4> bodyPoses;
+    // Independent flexible ports are real bodies with no separate CAD part.
+    // A flexible part's rigid pose is also removed when its nodal mesh is
+    // rendered. Use actual body transforms for their glyphs in both cases.
+    std::map<int,QMatrix4x4> bodyPoses=explicitBodyPoses;
     for(auto it=document.bodyPartBindings.begin();it!=document.bodyPartBindings.end();++it)
         for(int part:it.value()) {const auto pose=partPoses.find(part);if(pose!=partPoses.end()){bodyPoses.emplace(it.key(),pose->second);break;}}
     const auto transform=[&](int body,const Point& value,bool direction=false){

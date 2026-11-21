@@ -1,6 +1,8 @@
 # 原运动数据工作流与验证
 
-本次恢复以 `GUI/src/MainWindow/mMotionSolverThread.cpp` 中实际接入 MotionEngine 的功能为基准。OCC 构建沿用原 Qt Widgets、Ribbon、模型树和停靠窗口，在这些已有入口接入完整模型；引擎锁定 `fff3dd3b5caf37a6d01e5ea5c9f89d7be5eafed4`，同时构建核心和 Modal。
+本次恢复以 `GUI/src/MainWindow/mMotionSolverThread.cpp` 中实际接入 MotionEngine 的功能为基准。OCC 构建沿用原 Qt Widgets、Ribbon、模型树和停靠窗口，在这些已有入口接入完整模型；引擎使用仓库 gitlink 锁定的版本，同时构建核心和 Modal。
+
+新增的真实模态检查、独立多接口全有限元、静力预载、受限执行器及三个专用面板见[分析工作流](native-analysis-workflow.md)。以下自动柔性体的模态坐标描述对应默认的共用参考体缩减模式；独立接口模式直接记录实际有限元节点，不输出虚构的模态坐标。
 
 可公开复测的自动测试与自生成窗口验证见 [回归记录](native-motion-verification.md)。
 

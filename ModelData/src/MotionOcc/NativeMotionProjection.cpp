@@ -128,6 +128,10 @@ void validateNativeAcceptedConstraints(const NativeMotionSystem& system)
     // joints happen to close after a least-squares solve.
     for(const auto& item:system.nativeMotors){
         const auto residual=item.second->GetConstraintViolation();
+        if(system.effortMotors.count(item.first)){
+            if(residual.size()!=0)throw std::runtime_error("力/力矩执行器意外增加了运动约束，已中止以避免伪伺服。");
+            continue;
+        }
         if(residual.size()!=1)throw std::runtime_error("驱动的约束维度与原生适配约定不一致。");
         const bool angular=bool(std::dynamic_pointer_cast<motion::MotionLinkMotorRotation>(item.second));
         const double error=angular?2*std::asin(std::clamp(std::abs(residual[0]),0.0,1.0))*radToDeg:std::abs(residual[0]);

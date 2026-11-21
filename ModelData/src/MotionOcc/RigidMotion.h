@@ -134,6 +134,20 @@ struct ResultChannel {
     std::vector<double> values; // Frame-major, components values per result frame.
 };
 
+// A real eigensolution, separate from time-history/modal-coordinate data. The
+// visualization may normalize a column, but the stored solver basis is never
+// rescaled. A fixed-interface basis is not the assembled mechanism's modes.
+struct FlexModalBasis {
+    int requestedCount = 0;
+    QString kind; // "FixedInterface" or "FreeBody", with explicit GUI labels.
+    double cutoffHz = 0;
+    std::vector<double> frequenciesHz;
+    std::vector<double> shapes; // Row-major 3N x frequenciesHz.size().
+    std::vector<std::vector<int>> attachmentGroups; // Zero-based mesh indices.
+    std::vector<int> interfaceBodyIds;
+    QStringList diagnostics;
+};
+
 struct RigidFlexResult {
     int flexId = 0;
     int bodyId = 0;
@@ -150,7 +164,23 @@ struct RigidFlexResult {
     std::vector<double> initialInterfacePoses;
     std::vector<std::vector<double>> interfacePoses;
     std::vector<std::vector<double>> modalCoordinates;
+    bool reducedDynamics = true; // false: real co-rotational tetra4 dynamics.
+    FlexModalBasis modalBasis;
 };
+
+struct FlexModeSample {
+    std::vector<double> positions; // Preview only, reference + normalized shape.
+    std::vector<double> magnitudes; // Dimensionless, maximum unphased norm = 1.
+    double frequencyHz = 0;
+    double rawMaximum = 0; // Original eigenvector maximum norm, before preview scaling.
+};
+
+bool validateFlexModes(const RigidFlexResult& result, QString& error);
+// amplitudeMm is the maximum displayed displacement at phase=1, not a solved
+// physical amplitude. phase is signed [-1,1], shared by coordinates and colors.
+bool sampleFlexMode(const RigidFlexResult& result, int mode, double amplitudeMm,
+                    double phase, FlexModeSample& sample, QString& error);
+bool exportFlexModesCsv(const QString& path, const RigidFlexResult& result, QString& error);
 
 // The legacy free-mode option is a mass-weighted cosine projection used by the
 // original UI; it is not an exact free-free eigensolution or an NX/MNF result.
@@ -162,7 +192,7 @@ bool flexNodeScalars(const RigidFlexResult& result, std::size_t frame, FlexConto
 bool flexNodeScalarsAt(const RigidFlexResult& result, std::size_t left, std::size_t right,
                        double fraction, FlexContourKind kind, std::vector<double>& values, QString& error);
 
-enum class ResultTermination { EndTime, GeometryBoundary, FlexDivergence };
+enum class ResultTermination { EndTime, GeometryBoundary, FlexDivergence, StaticEquilibrium };
 
 struct RigidResult {
     int scenarioId = 0;
