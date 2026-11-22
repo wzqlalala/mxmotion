@@ -15,6 +15,8 @@ int runMotionOccDesktopSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccNativeDesktopSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccModalDesktopSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccRenderFeedbackSmoke(QApplication& app, const QString& outputDirectory);
 #endif
 
 int main(int argc, char* argv[])
@@ -67,6 +69,10 @@ int main(int argc, char* argv[])
     args.addOption(pickingSmoke);
     const QCommandLineOption modalSmoke(QStringLiteral("modal-desktop-smoke"),QStringLiteral("Run real modal inspector regression."),QStringLiteral("directory"));
     args.addOption(modalSmoke);
+    const QCommandLineOption navigationSmoke(QStringLiteral("navigation-smoke"),QStringLiteral("Run real viewport navigation regression."),QStringLiteral("directory"));
+    const QCommandLineOption renderFeedbackSmoke(QStringLiteral("render-feedback-smoke"),QStringLiteral("Run CAD selection depth regression."),QStringLiteral("directory"));
+    args.addOption(navigationSmoke);
+    args.addOption(renderFeedbackSmoke);
 #endif
     args.process(app);
 #ifdef MX_OCC_DESKTOP_SMOKE
@@ -74,6 +80,8 @@ int main(int argc, char* argv[])
     if (args.isSet(nativeSmoke)) return runMotionOccNativeDesktopSmoke(app, args.value(nativeSmoke));
     if (args.isSet(pickingSmoke)) return runMotionOccPickingSmoke(app, args.value(pickingSmoke));
     if (args.isSet(modalSmoke)) return runMotionOccModalDesktopSmoke(app,args.value(modalSmoke));
+    if (args.isSet(navigationSmoke)) return runMotionOccNavigationSmoke(app,args.value(navigationSmoke));
+    if (args.isSet(renderFeedbackSmoke)) return runMotionOccRenderFeedbackSmoke(app,args.value(renderFeedbackSmoke));
 #endif
 
     MotionOcc::MotionWindow window;

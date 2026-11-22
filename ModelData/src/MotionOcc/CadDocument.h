@@ -21,6 +21,10 @@ struct DisplayMesh {
     std::vector<QVector3D> vertices;
     std::vector<std::array<std::uint32_t, 3>> triangles;
     std::vector<std::array<std::uint32_t, 2>> edges;
+    // Display-only unit normals, aligned with vertices. CAD faces retain
+    // separate vertices at shared topological edges; line-only vertices use
+    // zero normals. Empty is valid for older/custom display snapshots.
+    std::vector<QVector3D> normals;
 };
 
 struct CadPart {

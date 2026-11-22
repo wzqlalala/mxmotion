@@ -289,6 +289,11 @@ QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent)
     viewMenu->addMenu(visibleTabs);
     viewMenu->addAction(window.command(Command::ManageLayout));
     viewMenu->addAction(window.command(Command::ResetLayout));
+    auto* navigationMenu = new mUiMenu(QStringLiteral("鼠标导航"), viewMenu);
+    navigationMenu->setObjectName(QStringLiteral("mouseNavigationMenu"));
+    navigationMenu->addAction(window.command(Command::NavigationClassic));
+    navigationMenu->addAction(window.command(Command::NavigationNx));
+    viewMenu->addMenu(navigationMenu);
     QList<RibbonPage*> pages;
     for (const auto& name : names) {
         auto* page = new RibbonPage(stack);

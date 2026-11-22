@@ -17,6 +17,7 @@ class QResizeEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QEvent;
+class QFocusEvent;
 
 namespace MotionOcc {
 
@@ -53,6 +54,8 @@ public:
 
     enum class DisplayMode { ShadedEdges, Shaded, Wireframe, Mesh };
     Q_ENUM(DisplayMode)
+    enum class MouseNavigationMode { Classic, Nx };
+    Q_ENUM(MouseNavigationMode)
 
     // Snapshot of visible geometry; does not fit, recenter or reset the view.
     // Retains poses for IDs still in the document, including hidden parts.
@@ -68,6 +71,10 @@ public:
     void clearPartPoses();
     void selectPart(int id);
     void setDisplayMode(DisplayMode mode);
+    // Navigation is view-only; changing it keeps the active typed-pick session.
+    void setMouseNavigationMode(MouseNavigationMode mode);
+    MouseNavigationMode mouseNavigationMode() const;
+    QString mouseNavigationHint() const;
     void setPickEnabled(bool enabled);
     void beginPick(PickKind kind, bool multiple = false,
                    const std::set<int>& allowedParts = {}, const QVector<PickResult>& initial = {});
@@ -103,8 +110,12 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
+    bool event(QEvent* event) override;
     void leaveEvent(QEvent* event) override;
 
 private:
@@ -117,10 +128,13 @@ private:
     bool uploadChangedMeshes();
     int pickPart(const QPointF& position) const;
     void drawAxes();
+    void drawCadPickFeedback();
     void drawPickOverlay();
     void drawScalarLegend();
     void drawMotionSymbols();
     void reportGraphicsError(const QString& message);
+    void interruptPointerOperation();
+    bool setRotationCenterAt(const QPointF& position);
 };
 
 } // namespace MotionOcc

@@ -53,6 +53,7 @@ enum class Command {
     New, Open, Save, SaveAs, Import, Export, Remove,
     Box, Cylinder, Sphere,
     Fit, Front, Top, Right, Isometric,
+    NavigationClassic, NavigationNx,
     ShadedEdges, Shaded, Wireframe, MeshDisplay,
     PickPart, ClearSelection, ShowAll, HideSelected, HideOthers, InvertVisibility,
     GenerateMesh, RemoveMesh, ExportMesh,

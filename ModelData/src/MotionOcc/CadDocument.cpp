@@ -6,6 +6,7 @@
 // This document keeps native OCCT topology and placed coordinates in millimetres.
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -54,6 +55,7 @@
 #include <XSControl_TransferReader.hxx>
 #include <XSControl_TransferWriter.hxx>
 #include <XSControl_WorkSession.hxx>
+#include <gp_Cylinder.hxx>
 
 #include <QBuffer>
 #include <QByteArray>
@@ -73,6 +75,7 @@
 #include <mutex>
 #include <new>
 #include <ostream>
+#include <optional>
 #include <streambuf>
 #include <utility>
 #include <set>
@@ -411,6 +414,15 @@ bool hasArea(const QVector3D& a, const QVector3D& b, const QVector3D& c)
     return uy * vz != uz * vy || uz * vx != ux * vz || ux * vy != uy * vx;
 }
 
+QVector3D unitDisplayNormal(const std::array<double, 3>& value)
+{
+    // Normalize in double precision: area vectors of small but valid faces
+    // must not trip QVector3D's fuzzy-null threshold or overflow a float sum.
+    const double length = std::hypot(value[0], value[1], value[2]);
+    if (!std::isfinite(length) || length <= 0.0) return {};
+    return QVector3D(float(value[0] / length), float(value[1] / length), float(value[2] / length));
+}
+
 void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& budget)
 {
     TopLoc_Location location;
@@ -424,6 +436,21 @@ void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& bu
     const bool reverse = (face.Orientation() == TopAbs_REVERSED) != transform.IsNegative();
     for (int i = 1; i <= mesh->NbNodes(); ++i)
         display.vertices.push_back(displayPoint(mesh->Node(i).Transformed(transform)));
+    display.normals.resize(display.vertices.size());
+
+    // Adapted from wzqlalala/Motion b636535a45895b193aa581afd4df10a9004c9b6e,
+    // src/ui/cad/CadMeshRenderer.cpp, Upload(): analytic cylinder normals and
+    // face-local, area-weighted normals for the other surfaces. This metadata
+    // changes lighting only; vertex/triangle order and OCCT topology stay intact.
+    std::vector<std::array<double, 3>> normalSums(std::size_t(mesh->NbNodes()));
+    std::optional<gp_Cylinder> cylinder;
+    try {
+        const BRepAdaptor_Surface surface(face);
+        if (surface.GetType() == GeomAbs_Cylinder) cylinder = surface.Cylinder();
+    } catch (const Standard_Failure&) {
+        // Analytic classification is optional for display. Keep the valid
+        // tessellation and use its oriented face-local normals on failure.
+    }
 
     const auto before = display.triangles.size();
     for (int i = 1; i <= mesh->NbTriangles(); ++i) {
@@ -436,11 +463,48 @@ void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& bu
         const std::uint32_t ia = offset + std::uint32_t(a - 1);
         const std::uint32_t ib = offset + std::uint32_t(b - 1);
         const std::uint32_t ic = offset + std::uint32_t(c - 1);
-        if (hasArea(display.vertices[ia], display.vertices[ib], display.vertices[ic]))
+        if (hasArea(display.vertices[ia], display.vertices[ib], display.vertices[ic])) {
             display.triangles.push_back({{ia, ib, ic}});
+            const gp_Pnt pa = mesh->Node(a).Transformed(transform);
+            const gp_Pnt pb = mesh->Node(b).Transformed(transform);
+            const gp_Pnt pc = mesh->Node(c).Transformed(transform);
+            const double ux = pb.X() - pa.X(), uy = pb.Y() - pa.Y(), uz = pb.Z() - pa.Z();
+            const double vx = pc.X() - pa.X(), vy = pc.Y() - pa.Y(), vz = pc.Z() - pa.Z();
+            const std::array<double, 3> area{{uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx}};
+            const QVector3D fallback = unitDisplayNormal(area);
+            for (int node : {a, b, c}) {
+                auto& sum = normalSums[std::size_t(node - 1)];
+                for (int axis = 0; axis < 3; ++axis) sum[axis] += area[axis];
+                auto& normal = display.normals[offset + std::uint32_t(node - 1)];
+                if (normal.isNull()) normal = fallback;
+            }
+        }
     }
     if (display.triangles.size() == before)
         fail(QStringLiteral("曲面的三角形在显示精度下全部退化。"));
+
+    for (int i = 1; i <= mesh->NbNodes(); ++i) {
+        const auto& sum = normalSums[std::size_t(i - 1)];
+        QVector3D normal = unitDisplayNormal(sum);
+        if (cylinder) {
+            // BRepAdaptor_Surface includes the face location. Compute radial
+            // directions from the same placed double coordinates as triangles,
+            // then orient them with the already-corrected triangle winding.
+            const gp_Pnt point = mesh->Node(i).Transformed(transform);
+            const gp_Pnt origin = cylinder->Location();
+            const gp_Dir axis = cylinder->Axis().Direction();
+            const std::array<double, 3> direction{{axis.X(), axis.Y(), axis.Z()}};
+            std::array<double, 3> radial{{point.X() - origin.X(), point.Y() - origin.Y(), point.Z() - origin.Z()}};
+            double axial = 0.0;
+            for (int k = 0; k < 3; ++k) axial += radial[k] * direction[k];
+            for (int k = 0; k < 3; ++k) radial[k] -= axial * direction[k];
+            const double orientation = radial[0] * sum[0] + radial[1] * sum[1] + radial[2] * sum[2];
+            if (orientation < 0.0) for (double& value : radial) value = -value;
+            const QVector3D analytic = unitDisplayNormal(radial);
+            if (!analytic.isNull() && orientation != 0.0) normal = analytic;
+        }
+        if (!normal.isNull()) display.normals[offset + std::uint32_t(i - 1)] = normal;
+    }
 }
 
 template <class PointAt>
@@ -557,6 +621,7 @@ DisplayMesh makeDisplay(const TopoDS_Shape& shape, DisplayBudget& budget, double
     }
     for (int i = 1; i <= edges.Extent(); ++i)
         appendEdge(TopoDS::Edge(edges(i)), deflection, display, budget);
+    display.normals.resize(display.vertices.size()); // Standalone edge vertices are unlit.
     if (display.triangles.empty() && display.edges.empty())
         fail(QStringLiteral("几何没有可显示的曲面或非退化线框。"));
     return display;

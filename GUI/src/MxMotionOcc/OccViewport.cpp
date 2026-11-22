@@ -5,6 +5,7 @@
 #include "render/OccRenderShaders.h"
 
 #include <QApplication>
+#include <QFocusEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QOpenGLContext>
@@ -40,7 +41,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -390,6 +393,28 @@ struct Camera {
         return 2.0 * span / std::max(1, std::min(size.width(), size.height()));
     }
 
+    void zoomAt(double logarithmicScale, const QPointF& position, const QSize& size)
+    {
+        if (!std::isfinite(logarithmicScale) || !std::isfinite(position.x()) || !std::isfinite(position.y())) return;
+        const double before = span;
+        span = std::clamp(before * std::exp(std::clamp(logarithmicScale, -50.0, 50.0)), minSpan, maxSpan);
+        const QPointF offset(position.x() - size.width()*0.5, size.height()*0.5 - position.y());
+        pan += offset * (mmPerPixel(size) * (1.0 - before/span));
+    }
+
+    void setPivot(const Vec& point)
+    {
+        const QVector3D next{float(point[0]), float(point[1]), float(point[2])};
+        if (!std::isfinite(next.x()) || !std::isfinite(next.y()) || !std::isfinite(next.z())) return;
+        const Vec delta = subtract(vec(next), vec(pivot));
+        QMatrix4x4 matrix; matrix.rotate(rotation);
+        // This camera stores world-to-eye rotation and a positive eye offset.
+        // Compensate with the actual stored pivot so the displayed scene cannot jump.
+        pan += QPointF(matrix(0,0)*delta[0] + matrix(0,1)*delta[1] + matrix(0,2)*delta[2],
+                       matrix(1,0)*delta[0] + matrix(1,1)*delta[1] + matrix(1,2)*delta[2]);
+        pivot = next;
+    }
+
     Frame frame(const QSize& size, const Bounds& bounds) const
     {
         const double scale = mmPerPixel(size) * 0.5;
@@ -509,6 +534,67 @@ struct Buffers {
 
 struct PartBuffers { Buffers cad, mesh; };
 
+using PickBufferKey = std::tuple<int, PickKind, int>;
+
+// Motion b636535: ScreenStrokeRenderer.h. Two depth-buffer quanta resolve
+// coplanar raster ties without pulling hidden CAD edges through front faces.
+float coplanarDepthBias(QOpenGLFunctions_3_3_Core& gl)
+{
+    GLint framebuffer = 0, type = GL_NONE, bits = 0;
+    gl.glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+    const GLenum attachment = framebuffer ? GL_DEPTH_ATTACHMENT : GL_DEPTH;
+    gl.glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, attachment,
+                                              GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+    if (type != GL_NONE)
+        gl.glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, attachment,
+                                                  GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
+    return bits > 0 ? float(4.0 / (std::ldexp(1.0, std::min(bits, 24)) - 1.0)) : 0.0f;
+}
+
+Geometry cadPickGeometry(const PickGeometry& source, const PickResult& pick)
+{
+    Geometry result;
+    const auto point = [&](const Vec& p) -> Index {
+        for (double v : p) if (!std::isfinite(v) || std::abs(v) > maxSpan) return invalidIndex;
+        if (result.vertices.size() >= invalidIndex) return invalidIndex;
+        const Index id = Index(result.vertices.size());
+        result.vertices.push_back({{float(p[0]), float(p[1]), float(p[2])}});
+        result.bounds.add(p);
+        return id;
+    };
+    const auto curve = [&](const PickCurve& edge) {
+        Index previous = invalidIndex;
+        for (const auto& p : edge.points) {
+            const Index next = point(p);
+            if (previous != invalidIndex && next != invalidIndex)
+                result.edges.insert(result.edges.end(), {previous, next});
+            previous = next;
+        }
+    };
+    if (pick.kind == PickKind::Edge && pick.index > 0 && pick.index <= int(source.curves.size())) {
+        curve(source.curves[pick.index - 1]);
+    } else if (pick.kind == PickKind::Face && pick.index > 0 && pick.index <= source.faces.Extent()) {
+        const auto face = TopoDS::Face(source.faces(pick.index));
+        TopLoc_Location location;
+        const auto mesh = BRep_Tool::Triangulation(face, location);
+        if (!mesh.IsNull()) {
+            std::vector<Index> indices(std::size_t(mesh->NbNodes()) + 1, invalidIndex);
+            for (int i = 1; i <= mesh->NbNodes(); ++i)
+                indices[std::size_t(i)] = point(vec(mesh->Node(i).Transformed(location.Transformation())));
+            for (int i = 1; i <= mesh->NbTriangles(); ++i) {
+                int a, b, c; mesh->Triangle(i).Get(a, b, c);
+                if (indices[a] != invalidIndex && indices[b] != invalidIndex && indices[c] != invalidIndex)
+                    result.triangles.insert(result.triangles.end(), {indices[a], indices[b], indices[c]});
+            }
+        }
+        for (TopExp_Explorer edge(face, TopAbs_EDGE); edge.More(); edge.Next()) {
+            const int index = source.edges.FindIndex(edge.Current());
+            if (index > 0) curve(source.curves[index - 1]);
+        }
+    }
+    return result;
+}
+
 void deleteBuffers(QOpenGLFunctions_3_3_Core& gl, const Buffers& b)
 {
     if (b.vao) gl.glDeleteVertexArrays(1, &b.vao);
@@ -592,17 +678,21 @@ struct OccViewport::State {
     QVector<MotionSymbol> symbols;
 
     Qt::MouseButton button = Qt::NoButton;
+    enum class Navigation { None, Select, Orbit, Pan, Zoom };
+    MouseNavigationMode navigationMode = MouseNavigationMode::Classic;
+    Navigation navigation = Navigation::None;
     bool dragging = false;
-    QPointF press, last, ballCenter;
+    QPointF press, last, ballCenter, zoomAnchor;
     QQuaternion pressRotation;
     QVector3D ballStart;
     double ballRadius = 1.0;
 
     QOpenGLFunctions_3_3_Core* gl = nullptr; // owned by the current widget context
     QMetaObject::Connection destruction;
-    std::unique_ptr<QOpenGLShaderProgram> backdrop, surface, edge;
+    std::unique_ptr<QOpenGLShaderProgram> backdrop, surface, edge, point;
     GLuint emptyVao = 0;
     std::vector<PartBuffers> buffers;
+    std::map<PickBufferKey, Buffers> pickBuffers;
     bool ready = false, sceneDirty = true, uploadFailed = false;
     QString lastError;
 
@@ -623,6 +713,28 @@ struct OccViewport::State {
         }
     }
 
+    void beginOrbit(const QPointF& position, const QSize& size)
+    {
+        const double unit = camera.mmPerPixel(size);
+        ballCenter = QPointF(size.width()*0.5 + camera.pan.x()/unit, size.height()*0.5 - camera.pan.y()/unit);
+        ballRadius = std::max(1.0, 0.5 * std::min(size.width(), size.height()));
+        ballStart = trackball(position, ballCenter, ballRadius);
+        pressRotation = camera.rotation;
+    }
+
+    // Adapted from Motion b636535 SceneViewport::UpdateNxNavigation.
+    // Re-anchor modifier transitions; the transition event itself never moves the view.
+    bool updateNxNavigation(Qt::KeyboardModifiers modifiers, const QPointF& position, const QSize& size)
+    {
+        const auto next = modifiers.testFlag(Qt::ControlModifier) ? Navigation::Zoom :
+                          modifiers.testFlag(Qt::ShiftModifier) ? Navigation::Pan : Navigation::Orbit;
+        if (navigation == next) return false;
+        navigation = next;
+        last = zoomAnchor = position;
+        if (next == Navigation::Orbit) beginOrbit(position, size);
+        return true;
+    }
+
     void dragTo(const QPointF& position, const QSize& size)
     {
         if (button == Qt::NoButton) return;
@@ -631,12 +743,14 @@ struct OccViewport::State {
             if (std::abs(delta.x()) + std::abs(delta.y()) < QApplication::startDragDistance()) return;
             dragging = true;
         }
-        if (button == Qt::LeftButton) {
+        if (navigation == Navigation::Orbit) {
             const auto delta = QQuaternion::rotationTo(ballStart, trackball(position, ballCenter, ballRadius));
             camera.rotation = (delta * pressRotation).normalized();
-        } else {
+        } else if (navigation == Navigation::Pan) {
             const QPointF delta = position - last;
             camera.pan += QPointF(delta.x(), -delta.y()) * camera.mmPerPixel(size);
+        } else if (navigation == Navigation::Zoom) {
+            camera.zoomAt((position.y() - last.y()) * 0.006, zoomAnchor, size);
         }
         last = position;
     }
@@ -653,6 +767,7 @@ OccViewport::OccViewport(QWidget* parent) : QOpenGLWidget(parent), m_state(std::
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+    setToolTip(mouseNavigationHint());
     qRegisterMetaType<QVector<MotionOcc::PickResult>>();
 }
 
@@ -674,6 +789,15 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
         const auto& cad = part.display;
         copy.cad = snapshot(cad.vertices.size(), cad.triangles, cad.edges, false,
                             [&](Index i) { return vec(cad.vertices[i]); });
+        // CAD-only normals are calculated on each OCC face, preserving sharp
+        // seams. FEM keeps its element-flat normals and unchanged topology.
+        for (std::size_t i = 0; i < copy.cad.vertices.size(); ++i) {
+            const Index sourceIndex = copy.cad.sourceIndices[i];
+            if (sourceIndex >= cad.normals.size()) continue;
+            Vec normal = vec(cad.normals[sourceIndex]);
+            if (!normalise(normal)) continue;
+            for (int axis = 0; axis < 3; ++axis) copy.cad.vertices[i].normal[axis] = float(normal[axis]);
+        }
         const auto found = meshes.find(part.id);
         if (found != meshes.end()) {
             const auto& fem = found->second;
@@ -706,6 +830,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
 void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
 {
     auto& s = *m_state;
+    s.hover = {}; // preselection is recomputed at the next pointer position
     std::map<int, PartPose> next;
     for (const auto& [id, matrix] : poses) {
         if (!s.partIds.count(id)) continue;
@@ -773,14 +898,40 @@ void OccViewport::setDisplayMode(DisplayMode mode)
     update();
 }
 
-void OccViewport::setPickEnabled(bool enabled) { m_state->pickEnabled = enabled; }
+void OccViewport::setMouseNavigationMode(MouseNavigationMode mode)
+{
+    if (mode != MouseNavigationMode::Classic && mode != MouseNavigationMode::Nx) return;
+    if (m_state->navigationMode == mode) return;
+    interruptPointerOperation();
+    m_state->navigationMode = mode;
+    setToolTip(mouseNavigationHint());
+    update();
+}
+
+OccViewport::MouseNavigationMode OccViewport::mouseNavigationMode() const { return m_state->navigationMode; }
+
+QString OccViewport::mouseNavigationHint() const
+{
+    if (m_state->navigationMode == MouseNavigationMode::Nx)
+        return tr("NX 导航：中键拖动旋转；Shift+中键平移；Ctrl+中键拖动或滚轮按光标缩放；左键点选。"
+                  "双击表面设旋转中心，双击空白或 Ctrl+双击适合全部。拾取中右键撤回，Esc 取消；多选节点 Ctrl+左拖贯穿框选。");
+    return tr("经典导航：左键拖动旋转；中键或右键拖动平移；滚轮按光标缩放；左键点选。"
+              "拾取中右键撤回，Esc 取消；多选节点 Ctrl+左拖贯穿框选。");
+}
+
+void OccViewport::setPickEnabled(bool enabled)
+{
+    m_state->pickEnabled = enabled;
+    if (!enabled) interruptPointerOperation();
+}
 
 void OccViewport::beginPick(PickKind kind, bool multiple, const std::set<int>& allowedParts,
                             const QVector<PickResult>& initial)
 {
     auto& s = *m_state;
     s.pickActive = true; s.pickKind = kind; s.pickMultiple = multiple; s.pickParts = allowedParts;
-    s.hover = {}; s.button = Qt::NoButton; s.boxSelecting = false;
+    interruptPointerOperation();
+    s.hover = {};
     setPickSelection(initial);
     setFocus(Qt::OtherFocusReason);
     setCursor(Qt::CrossCursor);
@@ -791,7 +942,7 @@ void OccViewport::endPick()
 {
     auto& s = *m_state;
     s.pickActive = false; s.picks.clear(); s.hover = {}; s.pickParts.clear();
-    s.button = Qt::NoButton; s.boxSelecting = false; s.pickRectangle = {};
+    interruptPointerOperation();
     unsetCursor();
     update();
 }
@@ -1136,35 +1287,35 @@ PickResult OccViewport::pickAt(const QPointF& position) const
 void OccViewport::fitAll()
 {
     if (!m_state->bounds.valid) return;
-    m_state->button = Qt::NoButton;
+    interruptPointerOperation();
     m_state->camera.fit(m_state->bounds, size(), isVisible());
     update();
 }
 
 void OccViewport::viewIsometric()
 {
-    m_state->button = Qt::NoButton;
+    interruptPointerOperation();
     m_state->camera.rotation = isometricRotation();
     update();
 }
 
 void OccViewport::viewFront()
 {
-    m_state->button = Qt::NoButton;
+    interruptPointerOperation();
     m_state->camera.rotation = viewRotation({0, -1, 0}, {0, 0, 1});
     update();
 }
 
 void OccViewport::viewTop()
 {
-    m_state->button = Qt::NoButton;
+    interruptPointerOperation();
     m_state->camera.rotation = viewRotation({0, 0, 1}, {0, 1, 0});
     update();
 }
 
 void OccViewport::viewRight()
 {
-    m_state->button = Qt::NoButton;
+    interruptPointerOperation();
     m_state->camera.rotation = viewRotation({1, 0, 0}, {0, 0, 1});
     update();
 }
@@ -1209,6 +1360,8 @@ void OccViewport::initializeGL()
         failure = tr("The CAD surface shader failed: %1").arg(s.surface->log());
     } else if (!init(s.edge, EdgeVertex, EdgeFragment, EdgeGeometry)) {
         failure = tr("The CAD edge shader failed: %1").arg(s.edge->log());
+    } else if (!init(s.point, PointVertex, PointFragment, PointGeometry)) {
+        failure = tr("The CAD selection marker shader failed: %1").arg(s.point->log());
     } else {
         s.gl->glGenVertexArrays(1, &s.emptyVao);
         if (!s.emptyVao || s.gl->glGetError() != GL_NO_ERROR)
@@ -1231,6 +1384,8 @@ void OccViewport::releaseSceneBuffers()
         deleteBuffers(*m_state->gl, part.mesh);
     }
     m_state->buffers.clear();
+    for (const auto& entry : m_state->pickBuffers) deleteBuffers(*m_state->gl, entry.second);
+    m_state->pickBuffers.clear();
 }
 
 void OccViewport::cleanupGL()
@@ -1251,9 +1406,11 @@ void OccViewport::cleanupGL()
         // No raw GL calls if the context was already lost. Qt's guarded shader
         // resources and the context/share group handle deferred destruction.
         s.buffers.clear();
+        s.pickBuffers.clear();
     }
     s.emptyVao = 0;
     s.edge.reset();
+    s.point.reset();
     s.surface.reset();
     s.backdrop.reset();
     s.gl = nullptr;
@@ -1330,6 +1487,7 @@ void OccViewport::paintGL()
     gl.glGetIntegerv(GL_VIEWPORT, viewport);
     const QVector2D pixels(float(std::max(1, viewport[2])), float(std::max(1, viewport[3])));
     const float dpr = float(devicePixelRatioF());
+    const float depthBias = coplanarDepthBias(gl);
     const auto frame = s.camera.frame(size(), s.bounds);
     gl.glDisable(GL_SCISSOR_TEST);
     gl.glDisable(GL_CULL_FACE);
@@ -1393,6 +1551,7 @@ void OccViewport::paintGL()
         setup(*s.surface);
         s.surface->setUniformValue("uNormal", frame.normal);
         s.surface->setUniformValue("uOutline", false);
+        s.surface->setUniformValue("uHighlight", false);
         gl.glEnable(GL_POLYGON_OFFSET_FILL);
         gl.glPolygonOffset(1.0f, 1.0f);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
@@ -1401,7 +1560,9 @@ void OccViewport::paintGL()
             const bool meshed = part.usesMesh(s.mode);
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
             if (!gpu.triangleCount) continue;
+            const bool hovered = !s.pickActive && s.pickEnabled && s.hover.partId == part.id;
             const auto color = part.id == s.selected ? rgb(63, 137, 216) :
+                               hovered ? rgb(156, 115, 166) :
                                meshed ? rgb(138, 166, 189) : rgb(110, 129, 151);
             setPose(*s.surface, part);
             s.surface->setUniformValue("uFlat", meshed);
@@ -1444,7 +1605,7 @@ void OccViewport::paintGL()
         gl.glDepthMask(wireframe ? GL_TRUE : GL_FALSE);
         gl.glEnable(GL_BLEND);
         gl.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        s.edge->setUniformValue("uDepthBiasNdc", wireframe ? 0.0f : 2e-5f);
+        s.edge->setUniformValue("uDepthBiasNdc", wireframe ? 0.0f : depthBias);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
             const auto& part = s.parts[i];
             if (part.suppressed) continue;
@@ -1462,6 +1623,7 @@ void OccViewport::paintGL()
         }
         s.edge->release();
     }
+    drawCadPickFeedback();
     gl.glBindVertexArray(0);
     gl.glDepthMask(GL_TRUE);
     gl.glDisable(GL_BLEND);
@@ -1470,6 +1632,140 @@ void OccViewport::paintGL()
     drawMotionSymbols();
     drawScalarLegend();
     drawPickOverlay();
+}
+
+void OccViewport::drawCadPickFeedback() try
+{
+    auto& s = *m_state;
+    auto& gl = *s.gl;
+    struct Entry { PickResult pick; const Part* part; std::size_t partIndex; QVector3D color; };
+    std::vector<Entry> entries;
+    std::set<PickBufferKey> needed;
+    const auto append = [&](const PickResult& pick, const QVector3D& color) {
+        if (!pick.isValid() || int(pick.kind) > int(PickKind::Face)) return;
+        const auto part = std::find_if(s.parts.begin(), s.parts.end(), [&](const Part& p) { return p.id == pick.partId; });
+        // Rest CAD must never reappear on top of a deformed or suppressed body.
+        if (part == s.parts.end() || part->suppressed || part->deformed || !s.pickGeometry.count(pick.partId)) return;
+        const PickBufferKey key{pick.partId, pick.kind, pick.index};
+        if (!needed.insert(key).second) return; // selected styling wins over hover
+        entries.push_back({pick, &*part, std::size_t(part - s.parts.begin()), color});
+    };
+    if (s.pickActive) {
+        for (const auto& pick : s.picks) append(pick, rgb(232, 130, 28));
+        append(s.hover, rgb(199, 46, 153));
+    }
+    for (auto it = s.pickBuffers.begin(); it != s.pickBuffers.end();) {
+        if (needed.count(it->first)) { ++it; continue; }
+        deleteBuffers(gl, it->second);
+        it = s.pickBuffers.erase(it);
+    }
+    if (entries.empty()) return;
+
+    const auto frame = s.camera.frame(size(), s.bounds);
+    GLint viewport[4]{};
+    gl.glGetIntegerv(GL_VIEWPORT, viewport);
+    const QVector2D pixels(float(std::max(1, viewport[2])), float(std::max(1, viewport[3])));
+    const float dpr = float(devicePixelRatioF()), bias = coplanarDepthBias(gl);
+    const auto setup = [&](QOpenGLShaderProgram& program, const Part& part) {
+        program.bind();
+        program.setUniformValue("uView", frame.view);
+        program.setUniformValue("uProjection", frame.projection);
+        program.setUniformValue("uPivot", s.camera.pivot);
+        program.setUniformValue("uViewportPixels", pixels);
+        const auto* pose = s.poseFor(part.id);
+        program.setUniformValue("uPosed", pose != nullptr);
+        if (pose) {
+            const Vec offset = pose->relativePoint(vec(part.origin), vec(s.camera.pivot));
+            QMatrix4x4 transform = pose->restToWorld;
+            transform.setColumn(3, QVector4D(float(offset[0]), float(offset[1]), float(offset[2]), 1));
+            program.setUniformValue("uPartOrigin", part.origin);
+            program.setUniformValue("uPartToPivot", transform);
+        }
+    };
+    // Follow Motion's depth-tested CAD feedback. Screen overlays below remain
+    // reserved for HUD and explicitly through-selected FEM nodes/connectivity.
+    gl.glEnable(GL_DEPTH_TEST);
+    gl.glDepthFunc(GL_LEQUAL);
+    gl.glDepthMask(GL_FALSE);
+    gl.glDisable(GL_STENCIL_TEST);
+    gl.glEnable(GL_BLEND);
+    gl.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    for (const auto& entry : entries) {
+        const auto& pick = entry.pick;
+        const PickBufferKey key{pick.partId, pick.kind, pick.index};
+        const Buffers* gpu = nullptr;
+        if (pick.kind == PickKind::Part && entry.partIndex < s.buffers.size()) {
+            // Whole-part feedback reuses display buffers rather than copying
+            // the more finely sampled curves used for analytical CAD picking.
+            gpu = entry.part->usesMesh(s.mode) ? &s.buffers[entry.partIndex].mesh : &s.buffers[entry.partIndex].cad;
+        } else if (pick.kind == PickKind::Edge || pick.kind == PickKind::Face) {
+          auto found = s.pickBuffers.find(key);
+          if (found == s.pickBuffers.end()) {
+            Buffers buffer;
+            bool ok = false;
+            GLenum uploadError = GL_NO_ERROR;
+            try {
+                const auto geometry = cadPickGeometry(s.pickGeometry.at(pick.partId), pick);
+                ok = bufferGeometry(gl, geometry, buffer);
+                uploadError = gl.glGetError();
+                ok = ok && uploadError == GL_NO_ERROR;
+                if (ok) {
+                    found = s.pickBuffers.emplace(key, buffer).first;
+                    buffer = {}; // ownership transferred only after insertion
+                }
+            } catch (const Standard_Failure&) { ok = false; }
+              catch (const std::exception&) { ok = false; }
+            if (!ok) {
+                deleteBuffers(gl, buffer);
+                reportGraphicsError(uploadError == GL_NO_ERROR ? tr("无法创建 CAD 拾取高亮。") :
+                    tr("无法上传 CAD 拾取高亮（OpenGL 0x%1）。").arg(uint(uploadError),0,16));
+                continue;
+            }
+          }
+          gpu = &found->second;
+        }
+        const auto& part = *entry.part;
+        if (gpu && gpu->triangleCount && s.mode != DisplayMode::Wireframe) {
+            setup(*s.surface, part);
+            s.surface->setUniformValue("uNormal", frame.normal);
+            s.surface->setUniformValue("uOutline", false);
+            s.surface->setUniformValue("uHighlight", true);
+            s.surface->setUniformValue("uHighlightDepthBiasNdc", bias);
+            s.surface->setUniformValue("uHighlightAlpha", 0.22f);
+            s.surface->setUniformValue("uColor", entry.color);
+            gl.glBindVertexArray(gpu->vao);
+            gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu->triangles);
+            gl.glDrawElements(GL_TRIANGLES, gpu->triangleCount, GL_UNSIGNED_INT, nullptr);
+            s.surface->setUniformValue("uHighlight", false);
+            s.surface->release();
+        }
+        if (gpu && gpu->edgeCount) {
+            setup(*s.edge, part);
+            s.edge->setUniformValue("uDepthBiasNdc", bias);
+            s.edge->setUniformValue("uWidthPixels", 3.0f * dpr);
+            s.edge->setUniformValue("uColor", QVector4D(entry.color, 1));
+            gl.glBindVertexArray(gpu->vao);
+            gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu->edges);
+            gl.glDrawElements(GL_LINES, gpu->edgeCount, GL_UNSIGNED_INT, nullptr);
+            s.edge->release();
+        }
+        // Preserve the actual reference position supplied to the picking
+        // control (e.g. a circular edge's centre), with the same scene depth.
+        if (std::all_of(pick.position.begin(),pick.position.end(),[](double v){return std::isfinite(v)&&std::abs(v)<=maxSpan;})) {
+            setup(*s.point, part);
+            s.point->setUniformValue("uPointPosition", QVector3D(float(pick.position[0]),float(pick.position[1]),float(pick.position[2])));
+            s.point->setUniformValue("uDepthBiasNdc", bias);
+            s.point->setUniformValue("uDiameterPixels", 10.0f * dpr);
+            s.point->setUniformValue("uBorderPixels", 1.4f * dpr);
+            s.point->setUniformValue("uColor", QVector4D(entry.color, 1));
+            gl.glBindVertexArray(s.emptyVao);
+            gl.glDrawArrays(GL_POINTS, 0, 1);
+            s.point->release();
+        }
+    }
+}
+catch (const std::exception& failure) {
+    reportGraphicsError(tr("无法准备 CAD 拾取高亮：%1").arg(QString::fromUtf8(failure.what())));
 }
 
 void OccViewport::drawAxes()
@@ -1589,41 +1885,13 @@ void OccViewport::drawPickOverlay()
         }
     }
     const auto highlight = [&](const PickResult& pick, const QColor& color) {
+        if (int(pick.kind) <= int(PickKind::Face)) return; // rendered with real depth above
         const auto found = s.pickGeometry.find(pick.partId);
         if (found == s.pickGeometry.end()) return;
         const auto& geometry = found->second;
         painter.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter.setBrush(Qt::NoBrush);
-        const auto drawCurve = [&](const PickCurve& curve) {
-            QPolygonF line;
-            for (const auto& point : curve.points) line.append(projectPoint(point, pick.partId));
-            if (line.size() >= 2) painter.drawPolyline(line);
-        };
-        if (pick.kind == PickKind::Part) {
-            for (const auto& curve : geometry.curves) drawCurve(curve);
-        } else if (pick.kind == PickKind::Edge && pick.index > 0 && pick.index <= int(geometry.curves.size())) {
-            drawCurve(geometry.curves[pick.index - 1]);
-        } else if (pick.kind == PickKind::Face && pick.index > 0 && pick.index <= geometry.faces.Extent()) {
-            const auto face = TopoDS::Face(geometry.faces(pick.index));
-            TopLoc_Location location;
-            const auto mesh = BRep_Tool::Triangulation(face, location);
-            if (!mesh.IsNull()) {
-                QColor tint = color; tint.setAlpha(45);
-                painter.setPen(Qt::NoPen); painter.setBrush(tint);
-                for (int i = 1; i <= mesh->NbTriangles(); ++i) {
-                    int a, b, c; mesh->Triangle(i).Get(a, b, c);
-                    QPolygonF triangle;
-                    for (int node : {a, b, c}) triangle.append(projectPoint(vec(mesh->Node(node).Transformed(location.Transformation())), pick.partId));
-                    painter.drawPolygon(triangle);
-                }
-                painter.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-                painter.setBrush(Qt::NoBrush);
-            }
-            for (TopExp_Explorer edge(face, TopAbs_EDGE); edge.More(); edge.Next()) {
-                const int index = geometry.edges.FindIndex(edge.Current());
-                if (index > 0) drawCurve(geometry.curves[index - 1]);
-            }
-        } else if (pick.kind == PickKind::MeshEdge && pick.index > 0 && pick.index <= int(geometry.meshEdges.size())) {
+        if (pick.kind == PickKind::MeshEdge && pick.index > 0 && pick.index <= int(geometry.meshEdges.size())) {
             const auto& edge = geometry.meshEdges[pick.index-1];
             painter.drawLine(projectPoint(geometry.nodes[edge[0]],pick.partId),projectPoint(geometry.nodes[edge[1]],pick.partId));
         } else if ((pick.kind == PickKind::MeshFace || pick.kind == PickKind::Element) && pick.index > 0) {
@@ -1642,7 +1910,6 @@ void OccViewport::drawPickOverlay()
         }
         Vec point = pick.position;
         if (pick.kind == PickKind::Node && pick.index >= 0 && pick.index < int(geometry.nodes.size())) point = geometry.nodes[pick.index];
-        if (pick.kind == PickKind::Vertex && pick.index > 0 && pick.index <= geometry.vertices.Extent()) point = vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(pick.index))));
         const auto screen = projectPoint(point, pick.partId);
         painter.setBrush(color); painter.setPen(QPen(Qt::white, 1.4)); painter.drawEllipse(screen, 5.0, 5.0);
     };
@@ -1737,7 +2004,7 @@ int OccViewport::pickPart(const QPointF& position) const
 
 void OccViewport::resizeEvent(QResizeEvent* event)
 {
-    m_state->button = Qt::NoButton;
+    interruptPointerOperation();
     QOpenGLWidget::resizeEvent(event);
     // If Qt cannot create a context it never invokes initializeGL().
     if (isVisible() && !event->size().isEmpty() && !isValid())
@@ -1746,26 +2013,31 @@ void OccViewport::resizeEvent(QResizeEvent* event)
 
 void OccViewport::mousePressEvent(QMouseEvent* event)
 {
-    auto& s = *m_state;
-    // Left drag orbits (a click picks); middle or right drag pans.
     if (event->button() != Qt::LeftButton && event->button() != Qt::MiddleButton &&
         event->button() != Qt::RightButton) {
         QOpenGLWidget::mousePressEvent(event);
         return;
     }
-    if (s.button == Qt::NoButton || !(event->buttons() & s.button) || event->button() == s.button) {
-        s.button = event->button();
-        s.dragging = false;
-        s.press = s.last = event->localPos();
-        const double unit = s.camera.mmPerPixel(size());
-        s.ballCenter = QPointF(width()*0.5 + s.camera.pan.x()/unit, height()*0.5 - s.camera.pan.y()/unit);
-        s.ballRadius = std::max(1.0, 0.5 * std::min(width(), height()));
-        s.ballStart = trackball(s.press, s.ballCenter, s.ballRadius);
-        s.pressRotation = s.camera.rotation;
-        s.boxSelecting = s.pickActive && s.pickMultiple && s.pickKind == PickKind::Node &&
-                         s.button == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier);
-        s.pickRectangle = QRectF(s.press, s.press);
+    setFocus(Qt::MouseFocusReason);
+    auto& s = *m_state;
+    // An additional button never replaces the active operation or its camera anchor.
+    if (s.button != Qt::NoButton && event->button() != s.button && event->buttons().testFlag(s.button)) {
+        event->accept();
+        return;
     }
+    interruptPointerOperation();
+    s.button = event->button();
+    s.press = s.last = s.zoomAnchor = event->localPos();
+    if (s.navigationMode == MouseNavigationMode::Nx) {
+        if (s.button == Qt::MiddleButton) s.updateNxNavigation(event->modifiers(), s.press, size());
+        else if (s.button == Qt::LeftButton) s.navigation = State::Navigation::Select;
+    } else {
+        s.navigation = s.button == Qt::LeftButton ? State::Navigation::Orbit : State::Navigation::Pan;
+    }
+    if (s.navigation == State::Navigation::Orbit) s.beginOrbit(s.press, size());
+    s.boxSelecting = s.pickEnabled && s.pickActive && s.pickMultiple && s.pickKind == PickKind::Node &&
+                     s.button == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier);
+    s.pickRectangle = QRectF(s.press, s.press);
     event->accept();
 }
 
@@ -1773,17 +2045,25 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event)
 {
     auto& s = *m_state;
     if (s.button == Qt::NoButton || !(event->buttons() & s.button)) {
-        s.button = Qt::NoButton;
+        if (s.button != Qt::NoButton) interruptPointerOperation();
         if (s.pickActive) {
             s.hover = pickAt(event->localPos());
             update(); event->accept(); return;
         }
+        PickResult hover;
+        if (s.pickEnabled) { hover.kind = PickKind::Part; hover.partId = pickPart(event->localPos()); }
+        if (hover.partId != s.hover.partId || hover.kind != s.hover.kind) { s.hover = hover; update(); }
         QOpenGLWidget::mouseMoveEvent(event);
         return;
     }
     if (s.boxSelecting) {
         s.pickRectangle = QRectF(s.press, event->localPos()).normalized();
         s.dragging = true; update(); event->accept(); return;
+    }
+    if (s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
+        s.updateNxNavigation(event->modifiers(), event->localPos(), size())) {
+        event->accept();
+        return;
     }
     s.dragTo(event->localPos(), size());
     if (s.dragging) update();
@@ -1809,14 +2089,15 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
                 if (std::none_of(s.picks.cbegin(), s.picks.cend(), [&](const auto& p) { return samePick(p, pick); })) s.picks.append(pick);
             }
         }
-        s.boxSelecting = false; s.dragging = false; s.button = Qt::NoButton; s.pickRectangle = {};
+        interruptPointerOperation();
         emit pickSelectionChanged(s.picks); update(); event->accept(); return;
     }
-    s.dragTo(event->localPos(), size());
+    const bool changedMode = s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
+                            s.updateNxNavigation(event->modifiers(), event->localPos(), size());
+    if (!changedMode) s.dragTo(event->localPos(), size());
     const bool click = s.button == Qt::LeftButton && !s.dragging && s.pickEnabled;
     const bool subtract = s.button == Qt::RightButton && !s.dragging && s.pickEnabled && s.pickActive;
-    s.button = Qt::NoButton;
-    if (s.dragging) update();
+    interruptPointerOperation();
     event->accept();
     if (click) {
         if (s.pickActive) {
@@ -1840,12 +2121,123 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
     }
 }
 
+bool OccViewport::setRotationCenterAt(const QPointF& position)
+{
+    auto& s = *m_state;
+    if (!s.bounds.valid || s.mode == DisplayMode::Wireframe || !QRectF(rect()).contains(position)) return false;
+    const auto frame = s.camera.frame(size(), s.bounds);
+    const double unit = s.camera.mmPerPixel(size());
+    const QPointF eye((position.x() - width()*0.5)*unit - s.camera.pan.x(),
+                      (height()*0.5 - position.y())*unit - s.camera.pan.y());
+    const Vec pivot = vec(s.camera.pivot);
+    Ray world;
+    for (int k = 0; k < 3; ++k) {
+        world.origin[k] = pivot[k] + frame.rows[0][k]*eye.x() + frame.rows[1][k]*eye.y() + frame.rows[2][k]*frame.nearZ;
+        world.direction[k] = -frame.rows[2][k];
+    }
+    double nearest = frame.nearZ - frame.farZ;
+    bool found = false;
+    for (const auto& part : s.parts) {
+        if (part.suppressed) continue;
+        const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
+        const auto ray = restRay(world, s.poseFor(part.id));
+        if (!intersectsBounds(ray, geometry.bounds, nearest, unit)) continue;
+        for (std::size_t i = 0; i + 2 < geometry.triangles.size(); i += 3) {
+            double distance;
+            if (intersectsTriangle(ray, geometry.position(geometry.triangles[i]),
+                    geometry.position(geometry.triangles[i+1]), geometry.position(geometry.triangles[i+2]), distance) &&
+                distance < nearest) {
+                nearest = distance;
+                found = true;
+            }
+        }
+    }
+    if (!found) return false;
+    Vec point;
+    for (int k = 0; k < 3; ++k) point[k] = world.origin[k] + world.direction[k]*nearest;
+    s.camera.setPivot(point);
+    update();
+    return true;
+}
+
+void OccViewport::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    if (m_state->navigationMode == MouseNavigationMode::Nx && event->button() == Qt::LeftButton) {
+        // Do not double-commit a collector or replace its geometry reference.
+        if (!m_state->pickActive &&
+            (m_state->button == Qt::NoButton || m_state->button == Qt::LeftButton)) {
+            interruptPointerOperation();
+            // Motion's blank-space fit is retained. Surface double-click is a
+            // view-only extension of its screen-preserving rotation-reference API.
+            if (event->modifiers().testFlag(Qt::ControlModifier) || !setRotationCenterAt(event->localPos())) fitAll();
+        }
+        event->accept();
+        return;
+    }
+    QOpenGLWidget::mouseDoubleClickEvent(event);
+}
+
 void OccViewport::keyPressEvent(QKeyEvent* event)
 {
+    auto& s = *m_state;
+    if (event->key() == Qt::Key_Escape && s.button != Qt::NoButton) {
+        interruptPointerOperation(); event->accept(); return;
+    }
     if (event->key() == Qt::Key_Escape && m_state->pickActive) {
         endPick(); emit pickCancelled(); event->accept(); return;
     }
+    if (s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
+        (event->key() == Qt::Key_Shift || event->key() == Qt::Key_Control)) {
+        const auto modifier = event->key() == Qt::Key_Control ? Qt::ControlModifier : Qt::ShiftModifier;
+        s.updateNxNavigation(event->modifiers() | modifier, s.last, size());
+        event->accept(); return;
+    }
     QOpenGLWidget::keyPressEvent(event);
+}
+
+void OccViewport::keyReleaseEvent(QKeyEvent* event)
+{
+    auto& s = *m_state;
+    if (s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
+        (event->key() == Qt::Key_Shift || event->key() == Qt::Key_Control)) {
+        const auto modifier = event->key() == Qt::Key_Control ? Qt::ControlModifier : Qt::ShiftModifier;
+        s.updateNxNavigation(event->modifiers() & ~Qt::KeyboardModifiers(modifier), s.last, size());
+        event->accept(); return;
+    }
+    QOpenGLWidget::keyReleaseEvent(event);
+}
+
+void OccViewport::interruptPointerOperation()
+{
+    auto& s = *m_state;
+    s.button = Qt::NoButton;
+    s.navigation = State::Navigation::None;
+    s.dragging = false;
+    s.boxSelecting = false;
+    s.pickRectangle = {};
+    s.hover = {};
+    // A focus/grab transition retires the pointer gesture, not the accepted
+    // values or callbacks of NativePickSession.
+    update();
+}
+
+bool OccViewport::event(QEvent* event)
+{
+    if (event->type() == QEvent::ShortcutOverride &&
+        static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape &&
+        (m_state->button != Qt::NoButton || m_state->pickActive)) {
+        event->accept(); return true;
+    }
+    if (event->type() == QEvent::UngrabMouse || event->type() == QEvent::WindowDeactivate ||
+        event->type() == QEvent::Hide || (event->type() == QEvent::EnabledChange && !isEnabled()))
+        interruptPointerOperation();
+    return QOpenGLWidget::event(event);
+}
+
+void OccViewport::focusOutEvent(QFocusEvent* event)
+{
+    interruptPointerOperation();
+    QOpenGLWidget::focusOutEvent(event);
 }
 
 void OccViewport::leaveEvent(QEvent* event)
@@ -1868,10 +2260,8 @@ void OccViewport::wheelEvent(QWheelEvent* event)
 #else
         const auto position = event->posF();
 #endif
-        const double before = s.camera.span;
-        s.camera.span = std::clamp(before * std::exp(std::clamp(-steps*0.16, -50.0, 50.0)), minSpan, maxSpan);
-        const QPointF offset(position.x() - width()*0.5, height()*0.5 - position.y());
-        s.camera.pan += offset * (s.camera.mmPerPixel(size()) * (1.0 - before/s.camera.span));
+        s.camera.zoomAt(-steps*0.16, position, size());
+        s.hover = s.pickActive ? pickAt(position) : PickResult{};
         update();
     }
     event->accept();

@@ -160,6 +160,12 @@ if(MX_BUILD_GUI)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(MotionOccDisplayNormalsSmoke tests/MotionOccDisplayNormalsSmoke.cpp)
+    target_link_libraries(MotionOccDisplayNormalsSmoke PRIVATE MotionOccData)
+    target_compile_options(MotionOccDisplayNormalsSmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(MotionOccDisplayNormalsSmoke MotionOccRuntime)
+    add_test(NAME MotionOcc.DisplayNormals COMMAND MotionOccDisplayNormalsSmoke)
+
     add_executable(MotionOccNativeTopologySmoke tests/MotionOccNativeTopologySmoke.cpp)
     target_link_libraries(MotionOccNativeTopologySmoke PRIVATE MotionOccData)
     target_compile_options(MotionOccNativeTopologySmoke PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)

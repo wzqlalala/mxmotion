@@ -243,6 +243,24 @@ void MotionWindow::createCommands()
     add(Command::Right, tr("右视图"), view + "youshitu.png", [this] { m_viewport->viewRight(); });
     add(Command::Isometric, tr("轴侧视图"), view + "zhouceshitu.png", [this] { m_viewport->viewIsometric(); });
 
+    auto* navigation = new QActionGroup(this);
+    auto navigationMode = [&](Command id, const QString& label, OccViewport::MouseNavigationMode value,
+                              const QString& hint, const char* objectName) {
+        auto* action = add(id, label, view + "zhouceshitu.png", [this, value] {
+            m_viewport->setMouseNavigationMode(value);
+            setNotice(m_viewport->mouseNavigationHint());
+        });
+        action->setObjectName(QString::fromLatin1(objectName));
+        action->setCheckable(true);
+        action->setToolTip(hint);
+        navigation->addAction(action);
+    };
+    navigationMode(Command::NavigationClassic, tr("经典导航"), OccViewport::MouseNavigationMode::Classic,
+        tr("左键拖动旋转；中键或右键拖动平移；滚轮按光标缩放；左键点选。"), "mouseNavigationClassic");
+    navigationMode(Command::NavigationNx, tr("NX 导航"), OccViewport::MouseNavigationMode::Nx,
+        tr("中键旋转；Shift+中键平移；Ctrl+中键拖动或滚轮缩放；左键点选。双击表面设旋转中心，双击空白适合全部。"), "mouseNavigationNx");
+    command(Command::NavigationClassic)->setChecked(true);
+
     auto* modes = new QActionGroup(this);
     auto mode = [&](Command id, const QString& label, const QString& image, OccViewport::DisplayMode value) {
         auto* action = add(id, label, view + image, [this, value] { m_viewport->setDisplayMode(value); });
@@ -463,7 +481,7 @@ QWidget* MotionWindow::createViewportFrame()
 
     m_viewport = new OccViewport;
     m_viewport->setObjectName(QStringLiteral("occViewport"));
-    m_viewport->setToolTip(tr("左键拖动旋转 / 中键或右键平移 / 滚轮缩放 / 左键点选部件"));
+    m_viewport->setToolTip(m_viewport->mouseNavigationHint());
     auto* viewportFrame = new MechMainWindow::ViewportWidget(1, m_viewport, frame);
     viewportFrame->setTitle(tr("前处理"));
     viewportFrame->setState(MechMainWindow::ViewportWidget::State::Maximized);

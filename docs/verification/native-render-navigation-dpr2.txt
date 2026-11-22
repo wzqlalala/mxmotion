@@ -1,0 +1,52 @@
+MxSim.Motion rendering/navigation validation
+Date: 2026-11-22
+Qt platform: xcb; Qt 5.15.15; requested QT_SCALE_FACTOR=2
+
+[picking/picking-smoke.txt]
+OCC vertex, edge, face, part IDs; representative coordinates, face hit, axis, selection filter and right-click undo passed
+Actual-node IDs, multi-pick, session restore, Ctrl rectangle, hover, Esc and whole-part signal isolation passed
+Posed geometry picking retained initial world CAD coordinates passed
+Real FEM edge, surface face and volume-element connectivity IDs, centroid and direction passed
+Per-node scalar interpolation, color legend and restoration passed
+Circular-edge center/axis and cylindrical-face axis passed
+PASS; selection changes=14
+
+[navigation/navigation-smoke.txt]
+Classic orbit/pan, click isolation and cursor-anchored wheel zoom passed
+NX left selection, middle orbit, Shift-middle pan and Ctrl-middle zoom passed
+Held-button modifier transitions, Ctrl precedence and second-button isolation passed
+Lost capture, focus, deactivate, disable and hide interruption passed
+Surface rotation center preserved screen position and followed displayed rigid poses
+NX typed-picker isolation, actual node numbering, right undo, Esc and interrupted rectangle passed
+CAD face IDs, initial global mm and original whole-part selection passed
+
+[render-feedback/render-feedback-smoke.txt]
+Hidden face fill obeys the scene depth buffer
+Hidden CAD edge stroke obeys the scene depth buffer
+Visible face/vertex feedback and animated occlusion restoration passed
+Hide/show, scene replacement and selection cleanup passed
+PASS; Qt DPR=2
+
+[suite-summary.json]
+{
+    "passed": true,
+    "platform": "xcb",
+    "qtVersion": "5.15.15",
+    "tests": [
+        {
+            "exception": "",
+            "exitCode": 0,
+            "name": "Picking"
+        },
+        {
+            "exception": "",
+            "exitCode": 0,
+            "name": "Navigation"
+        },
+        {
+            "exception": "",
+            "exitCode": 0,
+            "name": "Render feedback"
+        }
+    ]
+}

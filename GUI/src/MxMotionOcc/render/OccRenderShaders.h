@@ -17,6 +17,8 @@ uniform mat4 uPartToPivot;
 uniform bool uPosed;
 uniform mat3 uNormal;
 uniform bool uOutline;
+uniform bool uHighlight;
+uniform float uHighlightDepthBiasNdc;
 uniform vec2 uViewportPixels;
 uniform float uOutlinePixels;
 out vec3 vNormal;
@@ -43,6 +45,8 @@ void main() {
         float span = length(direction);
         if (span > 0.0) clip.xy += (direction / span) * (2.0 * uOutlinePixels / uViewportPixels) * clip.w;
     }
+    if (uHighlight && clip.w > 0.0 && clip.z >= -clip.w && clip.z <= clip.w)
+        clip.z = max(-clip.w, clip.z - uHighlightDepthBiasNdc * clip.w);
     gl_Position = clip;
 }
 )GLSL";
@@ -55,8 +59,14 @@ uniform vec3 uColor;
 uniform bool uOutline;
 uniform bool uFlat;
 uniform bool uScalars;
+uniform bool uHighlight;
+uniform float uHighlightAlpha;
 out vec4 fragColor;
 void main() {
+    if (uHighlight) {
+        fragColor = vec4(uColor, uHighlightAlpha);
+        return;
+    }
     if (uOutline) {
         fragColor = vec4(uColor, 1.0);
         return;
@@ -163,6 +173,63 @@ void main() {
     vec2 p = corners[gl_VertexID];
     gl_Position = vec4(p, 0.0, 1.0);
     vHeight = 0.5 * p.y + 0.5;
+}
+)GLSL";
+
+// CAD vertices use a screen-sized, depth-tested marker. The geometry shader
+// avoids platform-dependent glPointSize limits and keeps Qt logical-pixel size.
+inline constexpr char PointVertex[] = R"GLSL(#version 330 core
+uniform vec3 uPointPosition;
+uniform mat4 uView;
+uniform mat4 uProjection;
+uniform vec3 uPivot;
+uniform vec3 uPartOrigin;
+uniform mat4 uPartToPivot;
+uniform bool uPosed;
+void main() {
+    vec3 local = uPointPosition - uPivot;
+    if (uPosed) local = mat3(uPartToPivot) * (uPointPosition - uPartOrigin) + uPartToPivot[3].xyz;
+    gl_Position = uProjection * uView * vec4(local, 1.0);
+}
+)GLSL";
+
+inline constexpr char PointGeometry[] = R"GLSL(#version 330 core
+layout(points) in;
+layout(triangle_strip, max_vertices=4) out;
+uniform vec2 uViewportPixels;
+uniform float uDiameterPixels;
+uniform float uDepthBiasNdc;
+noperspective out vec2 vPoint;
+void corner(vec4 p, vec2 offset) {
+    vPoint = offset;
+    p.xy += offset * (2.0 / uViewportPixels) * p.w;
+    p.z = max(-p.w, p.z - uDepthBiasNdc * p.w);
+    gl_Position = p;
+    EmitVertex();
+}
+void main() {
+    vec4 p = gl_in[0].gl_Position;
+    if (p.w <= 0.0 || p.z < -p.w || p.z > p.w) return;
+    float r = 0.5 * uDiameterPixels + 0.5;
+    corner(p, vec2(-r, -r)); corner(p, vec2(r, -r));
+    corner(p, vec2(-r, r)); corner(p, vec2(r, r));
+    EndPrimitive();
+}
+)GLSL";
+
+inline constexpr char PointFragment[] = R"GLSL(#version 330 core
+uniform vec4 uColor;
+uniform float uDiameterPixels;
+uniform float uBorderPixels;
+noperspective in vec2 vPoint;
+out vec4 fragColor;
+void main() {
+    float radius = 0.5 * uDiameterPixels;
+    float distance = length(vPoint);
+    float coverage = clamp(radius + 0.5 - distance, 0.0, 1.0);
+    if (coverage <= 0.0) discard;
+    float border = smoothstep(radius - uBorderPixels - 0.5, radius - uBorderPixels + 0.5, distance);
+    fragColor = vec4(mix(uColor.rgb, vec3(1.0), border), uColor.a * coverage);
 }
 )GLSL";
 
