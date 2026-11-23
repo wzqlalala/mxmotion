@@ -151,7 +151,9 @@ class OrientationTriadInteraction final : public QObject {
                 m_dragging = true;
                 // Test-owned hidden windows must never capture the user's
                 // desktop mouse. A visible viewport uses Qt's normal grab.
-                if (!m_viewport->testAttribute(Qt::WA_DontShowOnScreen)) m_viewport->grabMouse();
+                if (!m_viewport->testAttribute(Qt::WA_DontShowOnScreen) &&
+                    !m_viewport->window()->testAttribute(Qt::WA_DontShowOnScreen))
+                    m_viewport->grabMouse();
                 return true;
             }
             if (mouse->button() == Qt::LeftButton || mouse->button() == Qt::RightButton) {

@@ -7,6 +7,9 @@
 #include "mMechGlobalSignals.h"
 #ifndef MX_MOTION_OCC_COMPAT
 #include "mInfoWindow.h"
+#else
+#include "mGetSetTypeTemplate.h"
+#include "mMeshData.h"
 #endif
 #include "mMotionFlexBridge.h"
 #include "mMotionFlexMxExport.h"
@@ -75,6 +78,7 @@ namespace MechMainWindow {
         m_attachPickWidget->setDefultTip(QString::fromUtf8("附着节点（留空=自动按运动副收组）"));
         m_attachPickWidget->setPickFilter({ (int)MxFunctions::PickDataType::Node });
 #ifdef MX_MOTION_OCC_COMPAT
+        m_attachPickWidget->setAllowedTypes(&MechCommon::pickOnlyNode);
         connect(m_attachPickWidget,&mPickWidgetController::dataChanged,this,[this] {
             setProperty("mxFlexAttachmentSelectionEdited",true);
         });
@@ -258,6 +262,10 @@ namespace MechMainWindow {
         //【刚柔耦合】目标刚体切换：预览其体网格表面（无网格时清预览）
         connect(m_cmbTargetBody, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
             const int bodyId = m_cmbTargetBody->currentData().toInt();
+#ifdef MX_MOTION_OCC_COMPAT
+            const auto selected = attachNodeIdsFromWidget();
+            showAttachNodesInWidget(std::vector<int>(selected.begin(), selected.end()));
+#endif
             if (m_cmbTargetBody->currentIndex()<0 || bodyId < 0 || !mMotionFlexBridge::previewFlexBodyMesh(getCVM ? getCVM->getModelData() : nullptr, bodyId, QStringLiteral("__flex_preview__"))) {
                 mMotionFlexBridge::clearFlexBodyPreview();
             }
@@ -302,6 +310,10 @@ namespace MechMainWindow {
     void mMotionAutoFlexPanel::newMotionAutoFlexPanel()
     {
         setEditing(true);
+#ifdef MX_MOTION_OCC_COMPAT
+        m_attachPickWidget->setPickActive(false);
+        showAttachNodesInWidget({});
+#endif
         m_flexData = nullptr;
         refreshBodyList();
         refreshMaterialList();
@@ -376,12 +388,20 @@ namespace MechMainWindow {
                 return;
         }
         m_flexData = nullptr;
+#ifdef MX_MOTION_OCC_COMPAT
+        m_attachPickWidget->detachActive();
+        showAttachNodesInWidget({});
+#endif
     }
 
     void mMotionAutoFlexPanel::uneditMotionAutoFlexPanel()
     {
         if (!isEditing())
             return;
+#ifdef MX_MOTION_OCC_COMPAT
+        m_attachPickWidget->setPickActive(false);
+        showAttachNodesInWidget({});
+#endif
         setEditing(false);
         disconnectSig();
         m_flexData = nullptr;
@@ -583,13 +603,42 @@ namespace MechMainWindow {
         PickWidgetData data;
         std::vector<RenderPickResultData> items;
         items.reserve(globalIds.size());
+#ifdef MX_MOTION_OCC_COMPAT
+        std::map<int, int> nodeParts;
+        std::set<int> parts;
+        if (getCVM && m_cmbTargetBody->currentIndex() >= 0) {
+            parts = mMotionRefMap::getSet(Physical_MotionBody,
+                m_cmbTargetBody->currentData().toInt(), Physical_Part);
+            auto* model = getCVM->getModelData();
+            const auto* mesh = model ? model->getMeshData() : nullptr;
+            if (mesh && !globalIds.empty()) {
+                const std::set<int> selected(globalIds.begin(), globalIds.end());
+                for (int part : parts) {
+                    const auto ids = mesh->nodeIds().find(part);
+                    if (ids == mesh->nodeIds().end()) continue;
+                    for (int node : ids->second)
+                        if (selected.count(node)) nodeParts.emplace(node, part);
+                }
+            }
+        }
+        if (parts != m_attachPickWidget->allowedParts())
+            m_attachPickWidget->setAllowedParts(std::move(parts));
+#endif
         for (int id : globalIds) {
             RenderPickResultData r;
             r.result_id = id;
+#ifdef MX_MOTION_OCC_COMPAT
+            if (const auto part = nodeParts.find(id); part != nodeParts.end())
+                r.part_id = part->second;
+#endif
             items.push_back(r);
         }
         data.pickedData[MxFunctions::PickDataType::Node] = std::move(items);
+#ifdef MX_MOTION_OCC_COMPAT
+        m_attachPickWidget->displayData(data, true);
+#else
         m_attachPickWidget->displayData(data, false);
+#endif
         if (m_edtAttachPoints) {
             QStringList lst;
             for (int id : globalIds)

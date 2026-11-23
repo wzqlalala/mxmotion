@@ -1,5 +1,6 @@
 #include "RigidPlot.h"
 #include "UiPalette.h"
+#include "mCurveNameLabel.h"
 #include "mFoldSection.h"
 
 #include <QCheckBox>
@@ -54,28 +55,6 @@ protected:
         // disable. Preserve the latter only, so reopening the dock paints its
         // saved curves' legends without needing to recreate the curves.
         if (!explicitlyDisabled) widget->setUpdatesEnabled(true);
-    }
-};
-
-// Keep the original list's full name available without forcing the shared
-// parameter column to widen for long object/quantity names.
-class CurveNameLabel final : public QLabel {
-public:
-    explicit CurveNameLabel(const QString& text, QWidget* parent) : QLabel(text, parent)
-    {
-        setObjectName(QStringLiteral("motionCurveRowTitle"));
-        setToolTip(text);
-        setTextFormat(Qt::PlainText);
-        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-        setMinimumWidth(0);
-    }
-protected:
-    void paintEvent(QPaintEvent*) override
-    {
-        QPainter painter(this);
-        painter.setPen(palette().color(foregroundRole()));
-        const QString displayed = fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width());
-        painter.drawText(contentsRect(), alignment() | Qt::TextSingleLine, displayed);
     }
 };
 
@@ -465,7 +444,7 @@ QWidget* RigidPlot::createConfigurationPanel(QWidget* parent)
             color->setFixedSize(18, 18);
             color->setStyleSheet(QStringLiteral("background-color: %1; border: 1px solid #888;").arg(chosen.name()));
             color->setToolTip(tr("选择曲线颜色"));
-            auto* title = new CurveNameLabel(displayTitle(request), row);
+            auto* title = new MechMainWindow::CurveNameLabel(displayTitle(request), row);
             auto* visible = new QCheckBox(tr("显示"), row);
             visible->setChecked(request.visible);
             auto* remove = new QPushButton(tr("删除"), row);

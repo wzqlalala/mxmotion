@@ -139,13 +139,14 @@ struct ResultChannel {
 // rescaled. A fixed-interface basis is not the assembled mechanism's modes.
 struct FlexModalBasis {
     int requestedCount = 0;
-    QString kind; // "FixedInterface" or "FreeBody", with explicit GUI labels.
+    QString kind; // "FixedInterface", "FreeBody" or "MNF".
     double cutoffHz = 0;
     std::vector<double> frequenciesHz;
     std::vector<double> shapes; // Row-major 3N x frequenciesHz.size().
     std::vector<std::vector<int>> attachmentGroups; // Zero-based mesh indices.
     std::vector<int> interfaceBodyIds;
     QStringList diagnostics;
+    std::vector<int> sourceModeIds; // External modal IDs, in column order.
 };
 
 struct RigidFlexResult {
@@ -166,6 +167,7 @@ struct RigidFlexResult {
     std::vector<std::vector<double>> modalCoordinates;
     bool reducedDynamics = true; // false: real co-rotational tetra4 dynamics.
     FlexModalBasis modalBasis;
+    std::vector<int> sourceNodeIds; // External node IDs, in referenceNodes row order.
 };
 
 struct FlexModeSample {

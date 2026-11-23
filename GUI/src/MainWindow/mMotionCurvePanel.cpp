@@ -1,5 +1,6 @@
 
 #include "mMotionCurvePanel.h"
+#include "mCurveNameLabel.h"
 #include "mMotionResultQueryService.h"
 #include "mAppConfiguration.h"
 #include "mGlobalSignals.h"
@@ -241,6 +242,9 @@ namespace MechMainWindow
         // --- 2. 曲线列表 ---
         FoldSection* foldList = new FoldSection("曲线列表", this);
         m_listCurves = new QListWidget();
+        m_listCurves->setProperty("mxSurface", true);
+        m_listCurves->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_listCurves->setResizeMode(QListView::Adjust);
         m_listCurves->setSelectionMode(QAbstractItemView::NoSelection);
         foldList->addRow(m_listCurves);
         m_mainLayout->addWidget(foldList);
@@ -760,8 +764,7 @@ namespace MechMainWindow
         });
 
         // 曲线名称
-        QLabel* nameLabel = new QLabel(requestTitle(req), row);
-        nameLabel->setToolTip(requestTitle(req));
+        auto* nameLabel = new CurveNameLabel(requestTitle(req), row);
 #ifdef MX_MOTION_OCC_COMPAT
         const auto* scenario = getScenario();
         if (scenario && scenario->hasResult() && !queryRequest(scenario, req).isValid()) {

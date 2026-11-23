@@ -500,6 +500,7 @@ namespace MechMainWindow
 
         // 内容区域：QStackedWidget 按需延迟创建页面，避免默认方向下创建不必要的子控件。
         _stackedWidget = new QStackedWidget(this);
+        _stackedWidget->setStyleSheet(QStringLiteral("QStackedWidget { background: transparent; }"));
         _stackedWidget->setContentsMargins(0, 0, 0, 0);
         _stackedWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         _stackedWidget->setVisible(false);
@@ -1137,7 +1138,7 @@ namespace MechMainWindow
         {
             // 无有效拾取数据：不修改坐标/方向，仅做清理，避免输入框被默认值覆盖
             qDebug() << "[DirectionSelector] apply ignored: no valid pick data";
-            controller->displayData(PickWidgetData());
+            controller->displayData(PickWidgetData(), true);
             controller->clearAllHighlight();
             if (_activePickController == controller)
             {
@@ -1151,7 +1152,7 @@ namespace MechMainWindow
         _customUntouched = false;
 
         // 清空拾取框数据与高亮，并标记缓存坐标已失效
-        controller->displayData(PickWidgetData());
+        controller->displayData(PickWidgetData(), true);
         controller->clearAllHighlight();
         if (controller == _startPickController)
             _cachedStartCoordValid = false;

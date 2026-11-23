@@ -65,7 +65,7 @@ QString label(const QString& key)
         {"scalarTorques", "标量力矩"}, {"threePointForces", "三点力"}, {"threePointTorques", "三点力矩"},
         {"tensionCables", "只拉绳索"}, {"softStops", "止挡"}, {"contacts", "接触"}, {"markers", "标记点"},
         {"sensors", "传感器"}, {"controllers", "控制器"}, {"controlInputs", "控制输入"},
-        {"autoFlexBodies", "自动柔性体"}, {"scenarios", "求解方案"},
+        {"autoFlexBodies", "自动柔性体"}, {"importedMnfBodies", "导入柔性体"}, {"scenarios", "求解方案"},
         {"electroImports", "机电导入"}, {"electroExports", "机电导出"},
         {"hydraulics", "液压协同"}, {"rlTasks", "强化学习"},
         {"name", "名称"}, {"id", "编号"}, {"enabled", "启用"}, {"isFixed", "固定参考体"},
@@ -1363,6 +1363,7 @@ bool MotionWindow::importMotionJson(const QString& path, bool interactiveBinding
 void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups)
 {
     const QMap<QString, QString> groupNames{{"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
+        {"importedMnfBodies", tr("柔性体")},
         {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")}, {"springs", tr("弹簧")},
         {"vectorForces", tr("力元")}, {"scalarForces", tr("力元")}, {"scalarTorques", tr("力元")},
         {"threePointForces", tr("力元")}, {"threePointTorques", tr("力元")}, {"tensionCables", tr("力元")}, {"softStops", tr("力元")},
@@ -1437,6 +1438,11 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     if (motionBusy() || m_jobPart >= 0 || !m_model.nativeDocument) return;
     auto document = *m_model.nativeDocument;
     QJsonObject row = document.entity(collection, id);
+    if (collection == "importedMnfBodies") {
+        if (!row.isEmpty())
+            importMnf(QDir(document.baseDirectory).absoluteFilePath(row.value("mnfFile").toString()), id);
+        return;
+    }
     const bool creating=row.isEmpty();
     QString type = requestedType;
     if (row.isEmpty()) {
@@ -1756,7 +1762,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                 [=](const auto& picks) {
                     clearAttachments(); flexMesh->insert("nodeIds",nodeIds); table->setRowCount(picks.size());
                     for (int r=0;r<picks.size();++r) table->setItem(r,0,new QTableWidgetItem(QString::number(picks[r].nodeId)));
-                    attachState->setText(tr("已拾取 %1 个真实网格节点；Ctrl+左键可框选，右键减选。").arg(picks.size()));
+                    attachState->setText(tr("已拾取 %1 个网格节点。左键加选，右键减选，点击和拖框均可用。").arg(picks.size()));
                 },[=] {
                     *flexGroups=groups; *flexPositions=positions; *attachmentMeshChanged=changed; *flexMesh=oldMesh;
                     table->setRowCount(originalPoints.size());

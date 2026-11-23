@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <utility>
 #include <vector>
 
 class QMouseEvent;
@@ -87,6 +88,7 @@ public:
     void setPickEnabled(bool enabled);
     // An empty filter means smart CAD picking. Editor sessions temporarily take precedence.
     void setSelectionFilter(std::optional<PickKind> kind);
+    std::optional<PickKind> selectionFilter() const;
     const QVector<PickResult>& viewportSelection() const;
     void clearViewportSelection();
     void beginPick(PickKind kind, bool multiple = false,
@@ -109,6 +111,7 @@ public:
     void setPickNodes(int partId, const FemMesh& mesh, const QVector<int>& nodeIds = {});
     void setMeshScalars(const std::map<int, std::vector<double>>& values,
                         double minimum, double maximum, const QString& title);
+    std::optional<std::pair<double, double>> meshScalarRange() const;
     void clearMeshScalars();
     void setMotionSymbols(const QVector<MotionSymbol>& symbols);
     void setAuxiliaryMotionSymbols(const QString& key, const QVector<MotionSymbol>& symbols);
@@ -116,6 +119,7 @@ public:
     PickResult pickAt(const QPointF& position) const;
     QPointF projectPoint(const std::array<double, 3>& position, int partId = -1) const;
     void fitAll();
+    void fitAllIncluding(const std::optional<std::array<double, 3>>& point);
     void viewIsometric();
     void viewFront();
     void viewBack();
@@ -133,7 +137,7 @@ public:
     bool glReady() const;
 
 signals:
-    void partPicked(int id); // -1 when nothing was hit
+    void partPicked(int id);
     void graphicsError(const QString& message);
     void pickSelectionChanged(const QVector<MotionOcc::PickResult>& selection);
     void viewportSelectionChanged();

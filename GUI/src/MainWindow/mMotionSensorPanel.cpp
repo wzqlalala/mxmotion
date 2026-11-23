@@ -4,6 +4,7 @@
 #include "mAppConfiguration.h"
 #include "mGlobalSignals.h"
 #include "mMotionPanelColors.h"
+#include "mParameterPageLayout.h"
 
 #include "mViewportModelManager.h"
 #include "mViewportModel.h"
@@ -86,7 +87,8 @@ namespace MechMainWindow
         m_mainLayout->addWidget(foldCommon);
 
         // ==================== 3. 类型特定参数层 ====================
-        m_stkSpecific = new QStackedWidget();
+        auto* specificParameters = new QWidget(this);
+        m_stkSpecific = new ParameterPageLayout(specificParameters);
 
         // --- 页面 0: 体状态传感器 ---
         m_pageBody = new QWidget();
@@ -187,7 +189,7 @@ namespace MechMainWindow
         layAngle->addStretch();
         m_stkSpecific->addWidget(m_pageAngle);
 
-        m_mainLayout->addWidget(m_stkSpecific);
+        m_mainLayout->addWidget(specificParameters);
 
         // ==================== Lambda 信号绑定 ====================
 

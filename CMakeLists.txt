@@ -135,6 +135,7 @@ add_library(MotionOccRigid STATIC "${model_dir}/RigidMotion.cpp" "${model_dir}/R
     "${model_dir}/NativeMotionProjection.cpp"
     "${model_dir}/NativeMotionResults.cpp" "${model_dir}/NativeMotionFlex.cpp"
     "${model_dir}/FlexResultScalars.cpp" "${model_dir}/FlexModalBasis.cpp"
+    "${model_dir}/NativeMnfPreview.cpp"
     "${model_dir}/NativeMotionActuators.cpp" "${model_dir}/NativeMotionStatics.cpp")
 target_sources(MotionOccRigid PRIVATE "${model_dir}/NativeMotionLoadExport.cpp")
 target_link_libraries(MotionOccRigid PUBLIC MotionOccData PRIVATE MotionEngine::Core MotionEngine::Modal)

@@ -11,7 +11,7 @@
 #include <QDoubleSpinBox>
 #include <QLineEdit>
 #include <QTableWidget>
-#include <QStackedWidget>
+#include <QStackedLayout>
 
 namespace MechMainWindow
 {
@@ -53,7 +53,7 @@ namespace MechMainWindow
 		QComboBox* m_cmbFunctionType;
 
 		// 堆叠容器：常量 / 线性 / 二次 / 三次 / 自定义曲线
-		QStackedWidget* m_stkParams;
+		QStackedLayout* m_stkParams;
 
 		// 常量
 		QDoubleSpinBox* m_spbConstValue;

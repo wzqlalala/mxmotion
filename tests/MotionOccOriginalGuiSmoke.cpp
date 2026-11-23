@@ -2,6 +2,7 @@
 #include "OccViewport.h"
 #include "RigidProject.h"
 #include "NativeBodyMass.h"
+#include "UiPalette.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "compat/mViewportModelManager.h"
 #include "mMotionJointPanel.h"
@@ -37,20 +38,26 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QJsonDocument>
+#include <QLayout>
 #include <QLineEdit>
 #include <QLineF>
+#include <QListWidget>
+#include <QMouseEvent>
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QKeyEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
+#include <QStackedLayout>
 #include <QTabBar>
+#include <QTableWidget>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -79,6 +86,113 @@ void select(QTreeWidget* tree,ModelNode::Kind kind,int id,const QString& collect
 template<class T> T* active(MotionWindow& window) {
     for(auto* item:window.findChildren<T*>())if(item->isVisible())return item;
     throw std::runtime_error("Original GUI panel not visible");
+}
+void requireResultPanelLayout(QWidget* panel)
+{
+    require(panel && panel->isVisible() && panel->layout(), "Original result panel layout is missing");
+    const auto image = panel->grab(QRect(1, 1, 2, 2)).toImage();
+    require(!image.isNull() && image.pixelColor(0, 0) == UiPalette::surface(),
+        "Original result panel margins are painted with the fallback gray background");
+    require(panel->layout()->contentsMargins() == QMargins(8, 7, 8, 7) && panel->layout()->spacing() == 4,
+        "Original result panel margins and spacing do not match the parameter editor");
+}
+QStackedLayout* parameterStack(QWidget* panel, int pageCount)
+{
+    for (auto* stack : panel->findChildren<QStackedLayout*>())
+        if (stack->parentWidget()->isVisible() && stack->count() == pageCount)
+            return stack;
+    throw std::runtime_error("Original parameter page stack not found");
+}
+void selectParameterMode(QWidget* panel, const QString& text)
+{
+    for (auto* combo : panel->findChildren<QComboBox*>()) {
+        const int index = combo->findText(text);
+        if (!combo->isVisible() || index < 0) continue;
+        combo->setCurrentIndex(index);
+        return;
+    }
+    throw std::runtime_error("Original parameter mode not found");
+}
+void requireCompactPage(QStackedLayout* stack, const QString& message)
+{
+    const bool fits = waitFor([&] {
+        const auto* page = stack->currentWidget();
+        const int ideal = page->hasHeightForWidth() ? page->heightForWidth(page->width()) : page->sizeHint().height();
+        const int minimum = qMax(page->minimumSizeHint().height(), page->minimumHeight());
+        const int height = stack->parentWidget()->contentsRect().height();
+        return height >= minimum && height <= qMax(ideal, minimum) + 2;
+    }, 1500);
+    require(fits, message + QStringLiteral(" (stack %1, current page hint %2)")
+        .arg(stack->parentWidget()->contentsRect().height()).arg(stack->currentWidget()->sizeHint().height()));
+}
+void captureSensorPanel(QWidget* sensor, const QString& path)
+{
+    for (auto* fold : sensor->findChildren<FoldSection*>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (fold->title() != QStringLiteral("配置检查")) continue;
+        auto* content = fold->contentWidget();
+        auto* status = content->findChild<QLabel*>();
+        require(status && waitFor([&] {
+            return status->text().startsWith(QStringLiteral("测量单位"))
+                && status->isVisible() && status->height() >= status->fontMetrics().height()
+                && content->rect().contains(QRect(status->mapTo(content, QPoint()), status->size()));
+        }, 1500), "Expanded sensor configuration status is clipped");
+        const int height = qMin(sensor->height(), fold->geometry().bottom() + 8);
+        require(sensor->grab(QRect(0, 0, sensor->width(), height)).save(path), "Cannot capture sensor panel");
+        return;
+    }
+    throw std::runtime_error("Sensor configuration section not found");
+}
+void verifyParameterPages(MotionWindow& window, const QDir& output)
+{
+    window.dispatchOriginalMotionAction("createMotionSensor", "BodyDisplacement");
+    QApplication::processEvents();
+    auto* sensor = window.findChild<QWidget*>("originalMotionEditor_sensors");
+    require(sensor && sensor->isVisible(), "Original displacement sensor did not open");
+    auto* sensorPages = parameterStack(sensor, 5);
+    requireCompactPage(sensorPages, "Displacement sensor reserved space for a hidden page");
+    const int bodyHeight = sensorPages->parentWidget()->height();
+    const auto* reference = sensorPages->currentWidget()->findChild<mPointPickerWidget*>();
+    require(reference && reference->isVisible(), "Sensor reference point picker is hidden");
+    captureSensorPanel(sensor, output.filePath("restored-displacement-sensor.png"));
+    auto* targetBody = sensorPages->currentWidget()->findChild<FoldSection*>();
+    require(targetBody, "Sensor target body section not found");
+    targetBody->setExpanded(false);
+    require(waitFor([&] { return sensorPages->parentWidget()->height() < bodyHeight; }, 1500),
+        "Closing the target body section did not shrink the sensor page");
+    targetBody->setExpanded(true);
+    require(waitFor([&] { return sensorPages->parentWidget()->height() >= bodyHeight; }, 1500),
+        "Reopening the target body section clipped the reference point fields");
+    selectParameterMode(sensor, QStringLiteral("距离"));
+    requireCompactPage(sensorPages, "Distance sensor page did not fit its fields");
+    require(sensorPages->parentWidget()->height() > bodyHeight, "Distance sensor did not expand to show both point pickers");
+    captureSensorPanel(sensor, output.filePath("restored-distance-sensor.png"));
+    selectParameterMode(sensor, QStringLiteral("体位移"));
+    requireCompactPage(sensorPages, "Displacement sensor did not shrink after switching back");
+
+    window.dispatchOriginalMotionAction("createControlInput", {});
+    QApplication::processEvents();
+    auto* control = window.findChild<QWidget*>("originalMotionEditor_controlInputs");
+    require(control && control->isVisible(), "Original control input did not open");
+    auto* controlPages = parameterStack(control, 5);
+    requireCompactPage(controlPages, "Constant input reserved space for the hidden curve table");
+    selectParameterMode(control, QStringLiteral("自定义曲线"));
+    requireCompactPage(controlPages, "Custom curve table was clipped");
+    const auto* table = controlPages->currentWidget()->findChild<QTableWidget*>();
+    require(table && table->isVisible(), "Custom curve table is hidden");
+    selectParameterMode(control, QStringLiteral("常量"));
+    requireCompactPage(controlPages, "Constant input did not shrink after switching back");
+
+    window.dispatchOriginalMotionAction("createMotionDrive", "Velocity");
+    QApplication::processEvents();
+    auto* drive = window.findChild<QWidget*>("originalMotionEditor_drives");
+    require(drive && drive->isVisible(), "Original drive did not open");
+    auto* drivePages = parameterStack(drive, 4);
+    selectParameterMode(drive, QStringLiteral("常数值"));
+    requireCompactPage(drivePages, "Constant drive reserved space for hidden editor modes");
+    selectParameterMode(drive, QStringLiteral("函数表达式"));
+    requireCompactPage(drivePages, "Drive expression editor was clipped");
+    selectParameterMode(drive, QStringLiteral("常数值"));
+    requireCompactPage(drivePages, "Constant drive did not shrink after switching back");
 }
 void enter(QLineEdit* edit,const QString& text) {
     require(edit,"Missing original numeric/coordinate input");edit->setFocus();edit->selectAll();edit->setText(text);
@@ -111,6 +225,103 @@ NativeMotionDocument fixture(const QDir& output,QString& cadFile,QString& jsonFi
 }
 void snapshot(MotionWindow& window,const QDir& output,const QString& name) {
     QApplication::processEvents();require(window.grab().save(output.filePath(name)),"Cannot save original GUI screenshot");
+}
+void clickPicker(QWidget& widget, const QPointF& position)
+{
+    const QPoint global = widget.mapToGlobal(position.toPoint());
+    QMouseEvent down(QEvent::MouseButtonPress, position, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent up(QEvent::MouseButtonRelease, position, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&widget, &down);
+    QApplication::sendEvent(&widget, &up);
+    QApplication::processEvents();
+}
+void applyPicker(QWidget* field)
+{
+    for (auto* action : field->findChildren<QToolButton*>()) {
+        if (action->text() != QStringLiteral("应用")) continue;
+        action->click();
+        QApplication::processEvents();
+        return;
+    }
+    require(false, "Original picker Apply button missing");
+}
+void verifyToolbarPickerSources(MotionWindow& window, mMotionJointPanel& joint)
+{
+    auto* view = window.findChild<OccViewport*>();
+    auto* point = joint.findChild<mPointPickerWidget*>();
+    auto* direction = joint.findChild<mDirectionSelectorWidget*>();
+    auto* edge = window.findChild<QAction*>(QStringLiteral("pickEdge"));
+    auto* face = window.findChild<QAction*>(QStringLiteral("pickFace"));
+    auto* vertex = window.findChild<QAction*>(QStringLiteral("pickVertex"));
+    auto* part = window.findChild<QAction*>(QStringLiteral("pickPart"));
+    require(view && waitFor([&] { return view->glReady(); }), "Joint picker test needs the actual OpenGL viewport");
+    require(point && point->isVisible() && direction && direction->isVisible() && edge && face && vertex && part,
+        "Original joint picker or toolbar action missing");
+    const int rotorPart = context()->document().bodyPartBindings.value(0).value(0, -1);
+    require(rotorPart > 0, "Joint picker test geometry is not bound");
+    view->viewTop();
+    view->fitAll();
+    QApplication::processEvents();
+    // Click away from the edge midpoint and face centroid to exercise the geometric calculations.
+    const auto clickEdge = [&] { clickPicker(*view, view->projectPoint({6,-5,4}, rotorPart)); };
+    const auto clickFace = [&] { clickPicker(*view, view->projectPoint({21,2,4}, rotorPart)); };
+    const auto vectorMatches = [](const QVector3D& actual, const QVector3D& expected) {
+        return (actual - expected).length() < 1e-4f;
+    };
+
+    auto* field = point->pickController()->widget()->findChild<QLineEdit*>();
+    require(field, "Original joint point pick field missing");
+    clickPicker(*field, field->rect().center());
+    require(point->pickController()->isPickActive() && edge->isEnabled() && face->isEnabled(),
+        "Original joint point field disables its edge or face toolbar filter");
+    edge->trigger();
+    clickEdge();
+    require(point->pickData().pickedData.count(PickDataType::GeoEdge) == 1, "Toolbar edge mode did not reach the joint point field");
+    face->trigger();
+    clickFace();
+    const auto pointPicks = point->pickData().pickedData;
+    require(pointPicks.count(PickDataType::GeoEdge) == 1 && pointPicks.count(PickDataType::GeoFace) == 1,
+        "Switching geometry mode lost the joint point's mixed selection");
+    require(vectorMatches(point->coordinate(), {0,0,0}), "Choosing sources bypassed the joint point Apply button");
+    applyPicker(point);
+    require(vectorMatches(point->coordinate(), {15,-2.5f,4}), "Point Apply did not average the actual edge midpoint and face centroid");
+    require(view->pickSelection().isEmpty(), "Applying a point left old geometry in the active view selection");
+
+    direction->setDirectionMode(mDirectionSelectorWidget::SelectObject);
+    QApplication::processEvents();
+    require(direction->objectPickController()->isPickActive() && !point->pickController()->isPickActive()
+        && edge->isEnabled() && face->isEnabled() && !vertex->isEnabled() && !part->isEnabled(),
+        "Direction's object field does not enforce its own toolbar filters");
+    edge->trigger();
+    clickEdge();
+    require(std::abs(direction->getDirection().value<QVector3D>().x()) > .999f,
+        "Direction field did not use the actual edge tangent");
+    face->trigger();
+    clickFace();
+    const auto directionPicks = direction->objectPickData().pickedData;
+    require(directionPicks.size() == 1 && directionPicks.count(PickDataType::GeoFace) == 1
+        && vectorMatches(direction->getDirection().value<QVector3D>(), {0,0,1}),
+        "Direction field did not replace its edge with the actual face normal");
+
+    direction->setDirectionMode(mDirectionSelectorWidget::CustomCoordinate);
+    QApplication::processEvents();
+    auto* start = direction->startPickController();
+    auto* end = direction->endPickController();
+    require(start && end && start->isPickActive() && edge->isEnabled() && face->isEnabled(),
+        "Start-to-end direction did not open a geometry-enabled start field");
+    edge->trigger();
+    clickEdge();
+    applyPicker(start->widget()->parentWidget());
+    end->setPickActive(true);
+    face->trigger();
+    clickFace();
+    applyPicker(end->widget()->parentWidget());
+    require(vectorMatches(direction->startPoint(), {15,-5,4}) && vectorMatches(direction->endPoint(), {15,0,4})
+        && vectorMatches(direction->getDirection().value<QVector3D>(), {0,1,0}),
+        "Start-to-end direction did not use the applied edge and face coordinates");
+    end->setPickActive(false);
+    require(!view->isPicking() && part->isEnabled() && part->isChecked(),
+        "Leaving an original field did not restore the viewport toolbar mode");
 }
 void queryRegression(const mMotionResultData& accepted) {
     using Query=mMotionResultQueryService;
@@ -223,6 +434,7 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
             log<<"PASS original result queries: accepted frames / deg and Nmm units / continuous angles / actual distance derivatives / unavailable channels\n";log.flush();
             log<<"PASS STEP + original JSON -> original scenario -> MotionEngine: 11 accepted frames, 90 deg/s, 9 deg at 0.1 s\n";log.flush();
             select(tree,ModelNode::Animation,1);auto* animation=active<mMotionAnimationPanel>(window);
+            requireResultPanelLayout(animation);
             auto* timeline=animation->findChild<QSlider*>();require(timeline && timeline->maximum()==10,"Original animation did not receive all accepted frames");
             timeline->setValue(10);QApplication::processEvents();
             const auto* animatedResult=context()->model()->getManager<mMotionScenarioManager>(Physical_MotionScenario).getData(1)->getResult();
@@ -237,6 +449,7 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
             require(play&&pause,"Original playback controls missing");play->click();
             require(waitFor([&] { return timeline->value()>0; },2000),"Original animation timer did not advance");pause->click();
             select(tree,ModelNode::Curves,1);auto* curves=active<mMotionCurvePanel>(window);
+            requireResultPanelLayout(curves);
             auto* stableResult=context()->model()->getManager<mMotionScenarioManager>(Physical_MotionScenario).getData(1)->getResult();
             const auto combos=curves->findChildren<QComboBox*>();require(combos.size()==3,"Original curve configuration fields changed");
             combos[0]->setCurrentIndex(combos[0]->findData(int(CurveSourceType::Drive)));
@@ -262,7 +475,19 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
                 "Restoring curve visibility did not immediately persist");
             require(context()->model()->getManager<mMotionScenarioManager>(Physical_MotionScenario).getData(1)->getResult()==stableResult,
                 "Rebuilt row visibility invalidated the accepted physics result");
+            auto* curveList = curves->findChild<QListWidget*>();
+            require(curveList && curveList->count() == 1, "Original curve list row is missing");
+            auto* curveRow = curveList->itemWidget(curveList->item(0));
+            require(curveRow, "Original curve row widget is missing");
+            QPushButton* removeCurve = nullptr;
+            for (auto* button : curveRow->findChildren<QPushButton*>())
+                if (button->text() == QStringLiteral("删除")) removeCurve = button;
+            require(removeCurve && curveList->viewport()->rect().contains(
+                QRect(removeCurve->mapTo(curveList->viewport(), {}), removeCurve->size())),
+                "Original curve row clips the remove button at the normal dock width");
             snapshot(window,output,"restored-curve-panel.png");
+            select(tree, ModelNode::Export, 1);
+            requireResultPanelLayout(window.findChild<QWidget*>("originalMotionLoadExportPanel"));
             log<<"PASS original animation slider/timer -> actual CAD pose; original curve controls -> exact accepted samples; display edits preserve results\n";log.flush();
             // Original topology selectors store global IDs; persisted references
             // must retain the exact second-part subshape rather than its ordinal
@@ -298,6 +523,8 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
             stored=false;for(const auto& value:context()->document().collection("joints")) { const auto row=value.toObject();const auto refs=row.value("occSurfaceFaces").toArray();if(!refs.isEmpty())stored=refs.first().toObject().value("partId").toInt()==part; }
             require(stored,"Original face selector did not persist real OCC face identity");snapshot(window,output,"restored-surface-picker.png");
             log<<"PASS original curve/face collectors, global topology IDs, exact OCC fingerprints\n";log.flush();
+            verifyParameterPages(window, output);
+            log<<"PASS original sensor, control input and drive pages fit the active fields\n";log.flush();
             // All restored original panel entry points must construct live
             // widgets; keep the original incomplete templates distinguishable.
             const QStringList entries{"createMotionBodyBatch","createMotionBody","createMotionCoupling","createMotionSpring","createMotionVectorForce",
@@ -317,6 +544,9 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
             require((point-QVector3D(31.25,2.5,-1.75)).length()<1e-6,"Original point value changed after project reopen");
             require(context()->document().entity("joints",23)==source.entity("joints",23),"Unedited topology-axis precision changed on reopen");
             snapshot(reopened,output,"restored-reopened-marker.png");log<<"PASS project reopen, original composite point control, untouched precision/extensions\n";
+            select(tree,ModelNode::Native,23,"joints");
+            verifyToolbarPickerSources(reopened,*active<mMotionJointPanel>(reopened));
+            log<<"PASS original joint toolbar filters, mixed point sources, face/edge directions, and start-to-end geometry\n";log.flush();
         }
         extern int runMotionOccOriginalAutoFlexSmoke(QApplication&,const QString&);
         require(runMotionOccOriginalAutoFlexSmoke(app,output.filePath("autoflex"))==0,"Original AutoFlex workflow failed; see autoflex/original-autoflex-smoke.txt");

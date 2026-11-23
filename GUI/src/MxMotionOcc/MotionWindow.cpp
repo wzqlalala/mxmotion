@@ -1,8 +1,10 @@
 #include "MotionWindow.h"
 #include "compat/model/LegacyMotionContext.h"
+#include "compat/picking/LegacyPickContext.h"
 #include "NativeMotionSymbols.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
+#include "OriginalSelection.h"
 #include "RigidProject.h"
 
 #include "ThemeManager.h"
@@ -22,6 +24,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCursor>
@@ -43,7 +46,9 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QScreen>
+#include <QScrollArea>
 #include <QStatusBar>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -385,10 +390,38 @@ void MotionWindow::createWorkspace()
     m_parameterDock->toggleView(true);
     m_treeArea->setCurrentDockWidget(m_modelDock);
 
-    m_selectionDetails = new QPlainTextEdit;
-    m_selectionDetails->setReadOnly(true);
-    m_selectionDetails->setFrameShape(QFrame::NoFrame);
-    m_selectionDock = addPane("Select", tr("选择信息"), m_selectionDetails);
+    auto* selectionPage = new QWidget;
+    auto* selectionLayout = new QVBoxLayout(selectionPage);
+    auto* selectionScroll = new QScrollArea(selectionPage);
+    selectionScroll->setWidgetResizable(true);
+    selectionScroll->setFrameShape(QFrame::NoFrame);
+    selectionScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    selectionLayout->addWidget(selectionScroll);
+    m_selectionDetails = new QTableWidget(1, 1, selectionScroll);
+    m_selectionDetails->setObjectName(QStringLiteral("selectionInfoTable"));
+    m_selectionDetails->horizontalHeader()->hide();
+    m_selectionDetails->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_selectionDetails->setSelectionBehavior(QAbstractItemView::SelectItems);
+    m_selectionDetails->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_selectionDetails, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        mUiMenu menu(m_selectionDetails);
+        auto* copy = menu.addAction(tr("复制"));
+        auto* refresh = menu.addAction(tr("刷新"));
+        menu.addAction(tr("重新选择"));
+        const auto* action = menu.exec(m_selectionDetails->viewport()->mapToGlobal(pos));
+        if (action == refresh) m_selectionDetails->clearSelection();
+        const auto items = m_selectionDetails->selectedItems();
+        if (action != copy || items.isEmpty()) return;
+        const int row = items.front()->row();
+        QStringList values;
+        for (int column = 0; column < m_selectionDetails->columnCount(); ++column) {
+            const auto* item = m_selectionDetails->item(row, column);
+            if (item && item->isSelected()) values.append(item->text());
+        }
+        QApplication::clipboard()->setText(values.join(QLatin1Char(' ')));
+    });
+    selectionScroll->setWidget(m_selectionDetails);
+    m_selectionDock = addPane("Select", tr("选择信息"), selectionPage);
     auto* bottom = m_docks->addDockWidget(ads::BottomDockWidgetArea, m_selectionDock);
     m_output = new QPlainTextEdit;
     m_output->setReadOnly(true);
@@ -504,36 +537,46 @@ QWidget* MotionWindow::createViewportFrame()
     ThemeManager::applyMenuStyle(pickMenu);
     pickButton->setMenu(pickMenu);
     auto* pickModes = new QActionGroup(pickButton);
-    struct PickMode { std::optional<PickKind> kind; const char* image; QString label; const char* name; };
+    using PickType = MxFunctions::PickDataType;
+    const auto viewportFilter = [](PickType type) -> std::optional<PickKind> {
+        if (type == PickType::None) return std::nullopt;
+        return LegacyPickContext::toKind(type);
+    };
+    const auto showMode = [pickButton](const QAction* action) {
+        pickButton->setIcon(action->icon());
+        pickButton->setText(action->text());
+    };
+    struct PickMode { PickType type; const char* image; QString label; const char* name; };
     const PickMode modes[] = {
-        {std::nullopt, "zhinengxuanze3x.png", tr("智能选择"), "pickSmart"},
-        {PickKind::Vertex, "shiqudingdian3x.png", tr("拾取顶点"), "pickVertex"},
-        {PickKind::Edge, "shiqubian3x.png", tr("拾取边"), "pickEdge"},
-        {PickKind::Face, "shiqumian3x.png", tr("拾取面"), "pickFace"},
-        {PickKind::Solid, "shiquti3x.png", tr("拾取体"), "pickSolid"},
-        {PickKind::Node, "shiqujiedian3x.png", tr("拾取节点"), "pickNode"},
-        {PickKind::MeshEdge, "shiqudanyuanxian3x.png", tr("拾取单元线"), "pickMeshEdge"},
-        {PickKind::MeshFace, "shiqudanyuanmian3x.png", tr("拾取单元面"), "pickMeshFace"},
-        {PickKind::Element, "shiqudanyuan3x.png", tr("拾取单元"), "pickElement"},
-        {PickKind::Part, "shiqubujian3x.png", tr("拾取部件"), "pickPart"}
+        {PickType::None, "zhinengxuanze3x.png", tr("智能选择"), "pickSmart"},
+        {PickType::GeoPoint, "shiqudingdian3x.png", tr("拾取顶点"), "pickVertex"},
+        {PickType::GeoEdge, "shiqubian3x.png", tr("拾取边"), "pickEdge"},
+        {PickType::GeoFace, "shiqumian3x.png", tr("拾取面"), "pickFace"},
+        {PickType::GeoSolid, "shiquti3x.png", tr("拾取体"), "pickSolid"},
+        {PickType::Node, "shiqujiedian3x.png", tr("拾取节点"), "pickNode"},
+        {PickType::ElementEdge, "shiqudanyuanxian3x.png", tr("拾取单元线"), "pickMeshEdge"},
+        {PickType::ElementFace, "shiqudanyuanmian3x.png", tr("拾取单元面"), "pickMeshFace"},
+        {PickType::Element, "shiqudanyuan3x.png", tr("拾取单元"), "pickElement"},
+        {PickType::Part, "shiqubujian3x.png", tr("拾取部件"), "pickPart"}
     };
     for (const auto& mode : modes) {
         auto* action = pickMenu->addAction(icon(QStringLiteral("CenterMainWindow/") + mode.image), mode.label);
         action->setObjectName(QString::fromLatin1(mode.name));
         action->setCheckable(true);
+        action->setData(int(mode.type));
         pickModes->addAction(action);
         viewTools->addAction(action);
-        const auto updateButton = [pickButton, action] {
-            pickButton->setIcon(action->icon());
-            pickButton->setText(action->text());
-        };
-        connect(action, &QAction::triggered, this, [this, kind = mode.kind, updateButton] {
-            m_viewport->setSelectionFilter(kind);
-            updateButton();
+        connect(action, &QAction::triggered, this, [this, type = mode.type, action, viewportFilter, showMode] {
+            if (auto* field = LegacyPickContext::activeForViewport(*m_viewport)) {
+                if (type != field->pickType()) field->setPickType(type);
+            } else if (!m_viewport->isPicking()) {
+                m_viewport->setSelectionFilter(viewportFilter(type));
+                showMode(action);
+            }
         });
-        if (mode.kind == PickKind::Part) {
+        if (mode.type == PickType::Part) {
             action->setChecked(true);
-            updateButton();
+            showMode(action);
         }
     }
     viewTools->addAction(command(Command::ClearSelection));
@@ -568,9 +611,18 @@ QWidget* MotionWindow::createViewportFrame()
     connect(m_viewport, &OccViewport::partPicked, this, &MotionWindow::selectPart);
     connect(m_viewport, &OccViewport::viewportSelectionChanged, this, &MotionWindow::updateSelectionInfo);
     connect(m_viewport, &OccViewport::pickSelectionChanged, this, &MotionWindow::updateSelectionInfo);
-    connect(m_viewport, &OccViewport::pickSessionChanged, this, [this, pickModes, pickButton](bool active) {
-        pickModes->setEnabled(!active);
-        pickButton->setToolTip(active ? tr("参数面板正在拾取，结束后可切换视口拾取模式。") : tr("切换视口拾取模式"));
+    connect(m_viewport, &OccViewport::pickSessionChanged, this, [this, pickModes, pickButton, viewportFilter, showMode](bool active) {
+        const auto* field = LegacyPickContext::activeForViewport(*m_viewport);
+        const auto allowed = field ? field->allowedTypes() : QSet<PickType>{};
+        for (auto* action : pickModes->actions()) {
+            const auto type = static_cast<PickType>(action->data().toInt());
+            action->setEnabled(field ? allowed.contains(type) : !active);
+            if (field ? type == field->pickType() : viewportFilter(type) == m_viewport->selectionFilter()) {
+                action->setChecked(true);
+                showMode(action);
+            }
+        }
+        pickButton->setToolTip(field ? tr("切换当前参数支持的拾取模式") : active ? tr("当前拾取使用固定类型") : tr("切换视口拾取模式"));
         updateSelectionInfo();
     });
     connect(m_viewport, &OccViewport::graphicsError, this, [this](const QString& error) {
@@ -857,28 +909,39 @@ void MotionWindow::updateParameters()
 void MotionWindow::updateSelectionInfo()
 {
     if (!m_selection || !m_selectionDetails) return;
-    const auto picks = m_viewport->isPicking() ? m_viewport->pickSelection() : m_viewport->viewportSelection();
-    const auto* part = m_viewport->isPicking() ? nullptr : m_document.part(m_partId);
-    const auto status = !picks.isEmpty() ? tr("选择：%1 项").arg(picks.size())
-        : part ? tr("选择：%1").arg(part->name) : tr("选择：无");
+    const bool picking = m_viewport->isPicking();
+    auto picks = picking ? m_viewport->pickSelection() : m_viewport->viewportSelection();
+    if (picks.isEmpty() && !picking && m_document.part(m_partId)) {
+        PickResult part;
+        part.partId = m_partId;
+        picks.append(part);
+    }
+    const auto info = describeSelection(m_document, m_meshes, picks);
+    const auto status = tr("选择：%1").arg(info.status);
     const auto label = m_selection->fontMetrics().elidedText(status, Qt::ElideRight, qMax(120, width() / 4));
     m_selection->setText(QStringLiteral("<a href='selection' style='color:%2;text-decoration:none'>%1</a>")
         .arg(label.toHtmlEscaped(), UiPalette::textHex()));
-    if (picks.isEmpty()) {
-        m_selectionDetails->setPlainText(part ? part->name + QLatin1Char('\n') + partSummary() : tr("当前没有选择。"));
-        return;
-    }
+    m_selection->setToolTip(tr("打开选择信息\n%1").arg(status));
 
-    const QStringList names{tr("部件"), tr("顶点"), tr("边"), tr("面"), tr("节点"),
-        tr("单元线"), tr("单元面"), tr("单元"), tr("体")};
-    QStringList details{tr("已选择 %1 项").arg(picks.size())};
-    for (const auto& pick : picks) {
-        const auto* part = m_document.part(pick.partId);
-        const int id = pick.kind == PickKind::Part ? pick.partId : pick.kind == PickKind::Node ? pick.nodeId : pick.index;
-        details << tr("%1 %2 · %3").arg(names.at(int(pick.kind))).arg(id)
-            .arg(part ? part->name : tr("部件 %1").arg(pick.partId));
+    m_selectionDetails->setUpdatesEnabled(false);
+    m_selectionDetails->setRowCount(0);
+    m_selectionDetails->setColumnCount(std::max(1, info.columns.size()));
+    m_selectionDetails->setRowCount(info.rows.size() + 1);
+    for (int column = 0; column < info.columns.size(); ++column) {
+        auto* header = new QLabel(info.columns.at(column));
+        header->setAlignment(Qt::AlignCenter);
+        m_selectionDetails->setCellWidget(0, column, header);
     }
-    m_selectionDetails->setPlainText(details.join(QLatin1Char('\n')));
+    for (int row = 0; row < info.rows.size(); ++row) {
+        const auto& values = info.rows.at(row);
+        for (int column = 0; column < values.size(); ++column) {
+            auto* item = new QTableWidgetItem(values.at(column));
+            item->setTextAlignment(Qt::AlignCenter);
+            m_selectionDetails->setItem(row + 1, column, item);
+        }
+    }
+    m_selectionDetails->resizeColumnsToContents();
+    m_selectionDetails->setUpdatesEnabled(true);
 }
 
 void MotionWindow::updateActions()

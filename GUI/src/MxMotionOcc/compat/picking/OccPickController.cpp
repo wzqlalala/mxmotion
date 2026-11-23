@@ -182,7 +182,13 @@ void mPickWidgetController::refreshHighlight()
 {
     auto* c=context();if(!c)return;
     const bool temporary=m_service && dynamic_cast<mPickWidgetHighlightService*>(m_service.get());
-    if(m_cloud || !m_visible || !m_view || !m_view->isVisible() || (!m_active&&(!m_keepHighlight||!temporary))) {c->clearHighlightLayer(m_layer);return;}
+    // A node-only field uses the viewport's normal layer while active.
+    // Mixed-type fields still need the auxiliary layer for other pick types.
+    const bool activeNodeField=m_active && allowedTypes()==QSet<Type>{Type::Node};
+    if(activeNodeField || m_cloud || !m_visible || !m_view || !m_view->isVisible() || (!m_active&&(!m_keepHighlight||!temporary))) {
+        c->clearHighlightLayer(m_layer);
+        return;
+    }
     const auto picks=c->resolve(resolvedData());
     QColor color=m_view->colorBlockColor();if(!color.isValid())color=QColor(232,130,28);
     c->setHighlightLayer(m_layer,picks,color);

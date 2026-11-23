@@ -22,7 +22,7 @@
 #include <QToolButton>
 #include <QMdiSubWindow>
 #include <QComboBox>
-#include <QStackedWidget>
+#include <QStackedLayout>
 #include <QPushButton>
 #include <QTableWidget>
 
@@ -151,7 +151,7 @@ namespace MechMainWindow
 
         // 3. 驱动激励层
         QComboBox* m_cmbInputType;      ///< [常数值 / 函数表达式 / 函数模板]
-        QStackedWidget* m_stkInputMode; ///< 堆叠容器，用于无缝切换输入框
+        QStackedLayout* m_stkInputMode; ///< 切换激励输入
         MxFunctions::mCalcLineEdit* m_spbConstant; ///< 常数表达式输入框
         mMotionExprBuilderWidget* m_exprBuilder;  ///< 表达式构造器（公用控件）
 

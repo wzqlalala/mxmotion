@@ -19,7 +19,7 @@
 #include <QToolButton>
 #include <QMdiSubWindow>
 #include <QComboBox>
-#include <QStackedWidget>
+#include <QStackedLayout>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QLineEdit>
@@ -148,7 +148,7 @@ namespace MechMainWindow
 		QComboBox* m_cmbComponentMode;  ///< 分量模式
 
 		// 3. 类型特定参数层（使用堆叠控件切换）
-		QStackedWidget* m_stkSpecific;
+		QStackedLayout* m_stkSpecific;
 
 		// --- 体状态传感器页面 (Index 0) ---
 		QWidget* m_pageBody;

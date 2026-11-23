@@ -178,6 +178,7 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
     }
     for(const auto& runtime:flex){
         RigidFlexResult output;output.flexId=runtime.id;output.bodyId=runtime.bodyId;output.referenceNodes=runtime.result.node_x0;output.surfaceTriangles=runtime.result.surface_tris;
+        output.sourceNodeIds=runtime.importedNodeIds;
         output.tetrahedra=runtime.tetrahedra;
         output.modeCount=runtime.result.n_modes;
         output.interfaceCount=static_cast<int>(runtime.result.interface_bodies.size());
@@ -195,7 +196,7 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
             const std::size_t index=static_cast<std::size_t>(found-runtime.times.begin());output.nodePositions.push_back(runtime.nodePositions[index]);
             output.interfacePoses.push_back(runtime.interfacePoses.at(index));
             output.modalCoordinates.push_back(runtime.modalCoordinates.at(index));
-            if(output.modeCount>0)channels.add("autoFlexBodies",runtime.id,"ModalCoordinates","",runtime.modalCoordinates[index]);
+            if(output.modeCount>0)channels.add(runtime.importedBody ? "importedMnfBodies" : "autoFlexBodies",runtime.id,"ModalCoordinates","",runtime.modalCoordinates[index]);
         }
         result.flexBodies.push_back(std::move(output));
     }

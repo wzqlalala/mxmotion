@@ -149,7 +149,7 @@ namespace MechMainWindow
         QComboBox* m_cmbPlaySpeed;    ///< 播放速度 (1.0x, 2.0x 等)
         QCheckBox* m_chkLoop;         ///< 循环播放复选框
         QCheckBox* m_chkFlexAdaptiveScale = nullptr; ///<【刚柔耦合】云图色标逐帧自适应（默认全程定标）
-        QComboBox* m_cmbFlexContourRef = nullptr;     ///<【刚柔耦合】云图参照系：0=整体运动偏差 NX 口径（默认）/1=弹性变形接口口径
+        QComboBox* m_cmbFlexContourRef = nullptr;    ///< 柔性体云图显示量
 
         // ==================== Marker 追踪 ====================
         FoldSection* m_foldMarkerTrace;

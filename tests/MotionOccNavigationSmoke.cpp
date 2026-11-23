@@ -282,9 +282,9 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         require(view.pickSelection().size() == 2 && view.pickSelection()[0].nodeId == 101 && view.pickSelection()[1].nodeId == 205,
                 "NX navigation broke Ctrl-left rectangle node IDs");
         require(sameProjection(before, projected(view, partId)), "Node rectangle moved the camera");
-        click(view, last, Qt::RightButton);
-        require(view.pickSelection().size() == 1 && view.pickSelection().front().nodeId == 101,
-                "NX right click no longer removes the latest typed pick");
+        click(view, view.projectPoint(cloud.nodes.front(), partId), Qt::RightButton);
+        require(view.pickSelection().size() == 1 && view.pickSelection().front().nodeId == 205,
+                "NX right click did not remove the targeted node");
         mouse(view, QEvent::MouseButtonPress, center, Qt::MiddleButton, Qt::MiddleButton);
         key(view, QEvent::KeyPress, Qt::Key_Escape);
         require(view.isPicking() && view.pickSelection().size() == 1 && cancelled == 0,
@@ -303,7 +303,7 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         require(view.isPicking(), "Changing mouse mode cancelled an active typed picker");
         view.endPick();
         require(selected == 0, "Camera or typed picking leaked whole-part selection signals");
-        log << "NX typed-picker isolation, actual node numbering, right undo, Esc and interrupted rectangle passed\n";
+        log << "NX typed-picker isolation, actual node numbering, right subtract, Esc and interrupted rectangle passed\n";
 
         view.beginPick(PickKind::Face, false, {partId});
         click(view, view.projectPoint(anchorWorld, partId));
@@ -312,6 +312,8 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         const auto& hit = view.pickSelection().front().hitPosition;
         for (int k = 0; k < 3; ++k) require(std::abs(hit[k]-anchorWorld[k]) < 1e-5,
                 "Typed CAD coordinates no longer use the initial global millimetre frame");
+        click(view, view.projectPoint(anchorWorld, partId), Qt::RightButton);
+        require(view.pickSelection().isEmpty(), "Single-face picker no longer clears on right click");
         view.endPick();
         click(view, view.projectPoint({20,15,20}, partId));
         require(selected == 1, "Whole-part click stopped working after navigation and picker transitions");
@@ -398,10 +400,12 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
                 view.pickSelection().front().nodeId==101 && cancelled==cancellationsBeforeHud,
                 "Triad interaction changed/cancelled the accepted typed pick session");
         view.endPick();
-        // The corner HUD is not a rectangular input shield: empty space must
-        // still reach ordinary whole-part selection (here it selects nothing).
-        click(view, QPointF(hud->pos())+QPointF(2,2));
-        require(selected == selectionsBeforeHud+1, "Empty triad rectangle swallowed viewport input");
+        const auto emptyHudCorner = QPointF(hud->pos()) + QPointF(2, 2);
+        click(view, emptyHudCorner);
+        require(selected == selectionsBeforeHud, "An empty viewport click emitted a whole-part pick");
+        before = projected(view, partId);
+        drag(view, emptyHudCorner, emptyHudCorner + QPointF(42, -24), Qt::MiddleButton);
+        require(!sameProjection(before, projected(view, partId)), "Empty triad rectangle swallowed viewport navigation");
         view.viewIsometric(); app.processEvents();
         const int oldSide = hud->width();
         auto enlarged = hud->font(); enlarged.setPointSizeF(20); hud->setFont(enlarged);

@@ -26,9 +26,12 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <set>
+#include <utility>
 
 namespace MotionOcc {
 namespace {
@@ -38,10 +41,48 @@ QString basisName(const QString& kind)
     if(kind=="FreeBody")return QStringLiteral("自由体模态基（含可能的刚体模态）");
     return kind;
 }
+
+using ModePoint = std::array<double, 3>;
+
+ModePoint modePoint(const FlexModeSample& sample, std::size_t node)
+{
+    return {sample.positions[3 * node], sample.positions[3 * node + 1],
+            sample.positions[3 * node + 2]};
+}
+
+void buildNodeCloud(const FlexModeSample& sample, double radius, FemMesh& mesh,
+                    std::vector<double>& magnitudes)
+{
+    // View-local point glyphs keep the same depth test, camera fit and scalar
+    // legend as a surface plot. The glyph topology stays in the preview.
+    constexpr std::array<ModePoint, 4> corners{{
+        {{1, 1, 1}}, {{-1, -1, 1}}, {{-1, 1, -1}}, {{1, -1, -1}}
+    }};
+    constexpr std::array<std::array<std::uint32_t, 3>, 4> faces{{
+        {{0, 2, 1}}, {{0, 1, 3}}, {{0, 3, 2}}, {{1, 2, 3}}
+    }};
+    mesh.nodes.reserve(4 * sample.magnitudes.size());
+    mesh.surface.reserve(4 * sample.magnitudes.size());
+    magnitudes.reserve(4 * sample.magnitudes.size());
+    for (std::size_t node = 0; node < sample.magnitudes.size(); ++node) {
+        const auto point = modePoint(sample, node);
+        const auto first = static_cast<std::uint32_t>(mesh.nodes.size());
+        for (const auto& corner : corners) {
+            mesh.nodes.push_back({point[0] + radius * corner[0],
+                                  point[1] + radius * corner[1],
+                                  point[2] + radius * corner[2]});
+            magnitudes.push_back(sample.magnitudes[node]);
+        }
+        for (const auto& face : faces)
+            mesh.surface.push_back({first + face[0], first + face[1], first + face[2]});
+    }
+}
+
 struct Inspection {
     CadDocument cad;
     NativeMotionDocument document;
     std::vector<RigidFlexResult> results;
+    QString importedName;
     OccViewport* viewport=nullptr;
     QComboBox* body=nullptr;
     QTableWidget* frequencies=nullptr;
@@ -62,6 +103,12 @@ struct Inspection {
         const int index=body->currentIndex();
         return index>=0&&std::size_t(index)<results.size()?&results[std::size_t(index)]:nullptr;
     }
+    bool isImported() const { return !importedName.isEmpty(); }
+    int displayedMode(const RigidFlexResult& result, int row) const
+    {
+        const auto& ids = result.modalBasis.sourceModeIds;
+        return row >= 0 && std::size_t(row) < ids.size() ? ids[std::size_t(row)] : row + 1;
+    }
     void draw(){
         const auto* result=selected();if(!result||part<1)return;
         FlexModeSample sample;QString error;
@@ -69,12 +116,18 @@ struct Inspection {
             status->setText(error);return;
         }
         FemMesh mesh;
-        for(std::size_t node=0;node<sample.positions.size()/3;++node)
-            mesh.nodes.push_back({sample.positions[3*node],sample.positions[3*node+1],sample.positions[3*node+2]});
-        for(std::size_t face=0;face+2<result->surfaceTriangles.size();face+=3)
-            mesh.surface.push_back({std::uint32_t(result->surfaceTriangles[face]),std::uint32_t(result->surfaceTriangles[face+1]),std::uint32_t(result->surfaceTriangles[face+2])});
+        std::vector<double> magnitudes;
+        if (result->modalBasis.kind == "MNF" && result->surfaceTriangles.empty()) {
+            buildNodeCloud(sample, markerSize * .55, mesh, magnitudes);
+        } else {
+            for(std::size_t node=0;node<sample.positions.size()/3;++node)
+                mesh.nodes.push_back(modePoint(sample, node));
+            for(std::size_t face=0;face+2<result->surfaceTriangles.size();face+=3)
+                mesh.surface.push_back({std::uint32_t(result->surfaceTriangles[face]),std::uint32_t(result->surfaceTriangles[face+1]),std::uint32_t(result->surfaceTriangles[face+2])});
+            magnitudes = std::move(sample.magnitudes);
+        }
         viewport->setDeformedMeshes({{part,mesh}},{});
-        viewport->setMeshScalars({{part,sample.magnitudes}},0,1,QStringLiteral("振型幅值（归一化）"));
+        viewport->setMeshScalars({{part,std::move(magnitudes)}},0,1,QStringLiteral("振型幅值（归一化）"));
         QVector<MotionSymbol> symbols;
         if(attachments->isChecked())for(std::size_t group=0;group<result->modalBasis.attachmentGroups.size();++group){
             MotionSymbol symbol;symbol.collection="modalAttachment";symbol.id=int(group);
@@ -83,7 +136,7 @@ struct Inspection {
             symbol.emphasized=patches->currentRow()==int(group);
             const auto& nodes=result->modalBasis.attachmentGroups[group];
             for(int node:nodes){
-                const auto p=mesh.nodes[std::size_t(node)];
+                const auto p=modePoint(sample, std::size_t(node));
                 for(int component=0;component<3;++component){
                     auto first=p,last=p;first[component]-=markerSize;last[component]+=markerSize;
                     symbol.linePoints.push_back(first);symbol.linePoints.push_back(last);
@@ -94,7 +147,7 @@ struct Inspection {
         }
         viewport->setMotionSymbols(symbols);
         status->setText(QStringLiteral("第 %1 阶 · %2 Hz · 显示峰值 %3 mm · 振型原始最大范数 %4")
-            .arg(frequencies->currentRow()+1).arg(sample.frequencyHz,0,'g',9)
+            .arg(displayedMode(*result, frequencies->currentRow())).arg(sample.frequencyHz,0,'g',9)
             .arg(amplitude->value(),0,'g',6).arg(sample.rawMaximum,0,'g',9));
     }
     void selectBody(){
@@ -107,11 +160,22 @@ struct Inspection {
         const bool valid=validateFlexModes(*result,error);
         for(auto* field:std::initializer_list<QWidget*>{play,amplitude,phase,attachments,visualSpeed})field->setEnabled(valid);
         if(!valid){status->setText(error);description->setText(basisName(result->modalBasis.kind)+"\n"+result->modalBasis.diagnostics.join("\n"));return;}
-        const auto bound=document.bodyPartBindings.value(result->bodyId);
-        if(bound.isEmpty() || !cad.part(bound.front())){status->setText(QStringLiteral("柔性体缺少 CAD 显示绑定。"));return;}
-        part=bound.front();std::set<int> hidden;
-        for(const auto& item:cad.parts())if(item.id!=part)hidden.insert(item.id);
-        viewport->setScene(cad,{},hidden);
+        if (isImported()) {
+            // The viewport keys its deformable mesh by part ID. This private
+            // slot is immediately replaced with the MNF geometry before draw.
+            if (cad.parts().empty() && !cad.addPrimitive(Primitive::Box, 1, 1, 1, part, error)) {
+                status->setText(error);
+                return;
+            }
+            part = cad.parts().front().id;
+            viewport->setScene(cad, {});
+        } else {
+            const auto bound=document.bodyPartBindings.value(result->bodyId);
+            if(bound.isEmpty() || !cad.part(bound.front())){status->setText(QStringLiteral("柔性体缺少 CAD 显示绑定。"));return;}
+            part=bound.front();std::set<int> hidden;
+            for(const auto& item:cad.parts())if(item.id!=part)hidden.insert(item.id);
+            viewport->setScene(cad,{},hidden);
+        }
         double span=0;
         for(int component=0;component<3;++component){
             double first=result->referenceNodes[component],last=first;
@@ -125,17 +189,23 @@ struct Inspection {
         {QSignalBlocker blocker(amplitude);amplitude->setMaximum(std::max(1.0,span));amplitude->setValue(std::max(1e-6,span*.05));}
         {QSignalBlocker blocker(phase);phase->setValue(1000);}
         const auto& basis=result->modalBasis;
-        description->setText(QStringLiteral("%1\n请求 %2 阶，实际保留 %3 阶；截止频率 %4。\n%5\n振型按最大节点位移归一化，仅显示幅值可调；这不是工况变形或整机固有模态。")
-            .arg(basisName(basis.kind)).arg(basis.requestedCount).arg(basis.frequenciesHz.size())
-            .arg(basis.cutoffHz>0?QStringLiteral("%1 Hz").arg(basis.cutoffHz,0,'g',9):QStringLiteral("不截断"))
-            .arg(result->reducedDynamics?QStringLiteral("动力学表示：模态缩减。"):
-                QStringLiteral("动力学表示：独立接口共回转全有限元；此处的夹持模态仅用于检查。")));
+        if (isImported()) {
+            description->setText(QStringLiteral("外部 MNF · %1 个节点 · %2 阶\n%3。振型按最大节点位移归一化。")
+                .arg(result->referenceNodes.size() / 3).arg(basis.frequenciesHz.size())
+                .arg(result->surfaceTriangles.empty() ? QStringLiteral("节点云预览") : QStringLiteral("原始网格表面")));
+        } else {
+            description->setText(QStringLiteral("%1\n请求 %2 阶，实际保留 %3 阶；截止频率 %4。\n%5\n振型按最大节点位移归一化，仅显示幅值可调；这不是工况变形或整机固有模态。")
+                .arg(basisName(basis.kind)).arg(basis.requestedCount).arg(basis.frequenciesHz.size())
+                .arg(basis.cutoffHz>0?QStringLiteral("%1 Hz").arg(basis.cutoffHz,0,'g',9):QStringLiteral("不截断"))
+                .arg(result->reducedDynamics?QStringLiteral("动力学表示：模态缩减。"):
+                    QStringLiteral("动力学表示：独立接口共回转全有限元；此处的夹持模态仅用于检查。")));
+        }
         if(!basis.diagnostics.isEmpty())description->setText(description->text()+"\n"+basis.diagnostics.join("\n"));
         {
             QSignalBlocker blocker(frequencies);frequencies->setRowCount(int(basis.frequenciesHz.size()));
             for(int mode=0;mode<frequencies->rowCount();++mode){
                 const double f=basis.frequenciesHz[std::size_t(mode)];
-                frequencies->setItem(mode,0,new QTableWidgetItem(QString::number(mode+1)));
+                frequencies->setItem(mode,0,new QTableWidgetItem(QString::number(displayedMode(*result, mode))));
                 frequencies->setItem(mode,1,new QTableWidgetItem(QString::number(f,'g',12)));
                 frequencies->setItem(mode,2,new QTableWidgetItem(f>1e-12?QString::number(1/f,'g',8):QStringLiteral("—")));
             }
@@ -144,7 +214,12 @@ struct Inspection {
         {
             QSignalBlocker blocker(patches);patches->setRowCount(int(basis.attachmentGroups.size()));
             for(int group=0;group<patches->rowCount();++group){
-                QStringList ids;for(int id:basis.attachmentGroups[std::size_t(group)])ids.append(QString::number(id));
+                QStringList ids;
+                for (int id : basis.attachmentGroups[std::size_t(group)]) {
+                    const auto& sourceIds = result->sourceNodeIds;
+                    ids.append(QString::number(isImported() && std::size_t(id) < sourceIds.size()
+                        ? sourceIds[std::size_t(id)] : id));
+                }
                 patches->setItem(group,0,new QTableWidgetItem(QString::number(group+1)));
                 patches->setItem(group,1,new QTableWidgetItem(QString::number(ids.size())));
                 auto* item=new QTableWidgetItem(ids.join(", "));item->setToolTip(item->text());patches->setItem(group,2,item);
@@ -153,33 +228,44 @@ struct Inspection {
         draw();viewport->viewIsometric();viewport->fitAll();
     }
 };
+
+RigidFlexResult snapshotModeBasis(const RigidFlexResult& source)
+{
+    RigidFlexResult snapshot;
+    snapshot.flexId = source.flexId;
+    snapshot.bodyId = source.bodyId;
+    snapshot.referenceNodes = source.referenceNodes;
+    snapshot.sourceNodeIds = source.sourceNodeIds;
+    snapshot.surfaceTriangles = source.surfaceTriangles;
+    snapshot.modalBasis = source.modalBasis;
+    snapshot.reducedDynamics = source.reducedDynamics;
+    return snapshot;
 }
 
-QDialog* openNativeModeInspector(QWidget* parent,const CadDocument& cad,const NativeMotionDocument& document,
-                                 const std::vector<RigidFlexResult>& results)
+QDialog* showModeInspector(QWidget* parent, const std::shared_ptr<Inspection>& state,
+                           std::function<void()> bind = {})
 {
-    auto state=std::make_shared<Inspection>();state->cad=cad;state->document=document;
-    for(const auto& source:results){
-        // Retain only the basis/reference mesh. A potentially large transient
-        // history is not duplicated just to display a mode.
-        RigidFlexResult copy;copy.flexId=source.flexId;copy.bodyId=source.bodyId;
-        copy.referenceNodes=source.referenceNodes;copy.surfaceTriangles=source.surfaceTriangles;
-        copy.modalBasis=source.modalBasis;copy.reducedDynamics=source.reducedDynamics;
-        state->results.push_back(std::move(copy));
-    }
     auto* dialog=new QDialog(parent);dialog->setObjectName("nativeModeInspector");
-    dialog->setAttribute(Qt::WA_DeleteOnClose);dialog->setWindowTitle(QStringLiteral("真实模态检查器"));dialog->resize(1120,760);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(state->isImported() ? QStringLiteral("MNF 振型检查器") : QStringLiteral("真实模态检查器"));
+    dialog->resize(1120,760);
     auto* layout=new QVBoxLayout(dialog);auto* splitter=new QSplitter(dialog);layout->addWidget(splitter,1);
     auto* controls=new QWidget;auto* form=new QVBoxLayout(controls);
     state->body=new QComboBox;state->body->setObjectName("nativeModeBody");
-    for(const auto& result:state->results){
-        const auto entity=document.entity("autoFlexBodies",result.flexId);
-        state->body->addItem(QStringLiteral("%1 [%2]").arg(entity.value("name").toString(QStringLiteral("柔性体"))).arg(result.flexId));
+    if (state->isImported()) {
+        state->body->addItem(state->importedName);
+    } else {
+        for (const auto& result : state->results) {
+            const auto collection = result.modalBasis.kind == "MNF" ? "importedMnfBodies" : "autoFlexBodies";
+            const auto entity = state->document.entity(collection, result.flexId);
+            state->body->addItem(QStringLiteral("%1 [%2]").arg(entity.value("name").toString(QStringLiteral("柔性体"))).arg(result.flexId));
+        }
     }
     form->addWidget(state->body);state->description=new QLabel;state->description->setWordWrap(true);
     state->description->setObjectName("nativeModeDescription");form->addWidget(state->description);
     state->frequencies=new QTableWidget(0,3);state->frequencies->setObjectName("nativeModeFrequencies");
-    state->frequencies->setHorizontalHeaderLabels({QStringLiteral("阶次"),QStringLiteral("频率 (Hz)"),QStringLiteral("周期 (s)")});
+    state->frequencies->setHorizontalHeaderLabels({state->isImported() ? QStringLiteral("MNF 模态号") : QStringLiteral("阶次"),
+                                                  QStringLiteral("频率 (Hz)"), QStringLiteral("周期 (s)")});
     state->frequencies->setSelectionBehavior(QAbstractItemView::SelectRows);state->frequencies->setSelectionMode(QAbstractItemView::SingleSelection);
     state->frequencies->setEditTriggers(QAbstractItemView::NoEditTriggers);state->frequencies->verticalHeader()->hide();
     state->frequencies->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -193,7 +279,8 @@ QDialog* openNativeModeInspector(QWidget* parent,const CadDocument& cad,const Na
     form->addLayout(settings);state->play=new QPushButton(QStringLiteral("播放振型"));state->play->setObjectName("nativeModePlay");form->addWidget(state->play);
     state->attachments=new QCheckBox(QStringLiteral("显示实际附着节点"));state->attachments->setChecked(true);state->attachments->setObjectName("nativeModeAttachments");form->addWidget(state->attachments);
     state->patches=new QTableWidget(0,3);state->patches->setObjectName("nativeModePatches");
-    state->patches->setHorizontalHeaderLabels({QStringLiteral("接口"),QStringLiteral("节点数"),QStringLiteral("节点索引（从 0 起）")});
+    state->patches->setHorizontalHeaderLabels({QStringLiteral("接口"),QStringLiteral("节点数"),
+        state->isImported() ? QStringLiteral("MNF 节点号") : QStringLiteral("节点索引（从 0 起）")});
     state->patches->setEditTriggers(QAbstractItemView::NoEditTriggers);state->patches->setSelectionBehavior(QAbstractItemView::SelectRows);
     state->patches->verticalHeader()->hide();state->patches->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);state->patches->horizontalHeader()->setStretchLastSection(true);form->addWidget(state->patches,1);
     splitter->addWidget(controls);state->viewport=new OccViewport;state->viewport->setObjectName("nativeModeViewport");state->viewport->setPickEnabled(false);splitter->addWidget(state->viewport);splitter->setStretchFactor(1,2);splitter->setSizes({380,720});
@@ -202,6 +289,12 @@ QDialog* openNativeModeInspector(QWidget* parent,const CadDocument& cad,const Na
     // The application's legacy button style has a fixed width; retain enough
     // space for the actual export action in this dialog.
     csv->setMinimumWidth(220);buttons->button(QDialogButtonBox::Close)->setText(QStringLiteral("关闭"));layout->addWidget(buttons);
+    if (bind) {
+        auto* bindButton = buttons->addButton(QStringLiteral("绑定到运动体…"), QDialogButtonBox::ActionRole);
+        bindButton->setObjectName("nativeModeBindMnf");
+        bindButton->setMinimumWidth(160);
+        QObject::connect(bindButton, &QPushButton::clicked, dialog, [bind = std::move(bind)] { bind(); });
+    }
     state->timer=new QTimer(dialog);state->timer->setInterval(30);
     QObject::connect(state->body,qOverload<int>(&QComboBox::currentIndexChanged),dialog,[state]{state->selectBody();});
     QObject::connect(state->frequencies,&QTableWidget::currentCellChanged,dialog,[state]{state->draw();});
@@ -219,12 +312,38 @@ QDialog* openNativeModeInspector(QWidget* parent,const CadDocument& cad,const Na
     });
     QObject::connect(csv,&QPushButton::clicked,dialog,[state,dialog]{
         const auto* result=state->selected();if(!result)return;
-        auto path=QFileDialog::getSaveFileName(dialog,QStringLiteral("导出真实模态"),QStringLiteral("flex-%1-modes.csv").arg(result->flexId),QStringLiteral("CSV (*.csv)"));
+        const QString suggested = state->isImported()
+            ? QFileInfo(state->importedName).completeBaseName() + QStringLiteral("-modes.csv")
+            : QStringLiteral("flex-%1-modes.csv").arg(result->flexId);
+        auto path=QFileDialog::getSaveFileName(dialog,QStringLiteral("导出真实模态"),suggested,QStringLiteral("CSV (*.csv)"));
         if(path.isEmpty())return;if(QFileInfo(path).suffix().isEmpty())path+=".csv";
         QString error;state->status->setText(exportFlexModesCsv(path,*result,error)?QStringLiteral("已导出：%1").arg(path):error);
     });
     QObject::connect(buttons,&QDialogButtonBox::rejected,dialog,&QDialog::close);
     state->selectBody();dialog->show();return dialog;
+}
+
+} // namespace
+
+QDialog* openNativeModeInspector(QWidget* parent, const CadDocument& cad,
+                                 const NativeMotionDocument& document,
+                                 const std::vector<RigidFlexResult>& results)
+{
+    auto state = std::make_shared<Inspection>();
+    state->cad = cad;
+    state->document = document;
+    for (const auto& source : results)
+        state->results.push_back(snapshotModeBasis(source));
+    return showModeInspector(parent, state);
+}
+
+QDialog* openImportedMnfModeInspector(QWidget* parent, const RigidFlexResult& result,
+                                      const QString& name, std::function<void()> bind)
+{
+    auto state = std::make_shared<Inspection>();
+    state->importedName = name.isEmpty() ? QStringLiteral("MNF") : name;
+    state->results.push_back(snapshotModeBasis(result));
+    return showModeInspector(parent, state, std::move(bind));
 }
 
 } // namespace MotionOcc

@@ -13,7 +13,8 @@ add_executable(MxMotion WIN32
     RigidMotionUi.cpp
     NativeMotionUi.cpp
     NativeMotionTypedPanels.cpp NativeMotionTypedPanels.h
-    NativeModeInspector.cpp NativeModeInspector.h NativeModeInspectorFlow.cpp
+    NativeModeInspector.cpp NativeModeInspector.h NativeModeInspectorFlow.cpp NativeMnfImportUi.cpp
+    NativeMnfBindingView.cpp NativeMnfBindingView.h
     NativeMotionPickWidgets.cpp NativeMotionPickWidgets.h
     NativeFunctionEditor.cpp NativeFunctionEditor.h
     NativeMotionSymbols.cpp NativeMotionSymbols.h
@@ -53,7 +54,7 @@ add_dependencies(MxMotion MotionOccResources)
 # The shared chrome is compiled in this executable, not imported from MechCommon.dll.
 target_compile_definitions(MxMotion PRIVATE BUILD_STATIC NOMINMAX _HAS_STD_BYTE=0)
 target_compile_options(MxMotion PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8> $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
-target_link_libraries(MxMotion PRIVATE MotionOccOriginalGui MotionOccRigid MotionEngine::Core Qt5::Widgets Qt5::Svg Qt5::PrintSupport
+target_link_libraries(MxMotion PRIVATE MotionOccOriginalGui MotionOccRigid MotionEngine::Core Qt5::Widgets Qt5::Svg Qt5::PrintSupport Qt5::Concurrent
     OpenGL::GL ads::qtadvanceddocking-qt5 Qwt::Qwt)
 if(WIN32)
     target_link_libraries(MxMotion PRIVATE dwmapi)

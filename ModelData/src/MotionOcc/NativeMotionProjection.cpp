@@ -1,4 +1,5 @@
 #include "NativeMotionRuntime.h"
+#include "motion/physics/LinkLock.h"
 #include "motion/physics/LinkMotorRotation.h"
 
 #include <QJsonArray>
@@ -37,6 +38,26 @@ Vec vector(const QJsonValue& value,Vec fallback=motion::VECT_Z)
 
 } // namespace
 
+void NativeMotionSystem::projectConstraintVelocity(motion::MotionState& position,
+                                                    motion::MotionStateDelta& velocity, double& time)
+{
+    position.setZero(GetNcoords_x(), this);
+    velocity.setZero(GetNcoords_v(), this);
+    StateGather(position, velocity, time);
+
+    auto residual = motion::MotionVectorDynamic<>::Zero(GetNcoords_v()).eval();
+    auto constraints = motion::MotionVectorDynamic<>::Zero(GetNconstr()).eval();
+    auto reactions = motion::MotionVectorDynamic<>::Zero(GetNconstr()).eval();
+    LoadResidual_Mv(residual, velocity, 1.0);
+    LoadConstraint_Ct(constraints, 1.0);
+    motion::MotionStateDelta compatible = velocity;
+    if (!StateSolveCorrection(compatible, reactions, residual, constraints, 1.0, 0.0, 0.0,
+                              position, velocity, time, false, false, true) || !compatible.allFinite())
+        throw std::runtime_error("速度约束投影求解失败。");
+    velocity = compatible;
+    StateScatter(position, velocity, time, true);
+}
+
 void NativeMotionSystem::projectAcceptedPositions()
 {
     auto& system=*this;
@@ -45,8 +66,6 @@ void NativeMotionSystem::projectAcceptedPositions()
     // descriptor once, not by repeating DoAssembly's complete setup per Newton
     // iteration. The cap remains explicitly configurable in the scenario.
     system.Setup();system.Update();
-    AssemblySettings settings(system);
-    system.DescriptorPrepareInject(*system.GetSystemDescriptor());
     motion::MotionState position;
     motion::MotionStateDelta velocity,correction;
     position.setZero(system.GetNcoords_x(),&system);
@@ -54,20 +73,37 @@ void NativeMotionSystem::projectAcceptedPositions()
     correction.setZero(system.GetNcoords_v(),&system);
     motion::MotionVectorDynamic<> residual(system.GetNcoords_v()),constraints(system.GetNconstr()),reactions(system.GetNconstr());
     residual.setZero();
-    for(int iteration=0;iteration<system.positionIterations;++iteration){
-        double time=0;system.StateGather(position,velocity,time);
-        constraints.setZero();system.LoadConstraint_C(constraints,1.0,false);
-        if(!constraints.allFinite())throw std::runtime_error("位置约束残差不是有限数值。");
-        // This is only a convergence test, not a reported physical error:
-        // native residual rows mix mm and angular direction components. The
-        // independent acceptance check below reports each in its own unit.
-        if(constraints.size()==0||constraints.cwiseAbs().maxCoeff()<=1e-8)break;
-        correction.setZero(system.GetNcoords_v(),&system);reactions.setZero();
-        if(!system.StateSolveCorrection(correction,reactions,residual,constraints,1.0,0.0,0.0,
-                                        position,velocity,time,false,false,true)||!correction.allFinite())
-            throw std::runtime_error("位置约束投影求解失败。请检查闭环约束与求解器设置。");
-        position+=correction;
-        system.StateScatter(position,velocity,time,true);
+    double time=0;
+    {
+        AssemblySettings settings(system);
+        system.DescriptorPrepareInject(*system.GetSystemDescriptor());
+        for(int iteration=0;iteration<system.positionIterations;++iteration){
+            system.StateGather(position,velocity,time);
+            constraints.setZero();system.LoadConstraint_C(constraints,1.0,false);
+            if(!constraints.allFinite())throw std::runtime_error("位置约束残差不是有限数值。");
+            // Native residual rows mix mm and angular direction components.
+            // The acceptance check below reports each in its own unit.
+            if(constraints.size()==0||constraints.cwiseAbs().maxCoeff()<=1e-8)break;
+            correction.setZero(system.GetNcoords_v(),&system);reactions.setZero();
+            if(!system.StateSolveCorrection(correction,reactions,residual,constraints,1.0,0.0,0.0,
+                                            position,velocity,time,false,false,true)||!correction.allFinite())
+                throw std::runtime_error("位置约束投影求解失败。请检查闭环约束与求解器设置。");
+            // A joint on the rigid reference has no elastic position
+            // coordinates. Closing it must preserve the computed deformation.
+            for (auto* assembly : rigidInterfaceFlex) {
+                const auto modalOffset = assembly->GetOffset_w() + assembly->GetN_boundary_coords_w();
+                correction.segment(modalOffset, assembly->Get_n_modes_coords_w()).setZero();
+            }
+            position+=correction;
+            system.StateScatter(position,velocity,time,true);
+        }
+    }
+    if (!rigidInterfaceFlex.empty() && system.GetNconstr() != 0) {
+        // Keep the velocity tangent to the constraints at the corrected
+        // pose, using the full mass matrix including modal coupling.
+        system.Setup();system.Update();
+        system.DescriptorPrepareInject(*system.GetSystemDescriptor());
+        system.projectConstraintVelocity(position,velocity,time);
     }
 }
 
@@ -98,6 +134,22 @@ void validateNativeAcceptedConstraints(const NativeMotionSystem& system)
     for(const auto& value:input.document.collection("joints")){
         const auto joint=value.toObject();const auto type=joint.value("jointType").toString();
         const int a=joint.value("actionBodyId").toInt(-1),b=joint.value("baseBodyId").toInt(-1);
+        if (system.importedMnfBodyIds.count(a) || system.importedMnfBodyIds.count(b)) {
+            // A modal marker carries elastic translation and rotation. A rigid
+            // body transform of the original CAD origin would miss both.
+            const auto id=std::to_string(joint.value("id").toInt());
+            const auto found=system.nativeJoints.find(id);
+            const auto link=found==system.nativeJoints.end()?nullptr:
+                std::dynamic_pointer_cast<motion::MotionLinkLockRevolute>(found->second);
+            if (!link || !link->GetMarker1() || !link->GetMarker2())
+                throw std::runtime_error("MNF 转动副的实际 Marker 不存在。");
+            const auto& first=link->GetMarker1()->GetAbsCoord();
+            const auto& second=link->GetMarker2()->GetAbsCoord();
+            const auto i=first.rot.Rotate(motion::VECT_Z),j=second.rot.Rotate(motion::VECT_Z);
+            report(joint,(first.pos-second.pos).Length(),linearTolerance,QStringLiteral("mm"),QStringLiteral("闭合"));
+            report(joint,std::atan2(i.Cross(j).Length(),i.Dot(j))*radToDeg,angularToleranceDeg,QStringLiteral("°"),QStringLiteral("方向"));
+            continue;
+        }
         const Vec origin=vector(joint.value("origin"),motion::VNULL),difference=point(a,origin)-point(b,origin);
         double linearError=0,angularError=0;
         if(type=="Revolute"||type=="Spherical"||type=="Fixed"||type=="Universal"||type=="Hooke")

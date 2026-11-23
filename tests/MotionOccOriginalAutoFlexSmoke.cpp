@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QImage>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -21,9 +22,11 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <set>
 #include <stdexcept>
 
 using namespace MotionOcc;
@@ -52,6 +55,20 @@ mMotionAutoFlexPanel* activePanel(MotionWindow& window) {
 QPushButton* saveButton(mMotionAutoFlexPanel* panel) {
     for(auto* button:panel->findChildren<QPushButton*>())if(button->text()==QStringLiteral("保存"))return button;
     throw std::runtime_error("Original AutoFlex save button is missing");
+}
+bool showsNodeHighlight(OccViewport& viewport, const QPointF& point, const QColor& color)
+{
+    const auto image = viewport.grabFramebuffer();
+    if (image.isNull()) return false;
+    const int x = qRound(point.x() * image.width() / viewport.width());
+    const int y = qRound(point.y() * image.height() / viewport.height());
+    for (int dy = -2; dy <= 2; ++dy) for (int dx = -2; dx <= 2; ++dx) {
+        if (!image.rect().contains(x + dx, y + dy)) continue;
+        const auto actual = image.pixelColor(x + dx, y + dy);
+        if (std::abs(actual.red() - color.red()) + std::abs(actual.green() - color.green())
+            + std::abs(actual.blue() - color.blue()) < 35) return true;
+    }
+    return false;
 }
 }
 int runMotionOccOriginalAutoFlexSmoke(QApplication&,const QString& directory) {
@@ -98,16 +115,71 @@ int runMotionOccOriginalAutoFlexSmoke(QApplication&,const QString& directory) {
         require(picker&&viewport,"Original AutoFlex picker is not owned by its field");
         picker->replacePickedDataAndClearSets({});picker->setPickActive(true);
         require(waitFor([&] { return viewport->isPicking(); }),"Original AutoFlex did not start real node picking");
-        bool clicked=false;
-        for(std::size_t node=0;node<mesh.nodes.size()&&!clicked;++node) {
+        const double boxRadius=QApplication::startDragDistance()+2;
+        struct ClickTarget {std::size_t node; QPointF screen;};
+        std::vector<ClickTarget> targets;
+        for(std::size_t node=0;node<mesh.nodes.size()&&targets.size()<2;++node) {
             const auto screen=viewport->projectPoint(mesh.nodes[node],actualPart);const auto hit=viewport->pickAt(screen);
             if(hit.kind!=PickKind::Node||hit.nodeId!=ids[int(node)]||hit.partId!=actualPart)continue;
-            QMouseEvent down(QEvent::MouseButtonPress,screen,viewport->mapToGlobal(screen.toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
-            QMouseEvent up(QEvent::MouseButtonRelease,screen,viewport->mapToGlobal(screen.toPoint()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
-            QApplication::sendEvent(viewport,&down);QApplication::sendEvent(viewport,&up);QApplication::processEvents();clicked=true;
+            if(!QRectF(viewport->rect()).adjusted(boxRadius,boxRadius,-boxRadius,-boxRadius).contains(screen))continue;
+            if(!targets.empty()&&QRectF(targets.front().screen-QPointF(boxRadius,boxRadius),
+                                        targets.front().screen+QPointF(boxRadius,boxRadius)).contains(screen))continue;
+            targets.push_back({node,screen});
         }
-        require(clicked&&!picker->getAllData().pickedData.empty(),"Viewport hit did not reach the original attachment control");
+        require(targets.size()==2,"Original AutoFlex mesh lacks two separately pickable nodes");
+        const auto sendMouse=[&](QEvent::Type type,const QPointF& at,Qt::MouseButton button,Qt::MouseButtons buttons,
+                                 Qt::KeyboardModifiers modifiers) {
+            QMouseEvent event(type,at,viewport->mapToGlobal(at.toPoint()),button,buttons,modifiers);
+            QApplication::sendEvent(viewport,&event);
+        };
+        const auto gesture=[&](Qt::MouseButton button,const QPointF& first,const QPointF& last,
+                                Qt::KeyboardModifiers modifiers=Qt::NoModifier) {
+            sendMouse(QEvent::MouseButtonPress,first,button,button,modifiers);
+            if(first!=last)sendMouse(QEvent::MouseMove,last,Qt::NoButton,button,modifiers);
+            sendMouse(QEvent::MouseButtonRelease,last,button,Qt::NoButton,modifiers);
+            QApplication::processEvents();
+        };
+        const auto selectedIds=[&] {
+            std::set<int> selected;
+            for(const auto& entry:picker->getAllData().pickedData) {
+                require(entry.first==PickDataType::Node,"AutoFlex attachment picker received a non-node");
+                for(const auto& pick:entry.second)
+                    require(pick.part_id==actualPart&&selected.insert(pick.result_id).second,
+                            "AutoFlex attachment picker stored a duplicate or wrong-part node");
+            }
+            return selected;
+        };
+        const auto first=targets[0].screen,second=targets[1].screen;
+        const int firstId=ids[int(targets[0].node)],secondId=ids[int(targets[1].node)];
+        gesture(Qt::LeftButton,first,first);
+        gesture(Qt::LeftButton,second,second);
+        gesture(Qt::LeftButton,first,first);
+        require(selectedIds()==std::set<int>{firstId,secondId},"Left-click add was not idempotent");
+        gesture(Qt::RightButton,first,first);
+        require(selectedIds()==std::set<int>{secondId},"Right-click did not remove the hit attachment node");
+        gesture(Qt::RightButton,first,first);
+        require(selectedIds()==std::set<int>{secondId},"Right-click on an unselected node removed a different attachment");
+
+        const QPointF boxDelta(boxRadius,boxRadius);
+        const QRectF box(first-boxDelta,first+boxDelta);
+        std::set<int> expected{secondId};
+        for(std::size_t node=0;node<mesh.nodes.size();++node)
+            if(box.contains(viewport->projectPoint(mesh.nodes[node],actualPart)))expected.insert(ids[int(node)]);
+        require(expected.count(firstId)&&!box.contains(second),"Invalid AutoFlex box fixture");
+        gesture(Qt::LeftButton,box.topLeft(),box.bottomRight());
+        require(selectedIds()==expected,"Plain left rectangle did not add the projected attachment nodes");
+        gesture(Qt::RightButton,box.bottomRight(),box.topLeft());
+        require(selectedIds()==std::set<int>{secondId},"Right rectangle did not preserve the outside attachment node");
+        gesture(Qt::LeftButton,box.topLeft(),box.bottomRight(),Qt::ControlModifier);
+        require(selectedIds()==expected,"Ctrl+left rectangle no longer adds attachment nodes");
+        require(viewport->projectPoint(mesh.nodes[targets[0].node],actualPart)==first&&
+                    viewport->projectPoint(mesh.nodes[targets[1].node],actualPart)==second,
+                "Attachment rectangle gestures unexpectedly moved the camera");
+        const auto highlight = picker->widget()->colorBlockColor();
+        require(showsNodeHighlight(*viewport, second, highlight), "Active attachment node has no normal pick highlight");
         picker->setPickActive(false);
+        require(showsNodeHighlight(*viewport, viewport->projectPoint(mesh.nodes[targets[1].node],actualPart), highlight),
+            "Inactive attachment node has no temporary highlight");
         std::vector<RenderPickResultData> endFace;
         for(std::size_t node=0;node<mesh.nodes.size();++node)if(std::abs(mesh.nodes[node][0])<1e-8) {
             RenderPickResultData selection;selection.part_id=actualPart;selection.result_id=ids[int(node)];endFace.push_back(selection);
@@ -135,10 +207,17 @@ int runMotionOccOriginalAutoFlexSmoke(QApplication&,const QString& directory) {
         MotionWindow reopened;reopened.resize(1440,940);reopened.show();require(reopened.openRigidProject(project),"Original AutoFlex project did not reopen");
         selectFlex(reopened);auto* reopenedPanel=activePanel(reopened);auto* reopenedPicker=reopenedPanel->findChild<mPickWidgetController*>();
         require(reopenedPicker,"Reopened original attachment field is missing");
-        std::size_t selected=0;for(const auto& entry:reopenedPicker->getAllData().pickedData)selected+=entry.second.size();
-        require(selected==endFace.size(),"Reopened original picker did not restore actual mesh node IDs");
+        auto* reopenedViewport=reopened.findChild<OccViewport*>();
+        require(reopenedViewport && waitFor([&] { return reopenedViewport->glReady(); }),"Reopened attachment viewport is not ready");
+        auto* restored=context();
+        const auto restoredPicks=restored->picks()->resolve(reopenedPicker->getAllData().pickedData);
+        const auto restoredHighlight=reopenedPicker->widget()->colorBlockColor();
+        require(std::any_of(restoredPicks.cbegin(),restoredPicks.cend(),[&](const auto& pick){
+            return showsNodeHighlight(*reopenedViewport,reopenedViewport->projectPoint(pick.position,pick.partId),restoredHighlight);
+        }),"Reopened attachments did not render temporary highlights");
+        require(std::size_t(restoredPicks.size())==endFace.size(),"Reopened original picker did not restore actual mesh node IDs");
         require(reopened.grab().save(output.filePath("original-autoflex-reopened.png")),"Cannot capture restored original AutoFlex UI");
-        log<<"PASS: original CAD + JSON import; original AutoFlex save -> true Netgen mesh; real viewport node hit -> original field; manual end-face IDs -> native attachment; saved-mesh true flexible solve with worker disabled; original project and field reopen.\n";
+        log<<"PASS: original CAD + JSON import; original AutoFlex save -> true Netgen mesh; left-add/right-subtract click and rectangle; active and temporary node highlights; native attachment and solve; original project and field reopen.\n";
         log<<"Nodes="<<savedNodeCount<<" Tets="<<savedTetCount<<" AttachmentNodes="<<endFace.size()<<" Frames="<<result.frames.size()<<'\n';
         return 0;
     } catch(const std::exception& exception) { log<<"FAIL: "<<exception.what()<<'\n';return 1; }

@@ -31,6 +31,7 @@
 #include <QOpenGLContext>
 #include <QPushButton>
 #include <QTabBar>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
@@ -247,13 +248,16 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         mouse(*viewport, QEvent::MouseButtonRelease, facePoint, Qt::LeftButton, Qt::NoButton);
         require(!viewport->isPicking() && viewport->viewportSelection().size() == 1
             && viewport->viewportSelection().front().kind == PickKind::Face
-            && statusSelection->text().contains(QStringLiteral("1 项")),
+            && statusSelection->text().contains(QStringLiteral("1 几何面")),
             QStringLiteral("Face mode did not select geometry and update the status bar"));
         QApplication::processEvents();
         const auto statusPoint = statusSelection->rect().center();
         mouse(*statusSelection, QEvent::MouseButtonPress, statusPoint, Qt::LeftButton, Qt::LeftButton);
         mouse(*statusSelection, QEvent::MouseButtonRelease, statusPoint, Qt::LeftButton, Qt::NoButton);
         require(!selectionDock->isClosed(), QStringLiteral("Selection status did not open the details dock"));
+        auto* selectionTable = selectionDock->findChild<QTableWidget*>(QStringLiteral("selectionInfoTable"));
+        require(selectionTable && selectionTable->cellWidget(0, 0),
+            QStringLiteral("Selection dock did not show the original structured information table"));
         selectionDock->toggleView(false);
         viewport->beginPick(PickKind::Vertex);
         require(!pickFace->isEnabled(), QStringLiteral("Toolbar mode can override an editor's pick filter"));
@@ -266,11 +270,19 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         line(QStringLiteral("Viewport face filter, selection status dock and editor pick isolation passed"));
 
         window.command(Command::ClearSelection)->trigger();
+        require(tree->selectedItems().isEmpty(), QStringLiteral("Clear Selection did not clear the model tree"));
         const auto center = viewport->rect().center();
         mouse(*viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
         mouse(*viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
         require(tree->currentItem() && tree->currentItem()->parent()
             && tree->currentItem()->parent()->text(0) == QStringLiteral("部件"), QStringLiteral("Viewport picking did not update the model tree"));
+        const auto* selectedPart = tree->currentItem();
+        const QPoint blank(viewport->width() - 6, 6);
+        mouse(*viewport, QEvent::MouseButtonPress, blank, Qt::LeftButton, Qt::LeftButton);
+        mouse(*viewport, QEvent::MouseButtonRelease, blank, Qt::LeftButton, Qt::NoButton);
+        require(tree->currentItem() == selectedPart && selectedPart->isSelected(),
+            QStringLiteral("Clicking empty viewport space cleared the selected model tree row"));
+        line(QStringLiteral("Part picking, explicit clearing and empty-space tree selection passed"));
         const auto original = frame(*viewport);
         require(original.save(output.filePath(QStringLiteral("cad-viewport.png"))), QStringLiteral("CAD frame could not be saved"));
 
@@ -305,6 +317,38 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         require(mesh.save(output.filePath(QStringLiteral("mesh-viewport.png"))), QStringLiteral("Mesh frame could not be saved"));
         require(window.grab().save(output.filePath(QStringLiteral("mxmotion.png"))), QStringLiteral("Window image could not be saved"));
         line(summary->text());
+
+        const auto* meshedPart = tree->currentItem();
+        require(meshedPart, QStringLiteral("No meshed part selected for measurement"));
+        const int meshPart = meshedPart->data(0, Qt::UserRole).toInt();
+        PickResult firstNode, secondNode;
+        firstNode.kind = secondNode.kind = PickKind::Node;
+        firstNode.partId = secondNode.partId = meshPart;
+        firstNode.index = 0;
+        secondNode.index = 1;
+        viewport->beginPick(PickKind::Node, true, {meshPart}, {firstNode, secondNode});
+        const auto nodes = viewport->pickSelection();
+        require(nodes.size() == 2, QStringLiteral("Measurement fixture has no two mesh nodes"));
+        const auto& a = nodes[0].position;
+        const auto& b = nodes[1].position;
+        const double distance = std::hypot(b[0]-a[0], b[1]-a[1], b[2]-a[2]);
+        require(selectionTable->rowCount() == 5 && selectionTable->columnCount() == 6
+            && selectionTable->item(1, 0) && selectionTable->item(1, 0)->text() == QStringLiteral("距离(mm)"),
+            QStringLiteral("Two selected nodes did not open the original measurement rows"));
+        const auto* distanceCell = selectionTable->item(1, 1);
+        const auto* firstId = selectionTable->item(3, 5);
+        const auto* secondId = selectionTable->item(4, 5);
+        require(distanceCell && distance > 0 && std::abs(distanceCell->text().toDouble() - distance) < 1e-5 * distance
+            && firstId && firstId->text().toInt() == nodes[0].nodeId
+            && secondId && secondId->text().toInt() == nodes[1].nodeId,
+            QStringLiteral("Selection measurement did not report actual node IDs and distance"));
+        selectionDock->toggleView(true);
+        QApplication::processEvents();
+        require(window.grab().save(output.filePath(QStringLiteral("selection-info.png"))),
+            QStringLiteral("Selection information panel could not be captured"));
+        selectionDock->toggleView(false);
+        viewport->endPick();
+        line(QStringLiteral("Original selection table shows real node IDs and point-to-point distance"));
 #ifdef MX_MOTION_OCC_COMPAT
         // Generated motion forms were removed. Their replacement is exercised
         // through the actual uploaded panels in MotionOcc.NativeDesktop.

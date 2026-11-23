@@ -26,7 +26,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSpinBox>
-#include <QStackedWidget>
+#include <QStackedLayout>
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeWidget>
@@ -226,6 +226,26 @@ mMotionLoadExportPanel* openExport(MotionWindow& window,QTreeWidget* tree) {
     auto* panel=window.findChild<mMotionLoadExportPanel*>("originalMotionLoadExportPanel");
     require(panel&&panel->isVisible(),"Result Export did not open the visible original panel");return panel;
 }
+
+void checkLoadModeLayout(mMotionLoadExportPanel* panel, QStackedLayout* stack)
+{
+    auto* mode = comboItems(panel, {QStringLiteral("手动提取"), QStringLiteral("特征工况导出"),
+                                    QStringLiteral("连杆同步工况导出")});
+    for (int pageIndex : {0, 1, 2, 0}) {
+        mode->setCurrentIndex(pageIndex);
+        auto* page = stack->widget(pageIndex);
+        require(waitFor([=] {
+            if (!page->isVisible() || stack->currentWidget() != page) return false;
+            const QRect area = stack->parentWidget()->contentsRect();
+            const int heightForWidth = page->heightForWidth(area.width());
+            const int minimumHeight = page->minimumSizeHint().height();
+            const int preferredHeight = std::max(minimumHeight,
+                heightForWidth >= 0 ? heightForWidth : page->sizeHint().height());
+            return area.height() + 2 >= minimumHeight && area.height() <= preferredHeight + 2;
+        }), QStringLiteral("Load export mode %1 kept space for a hidden page or clipped the current form").arg(pageIndex));
+    }
+}
+
 struct PickedNode { int id=-1,part=-1;Vector3d point{}; };
 PickedNode pickTarget(MotionWindow& window,QWidget* manual) {
     auto* view=window.findChild<OccViewport*>();require(view,"Missing real viewport");
@@ -296,7 +316,7 @@ void verifyWrenchTransfer(const QString& targetPath,const QString& markerPath) {
 void exportCasePage(MotionWindow& window,mMotionLoadExportPanel* panel,int pageIndex,const QDir& output,
                     const QVector<double>& times,DialogDriver& dialogs,QTextStream& log) {
     auto* mode=comboItems(panel,{QStringLiteral("手动提取"),QStringLiteral("特征工况导出"),QStringLiteral("连杆同步工况导出")});
-    auto* stack=panel->findChild<QStackedWidget*>();require(stack&&stack->count()==3,"Original three load pages are incomplete");
+    auto* stack=panel->findChild<QStackedLayout*>();require(stack&&stack->count()==3,"Original three load pages are incomplete");
     mode->setCurrentIndex(pageIndex);QApplication::processEvents();auto* page=stack->currentWidget();
     require(page&&page->isVisible()&&stack->currentIndex()==pageIndex,"Original export mode did not show its real page");
     auto* body=comboEntry(page,BodyName,BodyId);body->setCurrentIndex(body->findData(BodyId));
@@ -352,7 +372,7 @@ int runMotionOccOriginalLoadExportSmoke(QApplication&,const QString& directory) 
         require(meshSize&&meshStart&&meshStart->isVisible(),"Real Netgen mesh setup was not shown");meshSize->setValue(7);meshStart->click();
         require(waitFor([&] { return window.command(Command::RemoveMesh)->isEnabled(); },60000),"Actual Netgen mesh generation failed");
         dialogs.check();const auto times=solveOriginal(window,tree,dialogs,101);
-        auto* panel=openExport(window,tree);auto* stack=panel->findChild<QStackedWidget*>();require(stack&&stack->count()==3,"Original load exporter lacks its three pages");
+        auto* panel=openExport(window,tree);auto* stack=panel->findChild<QStackedLayout*>();require(stack&&stack->count()==3,"Original load exporter lacks its three pages");
         auto* manual=stack->currentWidget();require(stack->currentIndex()==0,"Original manual export was not the default page");
         auto* sourceType=comboItems(manual,{QStringLiteral("运动副"),QStringLiteral("耦合副"),QStringLiteral("驱动器")});
         auto* sourceId=comboEntry(manual,JointName,JointId);
@@ -379,6 +399,7 @@ int runMotionOccOriginalLoadExportSmoke(QApplication&,const QString& directory) 
         log<<"PASS actual project -> Netgen -> original queued Scenario solve -> original Result Export -> Qt file chooser CSV\n";
         log<<"PASS "<<times.size()<<" accepted frames, original source/end/components/scale/name, real global node "<<picked.id
            <<", moving body pose and M_target = M_marker + (p_marker - p_target) x F\n";log.flush();
+        checkLoadModeLayout(panel, stack);
         exportCasePage(window,panel,1,output,times,dialogs,log);exportCasePage(window,panel,2,output,times,dialogs,log);
 
         // Reuse this geometry and actual mesh, importing the same mechanism as
@@ -390,7 +411,7 @@ int runMotionOccOriginalLoadExportSmoke(QApplication&,const QString& directory) 
         staticDocument.root["motionData"]=data;
         const auto staticJson=output.filePath("original-static-load.motion.json");require(writeNativeMotionDocument(staticJson,staticDocument,error),error);
         require(window.importMotionJson(staticJson,false),"Static motion JSON did not import on the existing real CAD / mesh");
-        const auto staticTimes=solveOriginal(window,tree,dialogs,1);panel=openExport(window,tree);stack=panel->findChild<QStackedWidget*>();manual=stack->currentWidget();
+        const auto staticTimes=solveOriginal(window,tree,dialogs,1);panel=openExport(window,tree);stack=panel->findChild<QStackedLayout*>();manual=stack->currentWidget();
         auto* frame=manual->findChild<QSpinBox*>();require(frame&&frame->minimum()==0&&frame->maximum()==0,"Static frame selector does not represent accepted frame zero");
         require(textWidget<QPushButton>(manual,QStringLiteral("导出载荷文件"))->isEnabled()
             &&textWidget<QPushButton>(stack->widget(1),QStringLiteral("筛选并导出工况 JSON"))->isEnabled()

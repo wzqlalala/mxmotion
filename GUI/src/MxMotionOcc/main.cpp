@@ -3,8 +3,10 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QCursor>
+#include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QEventLoop>
 #include <QLocale>
 #include <QMessageBox>
@@ -15,6 +17,8 @@
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QTranslator>
+#include <QWidget>
+#include <algorithm>
 
 #ifdef MX_OCC_DESKTOP_SMOKE
 int runMotionOccDesktopSmoke(QApplication& app, const QString& outputDirectory);
@@ -28,6 +32,22 @@ int runMotionOccOriginalLoadExportSmoke(QApplication& app, const QString& output
 int runMotionOccModalDesktopSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccRenderFeedbackSmoke(QApplication& app, const QString& outputDirectory);
+
+namespace {
+class HiddenSmokeWindows final : public QObject
+{
+    bool eventFilter(QObject* object, QEvent* event) override
+    {
+        if (event->type() == QEvent::Polish || event->type() == QEvent::Show) {
+            if (auto* widget = qobject_cast<QWidget*>(object); widget && widget->isWindow()) {
+                widget->setAttribute(Qt::WA_DontShowOnScreen);
+                widget->setAttribute(Qt::WA_ShowWithoutActivating);
+            }
+        }
+        return false;
+    }
+};
+}
 #endif
 
 int main(int argc, char* argv[])
@@ -53,16 +73,6 @@ int main(int argc, char* argv[])
     app.setApplicationVersion(QStringLiteral("1.0"));
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     QLocale::setDefault(QLocale(QLocale::Chinese, QLocale::China));
-    const auto resources = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mMainWidgets.rcc"));
-    if (!QResource::registerResource(resources)) {
-        QMessageBox::critical(nullptr, QStringLiteral("MxSim.Motion"),
-            QStringLiteral("缺少界面资源。请从完整的 bin 目录运行 MxMotion.exe。"));
-        return 2;
-    }
-    QTranslator qt;
-    if (qt.load(QStringLiteral(":/mMainWidgets/Translations/qt_zh_CN.qm"))) app.installTranslator(&qt);
-    QTranslator ads;
-    if (ads.load(QStringLiteral(":/mMainWidgets/Translations/ads_zh_CN.qm"))) app.installTranslator(&ads);
 
     QCommandLineParser args;
     args.setApplicationDescription(QStringLiteral("MxSim.Motion — OCC / OpenGL / Netgen"));
@@ -96,6 +106,30 @@ int main(int argc, char* argv[])
     args.addOption(renderFeedbackSmoke);
 #endif
     args.process(app);
+    bool smokeMode = false;
+#ifdef MX_OCC_DESKTOP_SMOKE
+    HiddenSmokeWindows hiddenWindows;
+    const auto optionNames = args.optionNames();
+    smokeMode = std::any_of(optionNames.cbegin(), optionNames.cend(), [](const QString& name) {
+        return name.endsWith(QStringLiteral("-smoke"));
+    });
+    if (smokeMode) {
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        app.installEventFilter(&hiddenWindows);
+    }
+#endif
+    const auto resources = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mMainWidgets.rcc"));
+    if (!QResource::registerResource(resources)) {
+        const auto message = QStringLiteral("缺少界面资源。请从完整的 bin 目录运行 MxMotion.exe。");
+        if (smokeMode) qCritical().noquote() << message;
+        else QMessageBox::critical(nullptr, QStringLiteral("MxSim.Motion"), message);
+        return 2;
+    }
+    QTranslator qt;
+    if (qt.load(QStringLiteral(":/mMainWidgets/Translations/qt_zh_CN.qm"))) app.installTranslator(&qt);
+    QTranslator ads;
+    if (ads.load(QStringLiteral(":/mMainWidgets/Translations/ads_zh_CN.qm"))) app.installTranslator(&ads);
+
 #ifdef MX_OCC_DESKTOP_SMOKE
     if (args.isSet(smoke)) return runMotionOccDesktopSmoke(app, args.value(smoke));
     if (args.isSet(nativeSmoke)) return runMotionOccNativeDesktopSmoke(app, args.value(nativeSmoke));

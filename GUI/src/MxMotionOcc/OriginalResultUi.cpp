@@ -110,10 +110,7 @@ bool MotionWindow::showOriginalMotionResult(ModelNode node)
         if (m_results.find(scenarioId) == m_results.end()) return;
         m_resultScenario = scenarioId;
         m_animationActive = true;
-        // The original first item uses its historical free-mode projection;
-        // the second uses the elastic displacement in the interface frame.
-        // Both choices feed actual modal coordinates in the playback backend.
-        const int contour = int(reference == 0 ? FlexContourKind::LegacyFreeModeProjection
+        const int contour = int(reference == 0 ? FlexContourKind::TotalDisplacement
                                                : FlexContourKind::ElasticDisplacement);
         const QSignalBlocker contourBlock(m_flexContour), rangeBlock(m_flexRange);
         m_flexContour->setCurrentIndex(m_flexContour->findData(contour));
@@ -142,10 +139,6 @@ bool MotionWindow::showOriginalMotionResult(ModelNode node)
         return buildNativeLoadCases(*it->second->input.nativeInput,it->second->result,options,data,error);
     };
 
-    auto* scroll = new QScrollArea;
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidgetResizable(true);
-    scroll->setProperty("mxOriginalMotionPanel", true);
     QWidget* panel = nullptr;
     std::function<void()> enter, leave;
     if (node.kind == ModelNode::Animation) {
@@ -175,9 +168,7 @@ bool MotionWindow::showOriginalMotionResult(ModelNode node)
         enter = [loads, id = node.id] { loads->editLoadExportPanel(id); };
         leave = [pointer] { if (pointer) pointer->uneditLoadExportPanel(); };
     }
-    scroll->setObjectName(panel->objectName() + QStringLiteral("Scroll"));
-    scroll->setWidget(panel);
-    showEditor(scroll);
+    showOriginalParameterPanel(panel, panel->objectName() + QStringLiteral("Scroll"));
     m_original->unedit = std::move(leave);
     enter();
     // The uploaded result editors create their curve rows/marker checkboxes

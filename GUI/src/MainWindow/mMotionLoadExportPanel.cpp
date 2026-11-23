@@ -1,5 +1,6 @@
 
 #include "mMotionLoadExportPanel.h"
+#include "mParameterPageLayout.h"
 #include "mMotionRefMap.h"
 #include "mAppConfiguration.h"
 #include "mGlobalSignals.h"
@@ -77,7 +78,8 @@ namespace MechMainWindow
         modeSection->addRow(new QLabel("模式"), m_comboExportMode);
         mainLayout->addWidget(modeSection);
 
-        m_modeStack = new QStackedWidget(this);
+        auto* exportParameters = new QWidget(this);
+        m_modeStack = new ParameterPageLayout(exportParameters);
 
         // ==================================================
         // 模式一：手动提取（原功能）
@@ -85,6 +87,7 @@ namespace MechMainWindow
         QWidget* manualPage = new QWidget(this);
         QVBoxLayout* manualLayout = new QVBoxLayout(manualPage);
         manualLayout->setContentsMargins(0, 0, 0, 0);
+        manualLayout->setSpacing(4);
 
         FoldSection* basicSection = new FoldSection("基本设置", manualPage);
         m_editName = new QLineEdit();
@@ -218,7 +221,7 @@ namespace MechMainWindow
         m_modeStack->addWidget(manualPage);
         m_modeStack->addWidget(casePage);
         m_modeStack->addWidget(syncPage);
-        mainLayout->addWidget(m_modeStack);
+        mainLayout->addWidget(exportParameters);
         mainLayout->addStretch();
 
         // 信号连接
@@ -239,6 +242,7 @@ namespace MechMainWindow
         QWidget* page = new QWidget(this);
         QVBoxLayout* pageLayout = new QVBoxLayout(page);
         pageLayout->setContentsMargins(0, 0, 0, 0);
+        pageLayout->setSpacing(4);
 
         FoldSection* selSection = new FoldSection("载荷来源", page);
         ctx.sourceSection = selSection;

@@ -764,6 +764,9 @@ struct OccViewport::State {
     PickResult hover;
     bool boxSelecting = false;
     QRectF pickRectangle;
+
+    bool editsNodeSelection() const { return pickActive && pickMultiple && pickKind == PickKind::Node; }
+
     std::set<int> scalarParts;
     double scalarMinimum = 0, scalarMaximum = 1;
     QString scalarTitle;
@@ -1097,9 +1100,9 @@ QString OccViewport::mouseNavigationHint() const
 {
     if (m_state->navigationMode == MouseNavigationMode::Nx)
         return tr("NX 导航：中键拖动旋转；Shift+中键平移；Ctrl+中键拖动或滚轮按光标缩放；左键点选。"
-                  "双击表面设旋转中心，双击空白或 Ctrl+双击适合全部。拾取中右键撤回，Esc 取消；多选节点 Ctrl+左拖贯穿框选。");
+                  "双击表面设旋转中心，双击空白或 Ctrl+双击适合全部。多选节点时左键加选、右键减选，拖动贯穿框选。");
     return tr("经典导航：左键拖动旋转；中键或右键拖动平移；滚轮按光标缩放；左键点选。"
-              "拾取中右键撤回，Esc 取消；多选节点 Ctrl+左拖贯穿框选。");
+              "多选节点时左键加选、右键减选，拖动贯穿框选。");
 }
 
 void OccViewport::setPickEnabled(bool enabled)
@@ -1119,6 +1122,8 @@ void OccViewport::setSelectionFilter(std::optional<PickKind> kind)
 }
 
 const QVector<PickResult>& OccViewport::viewportSelection() const { return m_state->viewportSelection; }
+
+std::optional<PickKind> OccViewport::selectionFilter() const { return m_state->selectionFilter; }
 
 void OccViewport::clearViewportSelection()
 {
@@ -1291,6 +1296,13 @@ void OccViewport::setMeshScalars(const std::map<int, std::vector<double>>& value
         s.scalarParts.insert(part.id); s.dirtyMeshParts.insert(part.id);
     }
     update();
+}
+
+std::optional<std::pair<double, double>> OccViewport::meshScalarRange() const
+{
+    const auto& s = *m_state;
+    if (s.scalarParts.empty()) return std::nullopt;
+    return std::make_pair(s.scalarMinimum, s.scalarMaximum);
 }
 
 void OccViewport::clearMeshScalars()
@@ -1555,10 +1567,17 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
 
 void OccViewport::fitAll()
 {
-    if (!m_state->bounds.valid) return;
+    fitAllIncluding(std::nullopt);
+}
+
+void OccViewport::fitAllIncluding(const std::optional<Vec>& point)
+{
+    auto bounds = m_state->bounds;
+    if (point) bounds.add(*point);
+    if (!bounds.valid) return;
     interruptPointerOperation();
     m_state->rememberCamera();
-    m_state->camera.fit(m_state->bounds, size(), isVisible());
+    m_state->camera.fit(bounds, size(), isVisible());
     m_state->rememberCamera();
     update();
 }
@@ -2293,16 +2312,23 @@ void OccViewport::drawScalarLegend()
     painter.setPen(QColor(34, 51, 69));
     painter.drawText(panel.adjusted(9, 5, -8, -barHeight - 30), Qt::AlignTop | Qt::TextWordWrap, s.scalarTitle);
     const QRectF bar(panel.left() + 12, panel.top() + 40, 18, barHeight);
-    QLinearGradient gradient(bar.bottomLeft(), bar.topLeft());
-    for (int i = 0; i <= 16; ++i) {
-        const double t = i / 16.0;
-        const auto channel = [t](double center) { return std::clamp(1.5 - std::abs(4*t - center), 0.0, 1.0); };
-        gradient.setColorAt(t, QColor::fromRgbF(channel(3), channel(2), channel(1)));
+    const bool uniform = s.scalarMinimum == s.scalarMaximum;
+    if (uniform) {
+        painter.fillRect(bar, QColor::fromRgbF(0, 0, 0.5));
+    } else {
+        QLinearGradient gradient(bar.bottomLeft(), bar.topLeft());
+        for (int i = 0; i <= 16; ++i) {
+            const double t = i / 16.0;
+            const auto channel = [t](double center) { return std::clamp(1.5 - std::abs(4*t - center), 0.0, 1.0); };
+            gradient.setColorAt(t, QColor::fromRgbF(channel(3), channel(2), channel(1)));
+        }
+        painter.fillRect(bar, gradient);
     }
-    painter.fillRect(bar, gradient);
     painter.setPen(QColor(53, 69, 87)); painter.setBrush(Qt::NoBrush); painter.drawRect(bar);
-    for (int i = 0; i <= 4; ++i) {
-        const double t = i / 4.0, value = s.scalarMaximum * (1-t) + s.scalarMinimum * t;
+    const int tickCount = uniform ? 1 : 5;
+    for (int i = 0; i < tickCount; ++i) {
+        const double t = uniform ? .5 : i / 4.0;
+        const double value = s.scalarMaximum * (1-t) + s.scalarMinimum * t;
         const double y = bar.top() + bar.height() * t;
         painter.drawLine(QPointF(bar.right(), y), QPointF(bar.right() + 5, y));
         painter.drawText(QRectF(bar.right() + 9, y - 10, 112, 20), Qt::AlignVCenter, QString::number(value, 'g', 6));
@@ -2377,9 +2403,9 @@ void OccViewport::drawPickOverlay()
     }
     if (!s.pickActive) return;
     const QStringList names{tr("部件"), tr("顶点"), tr("边"), tr("面"), tr("节点"), tr("网格边"), tr("网格面"), tr("单元"), tr("实体")};
-    const QString label = tr("拾取%1 · 已选 %2 · 右键撤回 · Esc 结束%3")
+    const QString label = tr("拾取%1 · 已选 %2 · %3 · Esc 结束")
         .arg(names.value(int(s.pickKind))).arg(s.picks.size())
-        .arg(s.pickKind == PickKind::Node && s.pickMultiple ? tr(" · Ctrl + 左键贯穿框选") : QString());
+        .arg(s.editsNodeSelection() ? tr("左键加选 · 右键减选 · 拖动贯穿框选") : tr("右键撤回"));
     const QFontMetrics metrics(painter.font());
     const QRectF box(12, 12, std::min(width() - 24, metrics.horizontalAdvance(label) + 20), metrics.height() + 16);
     painter.setPen(Qt::NoPen); painter.setBrush(QColor(255, 255, 255, 225)); painter.drawRoundedRect(box, 4, 4);
@@ -2486,17 +2512,20 @@ void OccViewport::mousePressEvent(QMouseEvent* event)
     interruptPointerOperation();
     s.button = event->button();
     s.press = s.last = s.zoomAnchor = event->localPos();
-    if (s.navigationMode == MouseNavigationMode::Nx) {
+    const bool editsNodes = s.pickEnabled && s.editsNodeSelection();
+    const bool globalNodeBox = !s.pickActive && s.selectionFilter == PickKind::Node &&
+                               event->modifiers().testFlag(Qt::ControlModifier);
+    s.boxSelecting = s.pickEnabled && ((s.button == Qt::LeftButton && (editsNodes || globalNodeBox)) ||
+                                      (s.button == Qt::RightButton && editsNodes));
+    if (s.boxSelecting) {
+        s.navigation = State::Navigation::Select;
+    } else if (s.navigationMode == MouseNavigationMode::Nx) {
         if (s.button == Qt::MiddleButton) s.updateNxNavigation(event->modifiers(), s.press, size());
         else if (s.button == Qt::LeftButton) s.navigation = State::Navigation::Select;
     } else {
         s.navigation = s.button == Qt::LeftButton ? State::Navigation::Orbit : State::Navigation::Pan;
     }
     if (s.navigation == State::Navigation::Orbit) s.beginOrbit(s.press, size());
-    const bool selectingNodes = s.pickActive ? s.pickMultiple && s.pickKind == PickKind::Node
-                                            : s.selectionFilter == PickKind::Node;
-    s.boxSelecting = s.pickEnabled && selectingNodes &&
-                     s.button == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier);
     s.pickRectangle = QRectF(s.press, s.press);
     event->accept();
 }
@@ -2539,22 +2568,33 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
     const auto rectangle = QRectF(s.press, event->localPos()).normalized();
+    const bool editsNodes = s.editsNodeSelection();
     if (s.boxSelecting && rectangle.width() + rectangle.height() >= QApplication::startDragDistance()) {
         auto& selection = s.pickActive ? s.picks : s.viewportSelection;
-        for (const auto& [partId, geometry] : s.pickGeometry) {
-            if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
-            for (int index = 0; index < int(geometry.nodes.size()); ++index) {
-                if (!rectangle.contains(projectPoint(geometry.nodes[index], partId))) continue;
-                PickResult pick; pick.kind = PickKind::Node; pick.partId = partId;
-                pick.index = index; pick.nodeId = geometry.nodeIds.value(index, index + 1);
-                pick.position = pick.hitPosition = geometry.nodes[index];
-                if (std::none_of(selection.cbegin(), selection.cend(), [&](const auto& p) { return samePick(p, pick); }))
-                    selection.append(pick);
+        const int previousCount = selection.size();
+        if (s.button == Qt::RightButton) {
+            selection.erase(std::remove_if(selection.begin(), selection.end(), [&](const PickResult& pick) {
+                const auto geometry = s.pickGeometry.find(pick.partId);
+                return pick.kind == PickKind::Node && geometry != s.pickGeometry.end() &&
+                       validPickReference(pick, geometry->second) &&
+                       rectangle.contains(projectPoint(geometry->second.nodes[pick.index], pick.partId));
+            }), selection.end());
+        } else {
+            for (const auto& [partId, geometry] : s.pickGeometry) {
+                if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
+                for (int index = 0; index < int(geometry.nodes.size()); ++index) {
+                    if (!rectangle.contains(projectPoint(geometry.nodes[index], partId))) continue;
+                    PickResult pick; pick.kind = PickKind::Node; pick.partId = partId;
+                    pick.index = index; pick.nodeId = geometry.nodeIds.value(index, index + 1);
+                    pick.position = pick.hitPosition = geometry.nodes[index];
+                    if (std::none_of(selection.cbegin(), selection.cend(), [&](const auto& p) { return samePick(p, pick); }))
+                        selection.append(pick);
+                }
             }
         }
         interruptPointerOperation();
-        if (s.pickActive) emit pickSelectionChanged(selection);
-        else emit viewportSelectionChanged();
+        if (!s.pickActive) emit viewportSelectionChanged();
+        else if (selection.size() != previousCount) emit pickSelectionChanged(selection);
         update(); event->accept(); return;
     }
     const bool changedMode = s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
@@ -2574,23 +2614,33 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
             if (hit.isValid()) {
                 if (!multiple) selection.clear();
                 const auto found = std::find_if(selection.begin(), selection.end(), [&](const auto& p) { return samePick(p, hit); });
-                if (found == selection.end()) selection.append(hit);
-                else selection.erase(found);
+                const bool added = found == selection.end();
+                if (added) selection.append(hit);
+                else if (!editsNodes) selection.erase(found);
                 s.hover = hit;
-                if (s.pickActive) emit pickSelectionChanged(selection);
-                else emit viewportSelectionChanged();
+                if (!s.pickActive) emit viewportSelectionChanged();
+                else if (added || !editsNodes) emit pickSelectionChanged(selection);
             } else if (!s.pickActive && !multiple) {
                 clearViewportSelection();
             }
             update(); return;
         }
         const int id = pickPart(event->localPos());
-        selectPart(id);
-        emit partPicked(id);
+        if (id >= 0) {
+            selectPart(id);
+            emit partPicked(id);
+        }
     } else if (subtract) {
         auto& selection = s.pickActive ? s.picks : s.viewportSelection;
-        if (!selection.isEmpty()) {
+        const int previousCount = selection.size();
+        if (editsNodes && !selection.isEmpty()) {
+            const auto hit = pickAt(event->localPos());
+            const auto found = std::find_if(selection.begin(), selection.end(), [&](const auto& p) { return samePick(p, hit); });
+            if (found != selection.end()) selection.erase(found);
+        } else if (!selection.isEmpty()) {
             selection.removeLast();
+        }
+        if (selection.size() != previousCount) {
             if (s.pickActive) emit pickSelectionChanged(selection);
             else emit viewportSelectionChanged();
         }

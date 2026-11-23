@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <limits>
 
 namespace MotionOcc {
 namespace {
@@ -238,9 +239,9 @@ void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
     m_flexContour = new QComboBox(controls); m_flexContour->setObjectName("motionFlexContour");
     m_flexContour->addItem(tr("关闭云图"),-1);
     m_flexContour->addItem(tr("弹性位移 (mm)"),int(FlexContourKind::ElasticDisplacement));
-    m_flexContour->addItem(tr("总位移 (mm)"),int(FlexContourKind::TotalDisplacement));
-    m_flexContour->addItem(tr("原自由模态投影 (mm)"),int(FlexContourKind::LegacyFreeModeProjection));
-    m_flexContour->setToolTip(tr("弹性位移去除刚体运动；总位移相对初始几何。原自由模态投影沿用原界面的近似投影公式。"));
+    m_flexContour->addItem(tr("整体位移 (mm)"),int(FlexContourKind::TotalDisplacement));
+    m_flexContour->addItem(tr("原自由模态投影 (mm，仅自动柔性体)"),int(FlexContourKind::LegacyFreeModeProjection));
+    m_flexContour->setToolTip(tr("弹性位移去除刚体运动。整体位移相对初始几何。原自由模态投影沿用原界面的近似投影公式。"));
     m_flexRange = new QComboBox(controls); m_flexRange->setObjectName("motionFlexRange");
     m_flexRange->addItem(tr("当前帧自适应"),0); m_flexRange->addItem(tr("整个时程统一范围"),1);
     flexDisplay->addRow(tr("显示量"),m_flexContour); flexDisplay->addRow(tr("色标范围"),m_flexRange);
@@ -473,6 +474,25 @@ void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
     }
     ThemeManager::applyMenuStyle(&menu);
     menu.exec(globalPosition);
+}
+
+void MotionWindow::showOriginalParameterPanel(QWidget* panel, const QString& scrollName)
+{
+    if (auto* layout = panel->layout()) {
+        layout->setContentsMargins(8, 7, 8, 7);
+        layout->setSpacing(4);
+    }
+    auto* scroll = new QScrollArea;
+    scroll->setObjectName(scrollName);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(panel);
+    for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
+        surface->setProperty("mxSurface", true);
+        surface->setAttribute(Qt::WA_StyledBackground);
+    }
+    scroll->setProperty("mxOriginalMotionPanel", true);
+    showEditor(scroll);
 }
 
 void MotionWindow::showEditor(QWidget* editor)
@@ -945,12 +965,16 @@ void MotionWindow::seekRigidTime(double seconds)
     m_viewport->setDeformedMeshes(sample.flexMeshes, sample.flexHiddenParts);
     if (m_flexContour->currentData().toInt()>=0 && !run.result.flexBodies.empty()) {
         const auto kind=FlexContourKind(m_flexContour->currentData().toInt());
-        std::map<int,std::vector<double>> scalars; double maximum=0;
+        const bool globalRange = m_flexRange->currentData().toInt() == 1;
+        std::map<int,std::vector<double>> scalars;
+        const double infinity = std::numeric_limits<double>::infinity();
+        double minimum = infinity, maximum = -infinity;
         const auto next=std::upper_bound(frames.begin(),frames.end(),sample.seconds,[](double t,const RigidFrame& f) { return t<f.seconds; });
         const auto left=next==frames.begin() ? std::size_t(0) : std::size_t(next-frames.begin()-1);
         const auto right=std::min(left+1,frames.size()-1);
         const double fraction=right==left ? 0 : (sample.seconds-frames[left].seconds)/(frames[right].seconds-frames[left].seconds);
         for (const auto& flex:run.result.flexBodies) {
+            if (kind == FlexContourKind::LegacyFreeModeProjection && flex.modalBasis.kind == "MNF") continue;
             const auto parts=run.input.nativeInput->document.bodyPartBindings.value(flex.bodyId);
             const auto visible=std::find_if(parts.begin(),parts.end(),[&](int part) { return sample.flexMeshes.count(part)!=0; });
             if (visible==parts.end()) continue;
@@ -958,22 +982,33 @@ void MotionWindow::seekRigidTime(double seconds)
             if (!flexNodeScalarsAt(flex,left,right,fraction,kind,values,error)) {
                 setPlayback(false); setNotice(error,true); m_viewport->clearMeshScalars(); return;
             }
-            for (double value:values) maximum=std::max(maximum,value);
-            if (m_flexRange->currentData().toInt()==1) {
-                const auto key=std::make_pair(flex.flexId,int(kind)); auto cached=m_flexGlobalMax.find(key);
-                if (cached==m_flexGlobalMax.end()) {
-                    double all=0; std::vector<double> frame;
+            const auto [first, last] = std::minmax_element(values.begin(), values.end());
+            double bodyMinimum = *first, bodyMaximum = *last;
+            if (globalRange) {
+                const auto key = std::make_pair(flex.bodyId, int(kind));
+                auto cached = m_flexGlobalRanges.find(key);
+                if (cached == m_flexGlobalRanges.end()) {
+                    double low = infinity, high = -infinity;
+                    std::vector<double> frame;
                     for (std::size_t i=0;i<frames.size();++i) {
-                        if (!flexNodeScalars(flex,i,kind,frame,error)) { setNotice(error,true); return; }
-                        for (double value:frame) all=std::max(all,value);
+                        if (!flexNodeScalars(flex,i,kind,frame,error)) {
+                            setPlayback(false); setNotice(error,true); m_viewport->clearMeshScalars(); return;
+                        }
+                        const auto [minNode, maxNode] = std::minmax_element(frame.begin(), frame.end());
+                        low = std::min(low, *minNode);
+                        high = std::max(high, *maxNode);
                     }
-                    cached=m_flexGlobalMax.emplace(key,all).first;
+                    cached = m_flexGlobalRanges.emplace(key, std::make_pair(low, high)).first;
                 }
-                maximum=std::max(maximum,cached->second);
+                bodyMinimum = cached->second.first;
+                bodyMaximum = cached->second.second;
             }
+            minimum = std::min(minimum, bodyMinimum);
+            maximum = std::max(maximum, bodyMaximum);
             scalars.emplace(*visible,std::move(values));
         }
-        m_viewport->setMeshScalars(scalars,0,maximum,m_flexContour->currentText());
+        if (scalars.empty()) m_viewport->clearMeshScalars();
+        else m_viewport->setMeshScalars(scalars,minimum,maximum,m_flexContour->currentText());
     } else m_viewport->clearMeshScalars();
     m_playbackTime = sample.seconds;
     const QSignalBlocker block(m_timeline);
@@ -1008,7 +1043,7 @@ void MotionWindow::stopRigidPlayback()
 
 void MotionWindow::leaveRigidAnimation()
 {
-    m_flexGlobalMax.clear();
+    m_flexGlobalRanges.clear();
     if (m_viewport) m_viewport->clearMeshScalars();
     setPlayback(false);
     if (m_animationActive) {

@@ -43,7 +43,7 @@ QStringList collectionNames()
         QStringLiteral("vectorForces"), QStringLiteral("scalarForces"), QStringLiteral("scalarTorques"),
         QStringLiteral("threePointForces"), QStringLiteral("threePointTorques"), QStringLiteral("contacts"),
         QStringLiteral("sensors"), QStringLiteral("controllers"), QStringLiteral("controlInputs"),
-        QStringLiteral("autoFlexBodies"), QStringLiteral("scenarios"), QStringLiteral("tensionCables"),
+        QStringLiteral("autoFlexBodies"), QStringLiteral("importedMnfBodies"), QStringLiteral("scenarios"), QStringLiteral("tensionCables"),
         QStringLiteral("softStops")};
 }
 
@@ -222,7 +222,8 @@ public:
             {"Drive", "drives"}, {"Coupling", "couplings"}, {"Sensor", "sensors"}, {"Controller", "controllers"},
             {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
             {"VectorForce", "vectorForces"}, {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
-            {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"}};
+            {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"},
+            {"ImportedMnfBody", "importedMnfBodies"}};
         // Original files use PascalCase enum aliases. New native curves use
         // the exact collection keys so every recorded force/flexible channel
         // survives .motion.json export without narrowing to the legacy enum.
@@ -407,6 +408,29 @@ public:
             // The original exporter contains only a materialId, not a material
             // database or tetra mesh. Keep these references/extension data intact;
             // preparing the flexible solve must resolve the actual dependencies.
+        } else if (kind == "importedMnfBodies") {
+            ref(object, "targetBodyId", "bodies", where, false, true);
+            if (object.value("mnfFile").toString().trimmed().isEmpty())
+                issue(where, QStringLiteral("需要 MNF 文件路径"));
+            for (const auto* key : {"referenceTranslationMm", "referenceEuler321Deg"}) {
+                numericArray(object, key, where, 3);
+                const auto value = object.value(QLatin1String(key));
+                if (value.isArray() && value.toArray().isEmpty())
+                    issue(where + QLatin1Char('.') + QLatin1String(key), QStringLiteral("需要三个分量"));
+            }
+            const auto bindings = object.value("jointBindings");
+            if (!bindings.isObject() || (object.value("enabled").toBool(true) && bindings.toObject().isEmpty())) {
+                issue(where, QStringLiteral("需要至少一个运动副与 MNF 接口节点的映射"));
+            } else {
+                const auto entries = bindings.toObject();
+                for (auto binding = entries.begin(); binding != entries.end(); ++binding) {
+                    bool numeric = false;
+                    const int joint = binding.key().toInt(&numeric);
+                    if (!numeric || binding.key() != QString::number(joint) || !ids.value("joints").contains(joint)
+                        || !integer(binding.value(), 0))
+                        issue(where, QStringLiteral("无效运动副或接口节点映射 %1").arg(binding.key()));
+                }
+            }
         } else if (kind == "scenarios") {
             positive(object, "endTime", where); positive(object, "stepSize", where); vector(object, "gravity", where);
             enumeration(object,"analysisType",{"Dynamic","Static","PreloadedDynamics"},where);
@@ -452,6 +476,85 @@ public:
         }
     }
 
+    void checkImportedMnfConnections()
+    {
+        const auto imports = doc.collection("importedMnfBodies");
+        if (imports.isEmpty()) return;
+        QMap<int, QJsonObject> importedByBody;
+        for (const auto& entry : imports) {
+            const auto definition = entry.toObject();
+            if (!definition.value("enabled").toBool(true)) continue;
+            const int body = definition.value("targetBodyId").toInt(-1);
+            if (!ids.value("bodies").contains(body)) continue;
+            if (importedByBody.contains(body))
+                issue("importedMnfBodies", QStringLiteral("运动体 %1 重复绑定 MNF").arg(body));
+            importedByBody.insert(body, definition.value("jointBindings").toObject());
+        }
+        if (importedByBody.isEmpty()) return;
+        for (const auto& entry : doc.collection("bodies")) {
+            const auto body = entry.toObject();
+            const int id = body.value("id").toInt(-1);
+            if (importedByBody.contains(id) && body.value("isFixed").toBool())
+                issue("importedMnfBodies", QStringLiteral("MNF 的目标运动体 %1 必须可以运动").arg(id));
+        }
+        for (const auto& entry : doc.collection("autoFlexBodies")) {
+            const auto autoFlex = entry.toObject();
+            const int target = autoFlex.value("targetBodyId").toInt(-1);
+            if (importedByBody.contains(target) && autoFlex.value("enabled").toBool(true))
+                issue("importedMnfBodies", QStringLiteral("运动体 %1 同时启用了自动柔性体和 MNF").arg(target));
+        }
+
+        QMap<int, QSet<QString>> bodyJointIds;
+        QSet<int> importedJoints;
+        for (const auto& entry : doc.collection("joints")) {
+            const auto joint = entry.toObject();
+            const int a = joint.value("actionBodyId").toInt(-1), b = joint.value("baseBodyId").toInt(-1);
+            const bool importedA = importedByBody.contains(a), importedB = importedByBody.contains(b);
+            if (!importedA && !importedB) continue;
+            const int id = joint.value("id").toInt(-1);
+            const QString key = QString::number(id);
+            importedJoints.insert(id);
+            if ((importedA && importedB) || joint.value("jointType").toString() != "Revolute"
+                || joint.value("friction").toObject().value("enabled").toBool()
+                || joint.value("limit").toObject().value("enabled").toBool()) {
+                issue("importedMnfBodies", QStringLiteral("运动副 %1 必须是 MNF 柔性体与刚体或地面之间无摩擦、无限位的转动副").arg(id));
+                continue;
+            }
+            const int target = importedA ? a : b;
+            bodyJointIds[target].insert(key);
+            if (!importedByBody.value(target).contains(key))
+                issue("importedMnfBodies", QStringLiteral("运动副 %1 缺少 MNF 接口节点映射").arg(id));
+        }
+        for (auto target = importedByBody.begin(); target != importedByBody.end(); ++target) {
+            const auto actualJoints = bodyJointIds.value(target.key());
+            for (auto binding = target.value().begin(); binding != target.value().end(); ++binding)
+                if (!actualJoints.contains(binding.key()))
+                    issue("importedMnfBodies", QStringLiteral("运动体 %1 的 MNF 映射与运动副 %2 的连接不一致").arg(target.key()).arg(binding.key()));
+        }
+        for (const auto& entry : doc.collection("drives")) {
+            const auto drive = entry.toObject();
+            if (importedJoints.contains(drive.value("targetJointId").toInt(-1)))
+                issue("drives", QStringLiteral("驱动 %1 不能施加在导入 MNF 的转动副上").arg(drive.value("id").toInt()));
+        }
+        for (const auto& entry : doc.collection("couplings")) {
+            const auto coupling = entry.toObject();
+            if (importedJoints.contains(coupling.value("firstJointId").toInt(-1))
+                || importedJoints.contains(coupling.value("secondJointId").toInt(-1)))
+                issue("couplings", QStringLiteral("耦合副 %1 不能引用导入 MNF 的转动副").arg(coupling.value("id").toInt()));
+        }
+        for (const auto& entry : doc.collection("springs")) {
+            const auto spring = entry.toObject();
+            if (spring.value("enabled").toBool(true) && importedJoints.contains(spring.value("jointId").toInt(-1)))
+                issue("springs", QStringLiteral("弹簧 %1 不能施加在导入 MNF 的转动副上").arg(spring.value("id").toInt()));
+        }
+        for (const auto& entry : doc.collection("contacts")) {
+            const auto contact = entry.toObject();
+            if (contact.value("enabled").toBool(true) && (importedByBody.contains(contact.value("actionBodyId").toInt(-1))
+                || importedByBody.contains(contact.value("baseBodyId").toInt(-1))))
+                issue("contacts", QStringLiteral("接触 %1 不能使用导入的 MNF 柔性体").arg(contact.value("id").toInt()));
+        }
+    }
+
     void run()
     {
         errors.clear();
@@ -483,6 +586,7 @@ public:
         }
         for (const auto& name : collectionNames())
             for (const auto& item : doc.collection(name)) if (item.isObject()) record(name, item.toObject());
+        checkImportedMnfConnections();
     }
 
     const NativeMotionDocument& doc;

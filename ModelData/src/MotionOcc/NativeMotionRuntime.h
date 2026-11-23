@@ -9,6 +9,9 @@
 
 #include <functional>
 #include <cstdint>
+#include <set>
+
+namespace motion { class MotionFlexBodyAuxRef; }
 
 namespace MotionOcc {
 
@@ -54,6 +57,7 @@ public:
     std::map<int, std::shared_ptr<motion::MotionLinkMotor>> nativeMotors;
     std::map<int, std::shared_ptr<NativeEffortRuntime>> effortMotors;
     std::map<std::string, std::shared_ptr<motion::MotionLinkBase>> nativeJoints;
+    std::set<int> importedMnfBodyIds;
     double acceptedStepSize=0, acceptedEndTime=0;
     std::uint64_t acceptedStepIndex=0;
     const NativeMotionInput* sourceInput=nullptr;
@@ -61,8 +65,10 @@ public:
     std::function<void(double)> validateFlexState;
     std::function<void(double)> captureFlexState;
     int positionIterations=50;
+    std::vector<motion::modal::MotionModalAssembly*> rigidInterfaceFlex;
     void configureControllers(const NativeMotionInput& input);
     void prepareStaticDescriptor(){DescriptorPrepareInject(*GetSystemDescriptor());}
+    void projectConstraintVelocity(motion::MotionState& position, motion::MotionStateDelta& velocity, double& time);
     void projectAcceptedPositions();
     void CustomEndOfStep() override;
 };
@@ -73,6 +79,9 @@ void rejectNativeGeometryBoundary(const NativeMotionSystem& system);
 struct NativeFlexRuntime {
     int id=-1, bodyId=-1;
     motion::modal::MotionFlexBodyResult result;
+    std::shared_ptr<motion::MotionFlexBodyAuxRef> importedBody;
+    std::vector<int> importedNodeIds;
+    motion::MotionFrame<> importedReferencePose;
     std::vector<double> times;
     std::vector<std::vector<double>> modalCoordinates;
     std::vector<std::vector<double>> nodePositions;
@@ -84,6 +93,11 @@ struct NativeFlexRuntime {
     FlexModalBasis modalBasis;
 };
 
+NativeFlexRuntime buildImportedMnfFlex(NativeMotionSystem& system, const PreparedBody& body,
+                                       const QJsonObject& definition, const QString& path,
+                                       const motion::MotionFrame<>& referencePose,
+                                       const motion::MotionVector<>& initialVelocity,
+                                       const motion::MotionVector<>& initialAngularVelocity);
 std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system, const NativeMotionInput& input,
                                              const SolverCallbacks& callbacks, bool inspectionOnly=false);
 void captureNativeFlex(std::vector<NativeFlexRuntime>& flex, double time);

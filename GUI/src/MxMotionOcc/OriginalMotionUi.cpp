@@ -26,8 +26,6 @@
 #include "mMotionMechElecHydPanel.h"
 #include <QAction>
 #include <QAbstractButton>
-#include <QLayout>
-#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QEventLoop>
@@ -214,17 +212,7 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
 #undef PANEL
     if(!panel)return false;
     panel->setObjectName("originalMotionEditor_"+collection);
-    if (auto* layout = panel->layout()) {
-        layout->setContentsMargins(8, 7, 8, 7);
-        layout->setSpacing(4);
-    }
-    auto* scroll=new QScrollArea;scroll->setObjectName("originalMotionScroll_"+collection);
-    scroll->setFrameShape(QFrame::NoFrame);scroll->setWidgetResizable(true);scroll->setWidget(panel);
-    for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
-        surface->setProperty("mxSurface", true);
-        surface->setAttribute(Qt::WA_StyledBackground);
-    }
-    scroll->setProperty("mxOriginalMotionPanel",true);showEditor(scroll);
+    showOriginalParameterPanel(panel, "originalMotionScroll_"+collection);
     m_original->watch(panel);m_original->unedit=std::move(leave);
     enter();m_original->flush();
     if(id<0) {
@@ -243,6 +231,7 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
     updateTree();return true;
 }
 void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVariant& argument) {
+    if (action == "importMotionMnf") { importMnf(argument.toString()); return; }
     if(action=="createMotionVectorForce") {
         static const QMap<QString,QString> collections{{"ScalarForce","scalarForces"},{"ScalarTorque","scalarTorques"},
             {"TriForce","threePointForces"},{"TriTorque","threePointTorques"}};

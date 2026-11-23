@@ -145,9 +145,15 @@ namespace MechMainWindow
         // 但单模态主导的响应色分布会恒定——只有图例数字在变）
         m_chkFlexAdaptiveScale = new QCheckBox(QString::fromUtf8("云图色标逐帧自适应"));
         m_chkFlexAdaptiveScale->setChecked(false);
+#ifdef MX_MOTION_OCC_COMPAT
+        m_chkFlexAdaptiveScale->setToolTip(tr(
+            "勾选后按当前帧节点的最小值和最大值着色，数值见右侧色标。\n"
+            "如果只有变形幅值变化，颜色分布仍可能相近。取消勾选可用同一色标比较各帧。"));
+#else
         m_chkFlexAdaptiveScale->setToolTip(QString::fromUtf8(
             "不勾（默认）：色标上限=全程最大弹性变形，颜色深浅随变形幅值演化，帧间可比\n"
             "勾选：色标上限=每帧实际最大变形，任何帧都有满色阶；单模态主导时分布恒定"));
+#endif
         foldSettings->addRow(m_chkFlexAdaptiveScale);
         // 切换口径时强制下一帧重刷图例（范围从全程 max 切到帧 max 或反之）
         connect(m_chkFlexAdaptiveScale, &QCheckBox::toggled, this, [this]() {
@@ -157,15 +163,21 @@ namespace MechMainWindow
 #endif
         });
 
-        //【刚柔耦合】云图参照系：默认整体运动口径（质量加权最优刚体拟合偏差）——
-        // 该口径天然免疫接口体参考系位置（体在 COM 或铰点均给出真实弹性变形），
-        // 解决 parser 把体放在 COM 时弹性口径混入力臂记账导致变形虚增 1000 倍的问题
         m_cmbFlexContourRef = new QComboBox();
+        m_cmbFlexContourRef->setObjectName(QStringLiteral("originalMotionFlexContour"));
+#ifdef MX_MOTION_OCC_COMPAT
+        m_cmbFlexContourRef->addItem(tr("变形参照: 整体位移"));
+        m_cmbFlexContourRef->addItem(tr("变形参照: 弹性变形"));
+        m_cmbFlexContourRef->setToolTip(tr(
+            "整体位移：节点相对初始位置的位移，包含刚体平移和转动。\n"
+            "弹性变形：去除刚体运动后，节点自身的变形。"));
+#else
         m_cmbFlexContourRef->addItem(QString::fromUtf8("变形参照: 整体运动"));
         m_cmbFlexContourRef->addItem(QString::fromUtf8("变形参照: 弹性变形"));
         m_cmbFlexContourRef->setToolTip(QString::fromUtf8(
             "整体运动（默认，UG 口径）：扣质量加权刚体运动后的偏差，两端偏大中间偏小的对称分布\n"
             "弹性变形：相对接口焊接系的挠度，根部为 0、自由端最大"));
+#endif
         foldSettings->addRow(m_cmbFlexContourRef);
         // 切换参照系：色标重定 + 图例标题随口径
         connect(m_cmbFlexContourRef, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {

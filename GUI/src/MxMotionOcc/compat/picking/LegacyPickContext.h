@@ -25,6 +25,7 @@ public:
     ~LegacyPickContext() override;
     static LegacyPickContext* forObject(const QObject* object, bool useCurrentFallback = true);
     static LegacyPickContext* current();
+    static LegacyPickContext* activeForViewport(const OccViewport& viewport);
     void setMeshes(const std::map<int, FemMesh>* meshes);
     void setNodeIds(int partId, const QVector<int>& ids);
     QVector<int> nodeIds(int partId) const;

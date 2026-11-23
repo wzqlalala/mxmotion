@@ -1,8 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <vector>
 
 class QDialog;
+class QString;
 class QWidget;
 
 namespace MotionOcc {
@@ -15,4 +17,6 @@ struct RigidFlexResult;
 QDialog* openNativeModeInspector(QWidget* parent,const CadDocument& cad,
                                  const NativeMotionDocument& document,
                                  const std::vector<RigidFlexResult>& results);
+QDialog* openImportedMnfModeInspector(QWidget* parent, const RigidFlexResult& result,
+                                      const QString& name, std::function<void()> bind = {});
 }

@@ -24,6 +24,7 @@ class QProcess;
 class QProgressBar;
 class QPushButton;
 class QTemporaryDir;
+class QTableWidget;
 class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -142,6 +143,7 @@ private:
     void editDrive(DriveKind kind, int id = -1);
     void editScenario(int id = -1);
     void showEditor(QWidget* editor);
+    void showOriginalParameterPanel(QWidget* panel, const QString& scrollName);
     void closeEditor();
     void removeRigidNode(ModelNode node);
     void commitRigid(RigidModel model, ModelNode selection);
@@ -168,6 +170,8 @@ private:
     bool resolveNativeBindings(NativeMotionDocument& document, bool interactive);
     void ensureNativeFlexMesh(int flexId);
     void inspectFlexModes(int flexId);
+    void importMnf(const QString& path = {}, int bindingId = -1);
+    void configureImportedMnf(const QString& path, const RigidFlexResult& preview, int bindingId);
     void snapshotNativeFlexMeshes();
     void updateNativeFlexMeshForPart(int partId);
     void restoreNativeFlexMeshes();
@@ -233,7 +237,7 @@ private:
     QComboBox* m_flexContour = nullptr;
     QComboBox* m_flexRange = nullptr;
     QPushButton* m_modeInspectButton = nullptr;
-    std::map<std::pair<int,int>,double> m_flexGlobalMax;
+    std::map<std::pair<int,int>,std::pair<double,double>> m_flexGlobalRanges;
     QCheckBox* m_followCurveMarker = nullptr;
     QCheckBox* m_clickCurveJump = nullptr;
     QTimer* m_rigidPoll = nullptr;
@@ -246,7 +250,7 @@ private:
     QPushButton* m_meshCancelButton = nullptr;
     QLabel* m_notice = nullptr;
     QLabel* m_selection = nullptr;
-    QPlainTextEdit* m_selectionDetails = nullptr;
+    QTableWidget* m_selectionDetails = nullptr;
     QPlainTextEdit* m_output = nullptr;
     QProgressBar* m_progress = nullptr;
     QProcess* m_worker = nullptr;

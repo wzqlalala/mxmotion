@@ -96,6 +96,17 @@ LegacyPickContext* LegacyPickContext::forObject(const QObject* object,bool useCu
     return useCurrentFallback ? s_current.data() : nullptr;
 }
 LegacyPickContext* LegacyPickContext::current() { return s_current; }
+
+LegacyPickContext* LegacyPickContext::activeForViewport(const OccViewport& viewport)
+{
+    if (!viewport.isPicking() || viewport.property("nativePickOwner").isValid()) return nullptr;
+    const auto* controller = MechMainWindow::mPickWidgetController::activeController();
+    auto* context = controller ? controller->context() : nullptr;
+    if (!context || context->m_viewport.data() != &viewport || context->m_controller.data() != controller ||
+        viewport.property("legacyPickOwner").value<QObject*>() != context) return nullptr;
+    return context;
+}
+
 void LegacyPickContext::setMeshes(const std::map<int,FemMesh>* meshes)
 {
     m_meshes=meshes;m_index->sampled.clear();

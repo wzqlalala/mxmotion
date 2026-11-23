@@ -364,7 +364,7 @@ namespace MechMainWindow
         _edit->setText(vectorToString(coord));
 
         // 清空拾取框数据与高亮
-        _pickController->displayData(PickWidgetData());
+        _pickController->displayData(PickWidgetData(), true);
         _pickController->clearAllHighlight();
 
         // 拾取清空后，回退到用输入框坐标保留渲染

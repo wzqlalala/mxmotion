@@ -1,4 +1,5 @@
 #include "mMotionControlInputPanel.h"
+#include "mParameterPageLayout.h"
 #include "mAppConfiguration.h"
 #include "mViewportModelManager.h"
 #include "mViewportModel.h"
@@ -36,7 +37,8 @@ namespace MechMainWindow
         m_mainLayout->addWidget(foldBasic);
 
         // ==================== 参数堆叠区 ====================
-        m_stkParams = new QStackedWidget(this);
+        auto* parameters = new QWidget(this);
+        m_stkParams = new ParameterPageLayout(parameters);
 
         // 0: 常量
         QWidget* pageConst = new QWidget();
@@ -103,7 +105,8 @@ namespace MechMainWindow
         m_stkParams->addWidget(pageCurve);
 
         FoldSection* foldParams = new FoldSection("参数设置", this);
-        foldParams->addRow(m_stkParams);
+        foldParams->addRow(parameters);
+        connect(m_stkParams, &QStackedLayout::currentChanged, foldParams, &FoldSection::refreshLayout);
         m_mainLayout->addWidget(foldParams);
 
         // ==================== 时间范围 ====================

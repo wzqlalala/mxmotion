@@ -9,7 +9,9 @@
 #include "motion/physics/Link.h"
 #include "motion/physics/LinkPointOnSurface.h"
 #include "motion/physics/LinkPointSpline.h"
+#include "motion/timestepper/TimestepperHHT.h"
 
+#include <QDir>
 #include <QJsonArray>
 #include <QQuaternion>
 #include <QRegularExpression>
@@ -103,13 +105,34 @@ motion::SimulationConfig configuration(const QJsonObject& o)
     return c;
 }
 
+class ImportedMnfTimestepper final : public motion::MotionTimestepperHHT {
+public:
+    static constexpr double maxStepSeconds = 0.002;
+
+    explicit ImportedMnfTimestepper(const motion::MotionTimestepperHHT& configured)
+        : motion::MotionTimestepperHHT(configured) {}
+
+    void Advance(double outputInterval) override
+    {
+        // A coarse step can produce spurious interface deformation even when
+        // Newton converges. Bound the integration step without adding output
+        // frames. The engine can still subdivide each step on nonconvergence.
+        const double count = std::ceil(outputInterval / maxStepSeconds);
+        const double step = outputInterval / count;
+        for (double index = 0; index < count; ++index)
+            motion::MotionTimestepperHHT::Advance(step);
+    }
+};
+
 class Assembly {
 public:
     Assembly(NativeMotionSystem& system,const NativeMotionInput& source,motion::SimulationConfig config)
         :s(system),in(source),config(config){}
-    void build()
+    std::vector<NativeFlexRuntime> build()
     {
+        readImportedDefinitions();
         bodies(); joints(); couplings(); drives(); markers(); springs(); forces(); contacts(); unilateral();
+        return std::move(importedFlex);
     }
     void configureRuntimeDirections()
     {
@@ -141,10 +164,57 @@ public:
     }
 private:
     NativeMotionSystem& s;const NativeMotionInput& in;motion::SimulationConfig config;int markerCounter=0;
-    std::string marker(int body,const Vec& point,const Vec& axis=motion::VECT_Z,const std::string& requested={})
+    std::map<int,QJsonObject> importedDefinitions;
+    std::vector<NativeFlexRuntime> importedFlex;
+
+    void readImportedDefinitions()
     {
-        if(!s.parts_map.count(bodyKey(body)))fail(QStringLiteral("Marker 引用不存在的运动体 %1。").arg(body));
-        motion::adams_marker_struct m{};m.part_id=bodyKey(body);fill(m.loc,point);fill(m.rot,axis);
+        std::set<int> ids;
+        for (const auto& value : in.document.collection("importedMnfBodies")) {
+            const auto definition = value.toObject();
+            if (!active(definition)) continue;
+            const int id = definition.value("id").toInt(-1);
+            const int target = definition.value("targetBodyId").toInt(-1);
+            if (id < 0 || !ids.insert(id).second || target < 0 || !importedDefinitions.emplace(target,definition).second)
+                fail("导入 MNF 柔性体的编号或目标运动体无效，或有重复绑定。");
+            const auto body = std::find_if(in.bodies.begin(),in.bodies.end(),[target](const PreparedBody& value){return value.body.id==target;});
+            if (body == in.bodies.end() || body->body.fixed)
+                fail(QStringLiteral("MNF 柔性体 %1 需要有效的非固定目标运动体。").arg(id));
+            if (std::any_of(in.geometry->flexBodies.begin(),in.geometry->flexBodies.end(),[target](const NativeFlexGeometry& autoFlex){return autoFlex.bodyId==target;}))
+                fail(QStringLiteral("运动体 %1 同时绑定了自动柔性体和 MNF 柔性体。").arg(target));
+            const auto bindings = definition.value("jointBindings").toObject();
+            if (bindings.isEmpty())
+                fail(QStringLiteral("MNF 柔性体 %1 需要至少一个已绑定接口节点的转动副。").arg(id));
+            for (auto binding=bindings.begin(); binding!=bindings.end(); ++binding) {
+                bool numeric = false;
+                const int joint = binding.key().toInt(&numeric);
+                const auto jointDefinition = in.document.entity("joints",joint);
+                const int action = jointDefinition.value("actionBodyId").toInt(-1);
+                const int base = jointDefinition.value("baseBodyId").toInt(-1);
+                if (!numeric || binding.key()!=QString::number(joint) || (action==target)==(base==target))
+                    fail(QStringLiteral("MNF 柔性体 %1 的接口映射引用了无效运动副 %2。").arg(id).arg(binding.key()));
+            }
+        }
+    }
+
+    bool usesImportedMnf(const motion::adams_joint_struct& joint) const
+    {
+        return !s.markers_map.at(joint.marker_I).flex_id.empty() || !s.markers_map.at(joint.marker_J).flex_id.empty();
+    }
+
+    std::string marker(int body,const Vec& point,const Vec& axis=motion::VECT_Z,const std::string& requested={},int mnfNode=-1)
+    {
+        motion::adams_marker_struct m{};
+        if (importedDefinitions.count(body)) {
+            if (mnfNode < 0)
+                fail(QStringLiteral("运动体 %1 使用导入的 MNF，当前只支持带显式接口节点绑定的普通转动副。").arg(body));
+            m.flex_id = bodyKey(body);
+            m.node_id = key(mnfNode);
+        } else {
+            if(!s.parts_map.count(bodyKey(body)))fail(QStringLiteral("Marker 引用不存在的运动体 %1。").arg(body));
+            m.part_id=bodyKey(body);
+        }
+        fill(m.loc,point);fill(m.rot,axis);
         const auto id=requested.empty()?"NATIVE_MK_"+key(markerCounter++):requested;
         if(!s.markers_map.emplace(id,m).second)fail("重复 Marker ID。");return id;
     }
@@ -164,6 +234,20 @@ private:
         motion::adams_part_struct ground{};ground.fixed=true;s.parts_map.emplace("ground",ground);
         for(const auto& prepared:in.bodies){
             const auto& b=prepared.body;const auto& p=prepared.properties;const auto src=in.document.entity("bodies",b.id);
+            const auto imported = importedDefinitions.find(b.id);
+            if (imported != importedDefinitions.end()) {
+                const auto& definition = imported->second;
+                const auto file = definition.value("mnfFile").toString();
+                if (file.trimmed().isEmpty()) fail(QStringLiteral("MNF 柔性体 %1 缺少文件路径。").arg(b.id));
+                const auto path = QDir(in.document.baseDirectory).absoluteFilePath(file);
+                const auto translation = vector(definition.value("referenceTranslationMm"));
+                const auto euler = vector(definition.value("referenceEuler321Deg")) * d2r;
+                const auto rotation = motion::Q_from_AngZ(euler.z()) * motion::Q_from_AngY(euler.y()) * motion::Q_from_AngX(euler.x());
+                importedFlex.push_back(buildImportedMnfFlex(s,prepared,definition,path,motion::MotionFrame<>(translation,rotation),
+                    vector(src.value("initialVelocity")),vector(src.value("initialAngularVelocity"))*d2r));
+                s.importedMnfBodyIds.insert(b.id);
+                continue;
+            }
             motion::adams_part_struct part{};part.fixed=b.fixed;part.mass=p.massKg;
             for(int i=0;i<6;++i)part.inertia[i]=p.inertiaKgM2[i]*1e6;
             fill(part.vel,vector(src.value("initialVelocity")));
@@ -221,9 +305,20 @@ private:
             }
             const auto origin=vector(o.value("origin"));
             joint->id=key(id);joint->type=found->second;
-            joint->marker_I=marker(o.value("actionBodyId").toInt(-1),origin,axisI);
-            joint->marker_J=marker(o.value("baseBodyId").toInt(-1),origin,axisJ);
             frictionLimit(o,*joint);
+            const int actionBody = o.value("actionBodyId").toInt(-1), baseBody = o.value("baseBodyId").toInt(-1);
+            const bool importedAction = importedDefinitions.count(actionBody), importedBase = importedDefinitions.count(baseBody);
+            if ((importedAction || importedBase) && (type!="Revolute" || joint->has_friction || joint->has_limit || (importedAction && importedBase)))
+                fail(QStringLiteral("运动副 %1 需要是 MNF 柔性体与刚体或地面之间无摩擦、无限位的转动副。").arg(id));
+            const auto mnfNode = [&](int body) {
+                const auto binding = importedDefinitions.find(body);
+                if (binding == importedDefinitions.end()) return -1;
+                const int node = binding->second.value("jointBindings").toObject().value(QString::number(id)).toInt(-1);
+                if (node < 0) fail(QStringLiteral("运动副 %1 缺少 MNF 接口节点绑定。").arg(id));
+                return node;
+            };
+            joint->marker_I=marker(actionBody,origin,axisI,{},mnfNode(actionBody));
+            joint->marker_J=marker(baseBody,origin,axisJ,{},mnfNode(baseBody));
             const auto geo=in.geometry->joints.find(id);
             if(geo!=in.geometry->joints.end()){
                 const auto& g=geo->second;
@@ -247,6 +342,8 @@ private:
             const auto o=value.toObject();const int id=o.value("id").toInt();
             const auto a=s.joints_map.find(key(o.value("firstJointId").toInt(-1))),b=s.joints_map.find(key(o.value("secondJointId").toInt(-1)));
             if(a==s.joints_map.end()||b==s.joints_map.end())fail(QStringLiteral("耦合副 %1 缺少目标运动副。").arg(id));
+            if (usesImportedMnf(*a->second) || usesImportedMnf(*b->second))
+                fail(QStringLiteral("耦合副 %1 不能引用 MNF 柔性体的转动副。").arg(id));
             const auto type=o.value("couplingType").toString();std::shared_ptr<motion::adams_joint_struct> coupling;
             if(type=="GearRack"){
                 auto p=std::make_shared<motion::adams_rackpin_joint_struct>();p->R=o.value("radius").toDouble();p->has_R=true;p->type="RACKPIN";coupling=p;
@@ -269,6 +366,8 @@ private:
             const auto o=value.toObject();const int id=o.value("id").toInt(),target=o.value("targetJointId").toInt(-1);
             const auto joint=s.joints_map.find(key(target));
             if(joint==s.joints_map.end())fail(QStringLiteral("驱动 %1 引用的运动副不存在。").arg(id));
+            if (usesImportedMnf(*joint->second))
+                fail(QStringLiteral("驱动 %1 不能施加在 MNF 柔性体的转动副上。").arg(id));
             if(joint->second->type!="REVOLUTE"&&joint->second->type!="TRANSLATIONAL"&&joint->second->type!="CYLINDRICAL"&&joint->second->type!="SCREW")fail(QStringLiteral("驱动 %1 的目标副不可驱动。").arg(id));
             motion::adams_motion_struct d;d.id=key(id);d.marker_I=joint->second->marker_I;d.marker_J=joint->second->marker_J;d.resolved_joint_id=joint->first;
             d.is_rotation=o.value("motionType").toString()=="Rotation";d.is_translation=!d.is_rotation;
@@ -307,6 +406,7 @@ private:
             }else{
                 const auto joint=s.joints_map.find(key(o.value("jointId").toInt(-1)));
                 if(joint==s.joints_map.end())fail("弹簧引用不存在的运动副。");
+                if (usesImportedMnf(*joint->second)) fail("弹簧不能施加在 MNF 柔性体的转动副上。");
                 if(torsion){spring.marker_I=joint->second->marker_I;spring.marker_J=joint->second->marker_J;spring.dof_type="TORSION";}
                 else{
                     // The generic AXIAL helper in Parser uses marker local X;
@@ -395,6 +495,7 @@ private:
         for(const auto& value:in.document.collection("contacts")){
             const auto o=value.toObject();if(!active(o))continue;motion::adams_contact_struct c;
             const int a=o.value("actionBodyId").toInt(-1),b=o.value("baseBodyId").toInt(-1);
+            if (importedDefinitions.count(a) || importedDefinitions.count(b)) fail("导入的 MNF 柔性体暂不支持接触。");
             c.id=key(o.value("id").toInt());c.body_I=bodyKey(a);c.body_J=bodyKey(b);
             c.is_static_I=s.parts_map.at(c.body_I).fixed;c.is_static_J=s.parts_map.at(c.body_J).fixed;
             c.is_convex_I=o.value("useConvexHullAction").toBool();c.is_convex_J=o.value("useConvexHullBase").toBool();
@@ -483,22 +584,9 @@ void assembleInitialState(NativeMotionSystem& system)
 {
     system.DoAssembly(motion::AssemblyLevel::POSITION);
     motion::MotionState position;
-    motion::MotionStateDelta velocity;
+    motion::MotionStateDelta compatible;
     double time=0;
-    position.setZero(system.GetNcoords_x(),&system);
-    velocity.setZero(system.GetNcoords_v(),&system);
-    system.StateGather(position,velocity,time);
-    motion::MotionVectorDynamic<> residual(system.GetNcoords_v()),constraints(system.GetNconstr()),reactions(system.GetNconstr());
-    residual.setZero();constraints.setZero();reactions.setZero();
-    system.LoadResidual_Mv(residual,velocity,1.0);
-    system.LoadConstraint_Ct(constraints,1.0);
-    // Project user velocities onto the actual drive/constraint tangent space
-    // without advancing forces through a fictitious initial time interval.
-    motion::MotionStateDelta compatible=velocity;
-    if(!system.StateSolveCorrection(compatible,reactions,residual,constraints,1.0,0.0,0.0,
-                                    position,velocity,time,false,false,true))
-        fail("初始速度约束装配失败。");
-    system.StateScatter(position,compatible,time,true);
+    system.projectConstraintVelocity(position,compatible,time);
     // The engine estimates acceleration with a 1e-6 s virtual dynamics step.
     // Keep its acceleration/reaction estimate, restore the accepted t=0 state.
     system.DoAssembly(motion::AssemblyLevel::ACCELERATION);
@@ -527,8 +615,14 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         if(callbacks.stopRequested&&callbacks.stopRequested()){error.clear();return SolveStatus::Stopped;}
         NativeMotionSystem system;
         system.sourceInput=&input;
-        auto config=configuration(input.document.entity("scenarios",input.scenario.id));
-        Assembly assembly(system,input,config);assembly.build();
+        const auto scenario=input.document.entity("scenarios",input.scenario.id);
+        auto config=configuration(scenario);
+        Assembly assembly(system,input,config);
+        auto importedFlex=assembly.build();
+        const bool hasMnf=!importedFlex.empty();
+        const auto analysisType=scenario.value("analysisType").toString("Dynamic");
+        if (hasMnf && analysisType!="Dynamic")
+            fail("导入的 MNF 柔性体当前支持动力学方案。");
         motion::utils::MotionParserAdams parser;parser.SetVisualizationType(motion::utils::MotionParserAdams::NONE);parser.Parse(system);
         createNativeEffortMotors(system,input);
         for(const auto& joint:system.joints_map){
@@ -546,14 +640,22 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         }
         assembly.configureRuntimeDirections();
         for(const auto& body:input.bodies){
-            const auto native=system.SearchBody(key(body.body.id).c_str());if(!native)fail("引擎未创建声明的运动体。");system.nativeBodies.emplace(body.body.id,native);
+            const auto name=key(body.body.id);
+            const auto native=system.importedMnfBodyIds.count(body.body.id)?system.SearchFlex(name.c_str()):system.SearchBody(name.c_str());
+            if(!native)fail("引擎未创建声明的运动体。");system.nativeBodies.emplace(body.body.id,native);
         }
         for(const auto& link:system.Get_linklist())if(const auto motor=std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)){
             bool numeric=false;const int id=QString::fromStdString(motor->GetNameString()).toInt(&numeric);
             if(numeric)system.nativeMotors.emplace(id,motor);
         }
         system.Set_G_acc(Vec(input.scenario.gravityMS2[0]*1000,input.scenario.gravityMS2[1]*1000,input.scenario.gravityMS2[2]*1000));
-        if(!input.geometry->flexBodies.empty()){
+        if (hasMnf) {
+            // The imported body's coupled inertia requires a direct constraint
+            // solve. HHT is the engine's validated MNF integration path.
+            config.use_preset=false;
+            config.integrator.type=motion::MotionTimestepper::Type::HHT;
+            config.solver.type=motion::MotionSolver::Type::SPARSE_QR;
+        } else if(!input.geometry->flexBodies.empty()){
             config.use_preset=false;config.integrator.type=motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED;
             const bool independent=std::any_of(input.geometry->flexBodies.begin(),input.geometry->flexBodies.end(),[](const NativeFlexGeometry& body){return body.independentInterfaces;});
             config.solver.type=independent?motion::MotionSolver::Type::SPARSE_QR:motion::MotionSolver::Type::MINRES;
@@ -562,6 +664,11 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         system.InitSolver(config);
         if(system.GetSolver()->GetType()!=system.config.solver.type||system.GetTimestepper()->GetType()!=system.config.integrator.type)
             fail("底层引擎没有安装方案指定的求解器或积分器，已中止；不能用默认类型代替所请求的算法。");
+        if (hasMnf) {
+            const auto hht = std::dynamic_pointer_cast<motion::MotionTimestepperHHT>(system.GetTimestepper());
+            if (!hht) fail("MNF 动力学需要 HHT 积分器。");
+            system.SetTimestepper(std::make_shared<ImportedMnfTimestepper>(*hht));
+        }
         const auto chosen=system.config.solver.type;
         const bool linearSolver=chosen==motion::MotionSolver::Type::SPARSE_LU||chosen==motion::MotionSolver::Type::SPARSE_QR||chosen==motion::MotionSolver::Type::GMRES||chosen==motion::MotionSolver::Type::MINRES||chosen==motion::MotionSolver::Type::BICGSTAB;
         if(linearSolver)for(const auto& joint:system.joints_map){
@@ -570,10 +677,9 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
                 fail(QStringLiteral("运动副 %1 含硬单边限位/静摩擦约束，当前线性求解器不支持该约束。请选择 PSOR 等投影求解器，或明确改用纯软限位。").arg(QString::fromStdString(joint.first)));
         }
         auto flex=buildNativeFlex(system,input,callbacks);
+        for (auto& imported : importedFlex) flex.push_back(std::move(imported));
         if(callbacks.stopRequested&&callbacks.stopRequested()){error.clear();return SolveStatus::Stopped;}
         system.SetMaxiter(50);
-        const auto scenario=input.document.entity("scenarios",input.scenario.id);
-        const auto analysisType=scenario.value("analysisType").toString("Dynamic");
         const bool staticOnly=analysisType=="Static",preload=staticOnly||analysisType=="PreloadedDynamics";
         if(staticOnly)for(const auto& value:input.document.collection("controllers"))
             if(value.toObject().value("enabled").toBool(true))fail("静力方案不能运行离散 PID 反馈；请选择“预载后动力学”，在静力平衡后启动控制器。");
@@ -590,6 +696,12 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         // correction before PID/recording, stopping early on actual residuals.
         system.SetPositionAssemblyPerStep(false);
         system.projectPositions=projectPositions;
+        if (!hasMnf) {
+            for (const auto& body : flex) {
+                if (body.reducedDynamics && body.result.assembly && body.result.interface_bodies.size() == 1)
+                    system.rigidInterfaceFlex.push_back(body.result.assembly.get());
+            }
+        }
         system.positionIterations=std::clamp(scenario.value("positionAssemblyIterations").toInt(50),1,50);
         validateNativeAcceptedConstraints(system);
         try { rejectNativeGeometryBoundary(system); }
@@ -599,7 +711,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         }
         try { captureNativeFlex(flex,0.0); }
         catch(const NativeFlexDivergence& initial) {
-            fail(QStringLiteral("自动柔性体 %1 的初始状态无效：%2；没有可保存的有效初始帧。")
+            fail(QStringLiteral("柔性体 %1 的初始状态无效：%2；没有可保存的有效初始帧。")
                 .arg(initial.flexId).arg(initial.reason));
         }
         system.RecordStepResults();recordNestedBodies(system);
@@ -621,6 +733,8 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         if(stopped||(callbacks.stopRequested&&callbacks.stopRequested())){error.clear();return SolveStatus::Stopped;}
         RigidResult next;extractNativeResults(input,system,flex,next);
         next.diagnostics=input.geometry->diagnostics;
+        if (hasMnf) next.diagnostics.append(QStringLiteral("MNF 动力学使用 HHT 自适应积分（内部步长上限 %1 ms）和稀疏 QR 求解。")
+            .arg(1000 * ImportedMnfTimestepper::maxStepSeconds));
         if(staticReport)next.diagnostics.append(staticReport->description());
         if(staticOnly){next.termination=ResultTermination::StaticEquilibrium;if(callbacks.progress)callbacks.progress(1);}
         if(next.frames.empty())fail("引擎未生成任何有效结果帧。");
@@ -632,7 +746,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         }
         if(divergence){
             next.termination=ResultTermination::FlexDivergence;
-            next.diagnostics.append(QStringLiteral("自动柔性体 %1 在试算 t=%2 s 时出现异常：%3；该步未被接受，已保留截至 t=%4 s 的 %5 帧有效结果，动画、曲线与模态数据保持同步。")
+            next.diagnostics.append(QStringLiteral("柔性体 %1 在试算 t=%2 s 时出现异常：%3；该步未被接受，已保留截至 t=%4 s 的 %5 帧有效结果，动画、曲线与模态数据保持同步。")
                 .arg(divergence->flexId).arg(divergence->attemptedTime,0,'g',12).arg(divergence->reason)
                 .arg(next.frames.back().seconds,0,'g',12).arg(next.frames.size()));
         }

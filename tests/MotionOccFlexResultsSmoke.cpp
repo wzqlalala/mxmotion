@@ -4,6 +4,8 @@
 #include "NativeMotionSolver.h"
 #include "RigidMotion.h"
 
+#include "motion/solver/SystemDescriptor.h"
+
 #include <QCoreApplication>
 #include <QDebug>
 #include <QJsonArray>
@@ -209,6 +211,42 @@ void rotatingOffsetFlexInterface()
     }
     require(maxRootError<.002,QStringLiteral("rotating attachment nodes separated from interface by %1 mm").arg(maxRootError,0,'g',12));
 }
+
+void rotatingInterfaceInertiaProjection()
+{
+    CadDocument cad;const auto input=preparedCantilever(cad);
+    NativeMotionSystem system;
+    auto body=std::make_shared<motion::MotionBody>();
+    body->SetNameString("0");body->SetPos(motion::MotionVector<>(5,5,5));
+    system.AddBody(body);
+    const auto runtimes=buildNativeFlex(system,input,SolverCallbacks{});
+    require(runtimes.size()==1,"missing reduced beam assembly");
+    auto& assembly=*runtimes.front().result.assembly;
+    const auto size=assembly.Get_modal_M().rows();
+    require(size==8&&assembly.GetOffset_w()==0,"unexpected inertia regression fixture layout");
+
+    const auto project=[&](const motion::MotionVector<>& translation){
+        motion::MotionVectorDynamic<> input=motion::MotionVectorDynamic<>::Zero(size);
+        motion::MotionVectorDynamic<> residual=motion::MotionVectorDynamic<>::Zero(size);
+        input.head(3)<<translation.x(),translation.y(),translation.z();
+        assembly.IntLoadResidual_Mv(0,residual,input,1);
+        motion::MotionSystemDescriptor descriptor;
+        assembly.InjectKRMmatrices(descriptor);
+        assembly.KRMmatricesLoad(0,0,1);
+        auto& blocks=descriptor.GetKblocksList();
+        require(blocks.size()==1,"missing reduced effective matrix block");
+        expectNear((blocks.front()->Get_K()*input-residual).norm(),0,1e-10,"effective mass and inertia residual disagree");
+        return residual.tail(2).eval();
+    };
+
+    const motion::MotionVector<> direction(.4,-1,.7);
+    const auto rest=project(direction);
+    require(rest.norm()>1e-6,"rotation fixture has no translational modal coupling");
+    const motion::MotionQuaternion<> quarterTurn(std::sqrt(.5),0,0,std::sqrt(.5));
+    body->SetRot(quarterTurn);
+    const auto rotated=project(quarterTurn.Rotate(direction));
+    expectNear((rotated-rest).norm(),0,1e-10,"same body-frame acceleration changed modal inertia after a quarter turn");
+}
 }
 
 int main(int argc,char** argv)
@@ -216,6 +254,7 @@ int main(int argc,char** argv)
     QCoreApplication app(argc,argv);
     try{
         contourSemantics();completePayloadAndPhysicalMotion();divergenceKeepsCleanResults();multipleFlexCaptureIsAtomic();nativeReactionConvention();rotatingOffsetFlexInterface();
+        rotatingInterfaceInertiaProjection();
         qInfo()<<"PASS: full modal payload, contour semantics, original reference frame, and synchronized partial results";
         return 0;
     }catch(const std::exception& exception){qCritical()<<exception.what();return 1;}

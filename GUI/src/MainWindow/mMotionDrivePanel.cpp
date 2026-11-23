@@ -1,5 +1,6 @@
 
 #include "mMotionDrivePanel.h"
+#include "mParameterPageLayout.h"
 #include "mMotionRefMap.h"
 #include "motion/functions/Function_Expr.h"
 #include "mMotionExprBuilderWidget.h"
@@ -125,8 +126,8 @@ namespace MechMainWindow
         m_cmbInputType->addItems({ "常数值", "函数表达式", "函数模板", "表格" });
         foldExcitation->addRow(new QLabel("输入模式:"), m_cmbInputType);
 
-        // 利用 QStackedWidget 实现输入控件的无缝原地切换
-        m_stkInputMode = new QStackedWidget();
+        auto* excitationInput = new QWidget(this);
+        m_stkInputMode = new ParameterPageLayout(excitationInput);
 
         // --- 页 0：常数 ---
         m_spbConstant = new MxFunctions::mCalcLineEdit(
@@ -203,7 +204,8 @@ namespace MechMainWindow
         }
 
         m_lblExcitationUnit = new QLabel("激励数值:");
-        foldExcitation->addRow(m_lblExcitationUnit, m_stkInputMode);
+        foldExcitation->addRow(m_lblExcitationUnit, excitationInput);
+        connect(m_stkInputMode, &QStackedLayout::currentChanged, foldExcitation, &FoldSection::refreshLayout);
         m_mainLayout->addWidget(foldExcitation);
 
         // 2. 构造函数中直接绑定 Lambda 信号 (纯即时生效逻辑)

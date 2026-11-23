@@ -93,7 +93,9 @@ void NativePickSession::begin(const QString& key, QPushButton* button, PickKind 
     m_key=key; m_button=button; m_buttonText=button->text(); m_initial=initial; m_changed=std::move(changed); m_cancelled=std::move(cancelled);
     m_viewport->setProperty("nativePickOwner",QVariant::fromValue(reinterpret_cast<quintptr>(this)));
     button->setText(QStringLiteral("完成拾取")); button->setProperty("pickActive",true);
-    button->setToolTip(QStringLiteral("点击视口选择；右键撤销最后一项；Esc 撤销本次拾取；再次点击完成。多选节点可 Ctrl+左键贯穿框选，包含框内被遮挡的节点。"));
+    button->setToolTip(kind == PickKind::Node && multiple
+        ? QStringLiteral("左键加选，右键减选，点击和拖框均可用。Esc 撤销本次拾取，再次点击完成。")
+        : QStringLiteral("点击视口选择；右键撤销最后一项；Esc 撤销本次拾取；再次点击完成。"));
     m_viewport->beginPick(kind,multiple,allowed,initial);
     m_viewport->setFocus(Qt::OtherFocusReason);
 }

@@ -29,6 +29,9 @@
 #include <TopoDS_Vertex.hxx>
 #include <Geom_Surface.hxx>
 #include <Standard_Failure.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_XYZ.hxx>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -75,15 +78,24 @@ bool geometryKind(PickKind kind)
         || kind == PickKind::Face || kind == PickKind::Solid;
 }
 
-TopoDS_Shape pickedShape(const CadDocument& document, const PickResult& pick)
+TopoDS_Shape pickedShape(const CadDocument& document, const PickResult& pick,
+                         std::map<int, TopTools_IndexedMapOfShape>* partMaps = nullptr)
 {
     const auto* part = document.part(pick.partId);
     if (!part) return {};
     if (pick.kind == PickKind::Part) return part->shape;
     if (!geometryKind(pick.kind)) return {};
+    const auto find = [&](const TopTools_IndexedMapOfShape& map) {
+        return pick.index > 0 && pick.index <= map.Extent() ? map(pick.index) : TopoDS_Shape{};
+    };
+    if (partMaps) {
+        auto [entry, inserted] = partMaps->try_emplace(pick.partId);
+        if (inserted) TopExp::MapShapes(part->shape, shapeType(pick.kind), entry->second);
+        return find(entry->second);
+    }
     TopTools_IndexedMapOfShape map;
     TopExp::MapShapes(part->shape, shapeType(pick.kind), map);
-    return pick.index > 0 && pick.index <= map.Extent() ? map(pick.index) : TopoDS_Shape{};
+    return find(map);
 }
 
 QVector3D position(const std::array<double, 3>& point)
@@ -248,15 +260,19 @@ bool related(const CadDocument& document, const std::map<int,FemMesh>& meshes, L
     });
 }
 
+GProp_GProps shapeProperties(const TopoDS_Shape& shape, PickKind kind, bool onlyClosed = false)
+{
+    GProp_GProps props;
+    if (shape.IsNull()) return props;
+    if (kind == PickKind::Edge) BRepGProp::LinearProperties(shape, props);
+    else if (kind == PickKind::Face) BRepGProp::SurfaceProperties(shape, props);
+    else BRepGProp::VolumeProperties(shape, props, onlyClosed);
+    return props;
+}
+
 double measure(const CadDocument& document, const PickResult& pick)
 {
-    auto shape=pickedShape(document,pick);
-    if (shape.IsNull()) return 0;
-    GProp_GProps props;
-    if (pick.kind==PickKind::Edge) BRepGProp::LinearProperties(shape,props);
-    else if (pick.kind==PickKind::Face) BRepGProp::SurfaceProperties(shape,props);
-    else BRepGProp::VolumeProperties(shape,props);
-    return std::abs(props.Mass());
+    return std::abs(shapeProperties(pickedShape(document, pick), pick.kind).Mass());
 }
 
 gp_Vec faceNormal(const TopoDS_Face& face, const gp_Pnt& point)
@@ -450,6 +466,254 @@ QVector<PickResult> meshAngle(const std::map<int,FemMesh>& meshes,LegacyPickCont
     }
     return result;
 }
+
+QString entityName(PickKind kind)
+{
+    switch (kind) {
+    case PickKind::Part: return QStringLiteral("部件");
+    case PickKind::Vertex: return QStringLiteral("几何点");
+    case PickKind::Edge: return QStringLiteral("几何线");
+    case PickKind::Face: return QStringLiteral("几何面");
+    case PickKind::Solid: return QStringLiteral("几何体");
+    case PickKind::Node: return QStringLiteral("节点");
+    case PickKind::MeshEdge: return QStringLiteral("单元线");
+    case PickKind::MeshFace: return QStringLiteral("单元面");
+    case PickKind::Element: return QStringLiteral("单元");
+    }
+    return {};
+}
+
+QString number(double value)
+{
+    return std::isfinite(value) ? QString::number(value, 'g', 12) : QString{};
+}
+
+QStringList components(const gp_XYZ& value)
+{
+    return {number(value.X()), number(value.Y()), number(value.Z())};
+}
+
+struct EntityMeasurement {
+    gp_XYZ center;
+    gp_XYZ direction;
+    double measure = 0.0;
+    double radius = 0.0;
+    QStringList meshCounts;
+};
+
+EntityMeasurement measureEntity(const CadDocument& document, const std::map<int, FemMesh>& meshes,
+                                const PickResult& pick, std::map<int, TopTools_IndexedMapOfShape>& partMaps)
+{
+    EntityMeasurement result;
+    result.center = gp_XYZ(pick.position[0], pick.position[1], pick.position[2]);
+    if (pick.hasDirection)
+        result.direction = gp_XYZ(pick.direction[0], pick.direction[1], pick.direction[2]);
+    if (pick.kind == PickKind::Node || pick.kind == PickKind::Vertex)
+        return result;
+
+    const auto shape = pickedShape(document, pick, &partMaps);
+    if (shape.IsNull()) return result;
+    try {
+        auto properties = shapeProperties(shape, pick.kind, true);
+        result.measure = std::abs(properties.Mass());
+        // Imported parts can be sheets or wires. Their centroid is still useful.
+        if (pick.kind == PickKind::Part && result.measure == 0.0) {
+            properties = shapeProperties(shape, PickKind::Face);
+            if (properties.Mass() == 0.0)
+                properties = shapeProperties(shape, PickKind::Edge);
+        }
+        if (properties.Mass() != 0.0) result.center = properties.CentreOfMass().XYZ();
+        if (pick.kind == PickKind::Edge) {
+            const BRepAdaptor_Curve curve(TopoDS::Edge(shape));
+            if (curve.GetType() == GeomAbs_Circle) {
+                result.radius = curve.Circle().Radius();
+                result.direction = curve.Circle().Axis().Direction().XYZ();
+            }
+        } else if (pick.kind == PickKind::Face) {
+            const BRepAdaptor_Surface surface(TopoDS::Face(shape));
+            if (surface.GetType() == GeomAbs_Cylinder) {
+                result.radius = surface.Cylinder().Radius();
+                result.direction = surface.Cylinder().Axis().Direction().XYZ();
+            }
+        }
+    } catch (const Standard_Failure&) {
+        // Keep the selection coordinates if OCC cannot evaluate a property.
+    }
+
+    if (pick.kind == PickKind::Part || pick.kind == PickKind::Solid) {
+        const auto mesh = meshes.find(pick.partId);
+        if (mesh == meshes.end()) {
+            result.meshCounts = QStringList{"0", "0"};
+        } else {
+            const auto* part = document.part(pick.partId);
+            TopExp_Explorer solids(part->shape, TopAbs_SOLID);
+            if (solids.More()) solids.Next();
+            if (pick.kind == PickKind::Part || !solids.More()) {
+                result.meshCounts = QStringList{
+                    QString::number(mesh->second.nodes.size()),
+                    QString::number(mesh->second.tetrahedra.empty()
+                        ? mesh->second.surface.size() : mesh->second.tetrahedra.size())
+                };
+            }
+        }
+    }
+    return result;
+}
+
+QString angle(const gp_XYZ& a, const gp_XYZ& b)
+{
+    const double length = a.Modulus() * b.Modulus();
+    if (!(length > 0.0) || !std::isfinite(length)) return {};
+    const double cosine = std::clamp(a.Dot(b) / length, -1.0, 1.0);
+    return number(std::acos(cosine) * 180.0 / pi);
+}
+
+int itemId(const PickResult& pick)
+{
+    if (pick.kind == PickKind::Part) return pick.partId;
+    if (pick.kind == PickKind::Node) return pick.nodeId;
+    return pick.index;
+}
+
+void describeMeshEntities(SelectionInfo& info, const QVector<PickResult>& picks, int rows)
+{
+    const auto kind = picks.front().kind;
+    info.columns = QStringList{QStringLiteral("实体")};
+    if (kind == PickKind::MeshEdge)
+        info.columns.append({QStringLiteral("节点ID1"), QStringLiteral("节点ID2"), QStringLiteral("线ID")});
+    else if (kind == PickKind::MeshFace)
+        info.columns.append({QStringLiteral("面ID"), QStringLiteral("节点ID")});
+    else
+        info.columns.append({QStringLiteral("单元ID"), QStringLiteral("单元类型")});
+    for (int i = 0; i < rows; ++i) {
+        const auto& pick = picks.at(i);
+        QStringList row{entityName(kind) + QString::number(i + 1)};
+        if (kind == PickKind::MeshEdge) {
+            row.append({QString::number(pick.nodeIds.value(0, -1)), QString::number(pick.nodeIds.value(1, -1)),
+                        QString::number(pick.index)});
+        } else if (kind == PickKind::MeshFace) {
+            QStringList ids;
+            for (int id : pick.nodeIds) ids.append(QString::number(id));
+            row.append({QString::number(pick.index), ids.join(QStringLiteral(", "))});
+        } else {
+            QString type;
+            if (pick.nodeIds.size() == 4) type = QStringLiteral("Tet4");
+            if (pick.nodeIds.size() == 3) type = QStringLiteral("Tri3");
+            row.append({QString::number(pick.index), type});
+        }
+        info.rows.append(row);
+    }
+    if (picks.size() == 1)
+        info.status += QStringLiteral(" · ID = %1").arg(picks.front().index);
+}
+}
+
+SelectionInfo describeSelection(const CadDocument& document, const std::map<int, FemMesh>& meshes,
+                                const QVector<PickResult>& picks)
+{
+    SelectionInfo info;
+    if (picks.isEmpty()) {
+        info.status = QStringLiteral("无");
+        return info;
+    }
+    constexpr int rowLimit = 5000;
+    const int rowCount = std::min(rowLimit, picks.size());
+    const auto kind = picks.front().kind;
+    const auto entity = entityName(kind);
+    if (std::any_of(picks.cbegin(), picks.cend(), [kind](const PickResult& pick) { return pick.kind != kind; })) {
+        info.status = QStringLiteral("%1 项").arg(picks.size());
+        info.columns = QStringList{QStringLiteral("实体"), QStringLiteral("ID"), QStringLiteral("部件")};
+        for (int i = 0; i < rowCount; ++i) {
+            const auto& pick = picks[i];
+            const auto* part = document.part(pick.partId);
+            info.rows.append(QStringList{entityName(pick.kind), QString::number(itemId(pick)),
+                                        part ? part->name : QString::number(pick.partId)});
+        }
+        return info;
+    }
+
+    info.status = QStringLiteral("%1 %2").arg(picks.size()).arg(entity);
+    if (kind == PickKind::MeshEdge || kind == PickKind::MeshFace || kind == PickKind::Element) {
+        describeMeshEntities(info, picks, rowCount);
+        return info;
+    }
+    const bool points = kind == PickKind::Node || kind == PickKind::Vertex;
+    const bool body = kind == PickKind::Solid || kind == PickKind::Part;
+    const bool pair = picks.size() == 2;
+    const bool nodes = kind == PickKind::Node;
+    const auto measureLabel = kind == PickKind::Edge ? QStringLiteral("长度(mm)")
+        : kind == PickKind::Face ? QStringLiteral("表面积(mm²)") : QStringLiteral("体积(mm³)");
+    const auto summary = QStringLiteral("%1, 概要").arg(info.status);
+    info.columns = QStringList{kind == PickKind::Part ? QStringLiteral("部件") : QStringLiteral("实体")};
+    if (pair)
+        info.columns.append(points ? QStringLiteral("距离(mm)") : QStringLiteral("质心之间的距离(mm)"));
+    if (!points) info.columns.append(measureLabel);
+    info.columns.append(points
+        ? QStringList{QStringLiteral("X(mm)"), QStringLiteral("Y(mm)"), QStringLiteral("Z(mm)")}
+        : QStringList{QStringLiteral("质心X(mm)"), QStringLiteral("质心Y(mm)"), QStringLiteral("质心Z(mm)")});
+    if (nodes) info.columns.append(QStringLiteral("节点ID"));
+    if (body) info.columns.append({QStringLiteral("节点数"), QStringLiteral("单元数")});
+
+    std::vector<EntityMeasurement> measurements;
+    measurements.reserve(rowCount);
+    std::map<int, TopTools_IndexedMapOfShape> partMaps;
+    gp_XYZ center;
+    gp_XYZ weighted;
+    double total = 0.0;
+    bool showRadius = false;
+    for (int i = 0; i < picks.size(); ++i) {
+        auto values = measureEntity(document, meshes, picks[i], partMaps);
+        total += values.measure;
+        center += values.center;
+        weighted += values.center * values.measure;
+        if (i < rowCount) {
+            showRadius |= values.radius > 0.0;
+            measurements.push_back(std::move(values));
+        }
+    }
+    if (showRadius) info.columns.append(QStringLiteral("半径(mm)"));
+    if (pair) {
+        const auto delta = measurements[1].center - measurements[0].center;
+        const auto distance = number(delta.Modulus());
+        QStringList row{QStringLiteral("距离(mm)"), distance};
+        if (!points) row.append(QString{});
+        row.append(components(delta));
+        info.rows.append(row);
+        info.status += QStringLiteral(" · 距离 = %1 mm").arg(distance);
+    }
+
+    QStringList aggregate{summary};
+    if (pair) aggregate.append(QString{});
+    if (!points) aggregate.append(number(total));
+    aggregate.append(components(total > 0.0 ? weighted / total : center / picks.size()));
+    info.rows.append(aggregate);
+    for (int i = 0; i < rowCount; ++i) {
+        const auto& values = measurements[std::size_t(i)];
+        QStringList row{entity + QString::number(i + 1)};
+        if (const auto* part = document.part(picks[i].partId); kind == PickKind::Part && part)
+            row[0] = part->name;
+        if (pair) row.append(QString{});
+        if (!points) row.append(number(values.measure));
+        row.append(components(values.center));
+        if (nodes) row.append(QString::number(picks[i].nodeId));
+        if (body) row.append(values.meshCounts.isEmpty() ? QStringList{QString{}, QString{}} : values.meshCounts);
+        if (showRadius) row.append(values.radius > 0.0 ? number(values.radius) : QString{});
+        info.rows.append(row);
+    }
+
+    if (points && picks.size() == 1) {
+        info.status += QStringLiteral(" · 位置 = (%1) mm").arg(components(measurements.front().center).join(", "));
+    } else if (!points) {
+        info.status += QStringLiteral(" · %1 = %2 %3")
+            .arg(measureLabel.section('(', 0, 0), number(total), measureLabel.section('(', 1, 1).chopped(1));
+    }
+    QString turn;
+    if (points && picks.size() == 3)
+        turn = angle(measurements[0].center - measurements[1].center, measurements[2].center - measurements[1].center);
+    else if (pair && (kind == PickKind::Edge || kind == PickKind::Face))
+        turn = angle(measurements[0].direction, measurements[1].direction);
+    if (!turn.isEmpty()) info.status += QStringLiteral(" · 角度 = %1°").arg(turn);
+    return info;
 }
 
 bool dispatchOriginalSelection(MotionWindow& window, OccViewport& viewport,

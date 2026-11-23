@@ -21,8 +21,12 @@ using MechMainWindow::FoldSection;
 namespace MotionOcc {
 namespace {
 FoldSection* section(QWidget* panel,const QString& title) {
-    auto* fold=new FoldSection(title,panel);auto* layout=qobject_cast<QVBoxLayout*>(panel->layout());
-    if(layout)layout->insertWidget(std::max(0,layout->count()-1),fold);return fold;
+    auto* fold = new FoldSection(title, panel);
+    if (auto* layout = qobject_cast<QVBoxLayout*>(panel->layout())) {
+        layout->insertWidget(std::max(0, layout->count() - 1), fold);
+        fold->refreshLayout();
+    }
+    return fold;
 }
 MxFunctions::mCalcLineEdit* number(FoldSection* fold,LegacyMotionContext* context,const QString& collection,int id,
                                 const QString& key,const QString& label,double fallback,bool positive=false) {
@@ -120,7 +124,11 @@ void appendOriginalEngineExtensions(QWidget* panel,LegacyMotionContext* context,
                     : row.value("feedbackType").toString()=="Velocity" ? (angular ? "°/s" : "mm/s") : (angular ? "°" : "mm");
                 text=QStringLiteral("目标与反馈：%1；控制输出：%2。").arg(feedback,nativeDriveCommandUnit(drive));
             }
-            status->setText(text.isEmpty() ? QStringLiteral("配置参数通过当前检查。") : text);
+            if (text.isEmpty()) text = QStringLiteral("配置参数通过当前检查。");
+            if (status->text() != text) {
+                status->setText(text);
+                fold->refreshLayout();
+            }
         };
         QObject::connect(context,&LegacyMotionContext::documentChanged,panel,update);update();
     }

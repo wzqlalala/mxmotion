@@ -123,7 +123,8 @@ void MotionWindow::syncOriginalMotionResults(int scenarioId) {
         typed->m_pidHistories[id].push_back(p);
     }
     for(const auto& source:result.flexBodies) {
-        mMotionFlexBodyData f;f.m_bodyId=source.bodyId;f.m_name=m_original->document().entity("autoFlexBodies",source.flexId).value("name").toString();
+        const auto collection = source.modalBasis.kind == "MNF" ? "importedMnfBodies" : "autoFlexBodies";
+        mMotionFlexBodyData f;f.m_bodyId=source.bodyId;f.m_name=m_original->document().entity(collection,source.flexId).value("name").toString();
         f.m_nodeX0=qvalues(source.referenceNodes);f.m_tetIds=qvalues(source.tetrahedra);f.m_surfaceTris=qvalues(source.surfaceTriangles);
         f.m_psi=qvalues(source.psiInternal);f.m_nModes=source.modeCount;f.m_nInterfaces=source.interfaceCount;f.m_interfacePose0=qvalues(source.initialInterfacePoses);
         // Both real capture paths use [x,y,z,w,qx,qy,qz]. Preserve that order;

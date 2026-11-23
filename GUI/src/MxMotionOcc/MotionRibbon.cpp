@@ -397,6 +397,7 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     originalButton(bodies, window, {"批量定义运动体", "Motion/bodyBatch.png", "createMotionBodyBatch"});
     originalButton(bodies, window, {"运动体", "Motion/movingBody.png", "createMotionBody"});
     originalButton(bodies, window, {"自动柔性体", "Motion/mnf.png", "createMotionAutoFlex"});
+    originalButton(bodies, window, {"导入 MNF…", "Motion/mnf.png", "importMotionMnf"});
     originalButton(bodies, window, {"标记点", "caotu/dian.png", "createMotionMarker"});
 
     originalButton(jointDrives, window, {"位置驱动", "Motion/drive.png", "createMotionDrive", "Position"});

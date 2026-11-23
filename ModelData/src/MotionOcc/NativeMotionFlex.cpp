@@ -1,8 +1,12 @@
 #include "NativeMotionRuntime.h"
 #include "FemMesh.h"
+#include "NativeMnfPreview.h"
 
 #include "motion/fea/Mesh.h"
 #include "motion/fea/NodeFEAxyz.h"
+#include "motion/utils/Parsermnf.h"
+
+#include <Eigen/Cholesky>
 
 #include <QJsonArray>
 #include <QFile>
@@ -18,6 +22,127 @@
 #include <stdexcept>
 
 namespace MotionOcc {
+
+NativeFlexRuntime buildImportedMnfFlex(NativeMotionSystem& system, const PreparedBody& target,
+                                       const QJsonObject& definition, const QString& path,
+                                       const motion::MotionFrame<>& referencePose,
+                                       const motion::MotionVector<>& initialVelocity,
+                                       const motion::MotionVector<>& initialAngularVelocity)
+{
+    motion::utils::MnfParseOptions options;
+    options.include_all_nodes = true;
+    options.include_surface_topology = true;
+    options.include_quadratic_invariants = false;
+    auto data = motion::utils::MotionParserMnf().Parse(path.toUtf8().toStdString(), options);
+    auto preview = makeMnfModePreview(data);
+    auto& matrices = data.matrices;
+
+    const auto& nodes = matrices.at("SELNOD").data;
+    std::map<int, Eigen::Index> interfaceRows;
+    for (Eigen::Index row = 0; row < nodes.rows(); ++row)
+        if (nodes(row, 4) != 0)
+            interfaceRows.emplace(preview.sourceNodeIds.at(static_cast<std::size_t>(row)), row);
+    const auto bindings = definition.value("jointBindings").toObject();
+    std::set<Eigen::Index> boundRows;
+    for (auto binding = bindings.begin(); binding != bindings.end(); ++binding) {
+        const int node = binding.value().toInt(-1);
+        const auto found = interfaceRows.find(node);
+        if (found == interfaceRows.end())
+            throw std::runtime_error(QStringLiteral("MNF 运动副 %1 绑定的节点 %2 不是文件导出的接口节点。")
+                .arg(binding.key()).arg(node).toStdString());
+        boundRows.insert(found->second);
+    }
+
+    // Keep the file's modal coordinates, but express geometry and energetics
+    // in mxmotion's kg, mm, s system. Its force unit is millinewton.
+    const double massScale = data.units.si_mass;
+    const double lengthScale = 1000 * data.units.si_length;
+    const double inertiaScale = massScale * lengthScale * lengthScale;
+    const double energyScale = 1000 * data.units.si_force * lengthScale;
+    matrices.at("INVAR1").data *= massScale;
+    matrices.at("INVAR2").data *= massScale * lengthScale;
+    matrices.at("INVAR3").data *= massScale * lengthScale;
+    for (const char* name : {"INVAR4", "INVAR6", "INVAR7", "INVAR8"})
+        matrices.at(name).data *= inertiaScale;
+    matrices.at("GENSTIFF").data *= energyScale;
+
+    // HHT updates the engine nodes repeatedly while evaluating the tangent.
+    // Only the bound interface nodes need to be updated during integration.
+    const auto modeCount = static_cast<Eigen::Index>(preview.modalBasis.frequenciesHz.size());
+    const auto boundCount = static_cast<Eigen::Index>(boundRows.size());
+    Eigen::MatrixXd selectedNodes(boundCount, nodes.cols());
+    Eigen::MatrixXd translation(3, boundCount * modeCount), rotation(3, boundCount * modeCount);
+    Eigen::Index outputRow = 0;
+    for (const auto row : boundRows) {
+        selectedNodes.row(outputRow) = nodes.row(row);
+        translation.middleCols(outputRow * modeCount, modeCount) =
+            matrices.at("T_MODE").data.middleCols(row * modeCount, modeCount) * lengthScale;
+        rotation.middleCols(outputRow * modeCount, modeCount) =
+            matrices.at("R_MODE").data.middleCols(row * modeCount, modeCount);
+        ++outputRow;
+    }
+    selectedNodes.middleCols(1, 3) *= lengthScale;
+    matrices.at("SELNOD").data = std::move(selectedNodes);
+    matrices.at("T_MODE").data = std::move(translation);
+    matrices.at("R_MODE").data = std::move(rotation);
+
+    const double mass = matrices.at("INVAR1").data(0, 0);
+    if (!(mass > 0) || !std::isfinite(mass))
+        throw std::runtime_error("MNF 柔性体的质量无效。");
+    const Eigen::Vector3d center = matrices.at("INVAR2").data.transpose() / mass;
+    const Eigen::Matrix3d inertia = matrices.at("INVAR7").data - mass *
+        (center.squaredNorm() * Eigen::Matrix3d::Identity() - center * center.transpose());
+    if (!center.allFinite() || !inertia.allFinite() || !inertia.isApprox(inertia.transpose()) ||
+        Eigen::LLT<Eigen::Matrix3d>(inertia).info() != Eigen::Success)
+        throw std::runtime_error("MNF 柔性体关于质心的惯量无效。");
+
+    auto flex = std::make_shared<motion::MotionFlexBodyAuxRef>();
+    flex->setLevel(static_cast<int>(modeCount));
+    flex->SetMass(mass);
+    flex->SetInertia(motion::MotionMatrix33<>(inertia));
+    flex->SetQuadraticInvariantsEnabled(false);
+    for (const auto& matrix : matrices)
+        flex->set_matrix(matrix.first, matrix.second);
+    flex->UseAdamsDefaultModalDamping();
+    flex->SetNameString(std::to_string(target.body.id));
+    flex->SetFrame_COG_to_REF(motion::MotionFrame<>(motion::MotionVector<>(center), motion::QUNIT));
+    flex->SetFrame_REF_to_abs(referencePose);
+    flex->SetOriginPos(flex->GetPos());
+    flex->SetPos_dt(initialVelocity);
+    flex->SetWvel_par(initialAngularVelocity);
+    flex->SetCollide(false);
+    system.AddFlex(flex);
+    flex->Update(false);
+
+    NativeFlexRuntime runtime;
+    runtime.id = definition.value("id").toInt();
+    runtime.bodyId = target.body.id;
+    runtime.importedBody = std::move(flex);
+    runtime.importedNodeIds = std::move(preview.sourceNodeIds);
+    runtime.importedReferencePose = referencePose;
+    runtime.result.surface_tris = std::move(preview.surfaceTriangles);
+    runtime.modalBasis = std::move(preview.modalBasis);
+    runtime.modalBasis.diagnostics.append(QStringLiteral("动力学使用部分惯性耦合与 MotionEngine 默认模态阻尼。"));
+    runtime.result.n_modes = static_cast<int>(modeCount);
+    const auto modes = static_cast<std::size_t>(modeCount);
+    runtime.result.node_x0.reserve(preview.referenceNodes.size());
+    for (std::size_t node = 0; node < runtime.importedNodeIds.size(); ++node) {
+        const auto index = 3 * node;
+        const auto position = referencePose.TransformPointLocalToParent(motion::MotionVector<>(
+            preview.referenceNodes[index], preview.referenceNodes[index + 1], preview.referenceNodes[index + 2]));
+        runtime.result.node_x0.insert(runtime.result.node_x0.end(), {position.x(), position.y(), position.z()});
+        for (std::size_t mode = 0; mode < modes; ++mode) {
+            auto& shapes = runtime.modalBasis.shapes;
+            const auto column = index * modes + mode;
+            const auto rotated = referencePose.TransformDirectionLocalToParent(
+                motion::MotionVector<>(shapes[column], shapes[column + modes], shapes[column + 2 * modes]));
+            for (std::size_t component = 0; component < 3; ++component)
+                shapes[column + component * modes] = rotated[component];
+        }
+    }
+    runtime.result.psi_internal = runtime.modalBasis.shapes;
+    return runtime;
+}
 
 std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system,const NativeMotionInput& input,
                                              const SolverCallbacks& callbacks,bool inspectionOnly)
@@ -193,6 +318,12 @@ std::vector<NativeFlexRuntime> buildNativeFlex(NativeMotionSystem& system,const 
 void validateNativeFlex(const std::vector<NativeFlexRuntime>& flex,double time)
 {
     for(const auto& runtime:flex){
+        if (runtime.importedBody) {
+            const auto& q = runtime.importedBody->GetModalAmplitudes();
+            if (q.size() != runtime.result.n_modes || !q.allFinite())
+                throw NativeFlexDivergence{runtime.id, time, QStringLiteral("MNF 模态坐标无效")};
+            continue;
+        }
         if(!runtime.result.assembly)throw std::runtime_error("柔性体模态装配不存在。");
         if(!runtime.reducedDynamics)continue;
         const auto& q=runtime.result.assembly->Get_modal_q();
@@ -215,20 +346,41 @@ void captureNativeFlex(std::vector<NativeFlexRuntime>& flex,double time)
     // bad second body must not append a frame to the first body's result.
     for(auto& runtime:flex){
         if(!runtime.times.empty()&&time<=runtime.times.back())continue;
-        auto& assembly=*runtime.result.assembly;
-        const auto& q=assembly.Get_modal_q();
-        if(runtime.reducedDynamics)assembly.SetInternalStateWithModes(true);
         PendingFrame frame{&runtime,{},{},{}};
-        if(runtime.reducedDynamics)frame.q.assign(q.data(),q.data()+q.size());
         auto& positions=frame.positions;
         positions.reserve(runtime.result.node_x0.size());
-        for(const auto& mesh:assembly.Get_internal_meshlist())for(const auto& node:mesh->GetNodes()){
-            const auto xyz=std::dynamic_pointer_cast<motion::fea::MotionNodeFEAxyz>(node);
-            if(!xyz)throw std::runtime_error("自动柔性体网格节点类型不受支持。");
-            const auto& p=xyz->GetPos();
+        const auto appendPosition = [&](const motion::MotionVector<>& p) {
             if(!std::isfinite(p.x())||!std::isfinite(p.y())||!std::isfinite(p.z()))
                 throw NativeFlexDivergence{runtime.id,time,QStringLiteral("柔性体节点位置出现非有限值")};
             positions.insert(positions.end(),{p.x(),p.y(),p.z()});
+        };
+        if (const auto& imported = runtime.importedBody) {
+            const auto& q = imported->GetModalAmplitudes();
+            frame.q.assign(q.data(), q.data() + q.size());
+            const auto& reference = runtime.result.node_x0;
+            using RowMajorMatrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+            const Eigen::Map<const RowMajorMatrix> basis(runtime.result.psi_internal.data(), reference.size(), q.size());
+            const Eigen::VectorXd displacement = basis * q;
+            const auto& currentPose = imported->GetFrame_REF_to_abs();
+            const auto& originalPose = runtime.importedReferencePose;
+            const auto rotation = currentPose.GetRot() * originalPose.GetRot().GetConjugate();
+            for (std::size_t row = 0; row < reference.size(); row += 3) {
+                const motion::MotionVector<> deformed(reference[row] + displacement[row],
+                    reference[row + 1] + displacement[row + 1], reference[row + 2] + displacement[row + 2]);
+                appendPosition(currentPose.GetPos() + rotation.Rotate(deformed - originalPose.GetPos()));
+            }
+        } else {
+            auto& assembly=*runtime.result.assembly;
+            const auto& q=assembly.Get_modal_q();
+            if(runtime.reducedDynamics) {
+                assembly.SetInternalStateWithModes(true);
+                frame.q.assign(q.data(),q.data()+q.size());
+            }
+            for(const auto& mesh:assembly.Get_internal_meshlist())for(const auto& node:mesh->GetNodes()){
+                const auto xyz=std::dynamic_pointer_cast<motion::fea::MotionNodeFEAxyz>(node);
+                if(!xyz)throw std::runtime_error("自动柔性体网格节点类型不受支持。");
+                appendPosition(xyz->GetPos());
+            }
         }
         if(positions.size()!=runtime.result.node_x0.size())throw std::runtime_error("柔性体结果节点数量与参考网格不一致。");
         if(!positions.empty()&&runtime.times.size()+1>60000000/positions.size())throw std::runtime_error("柔性体动画结果超过 60000000 个坐标预算；请增大步长或简化网格。");

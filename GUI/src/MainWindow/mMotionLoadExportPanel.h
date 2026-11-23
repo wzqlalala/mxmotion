@@ -16,7 +16,7 @@
 #include <QPushButton>
 #include <QTextStream>
 #include <QVector>
-#include <QStackedWidget>
+#include <QStackedLayout>
 #include <QVBoxLayout>
 #include <QMap>
 #include <QSet>
@@ -105,7 +105,7 @@ namespace MechMainWindow
 
         // ============ 顶部：导出模式切换 ============
         QComboBox* m_comboExportMode = nullptr;   ///< 0=手动提取 1=特征工况导出 2=连杆同步工况导出
-        QStackedWidget* m_modeStack = nullptr;
+        QStackedLayout* m_modeStack = nullptr;
 
         // ============ 模式一：手动提取（原控件） ============
         QLineEdit* m_editName = nullptr;
