@@ -5,7 +5,9 @@
 #include "mViewportModelManager.h"
 #include "mViewportModel.h"
 #include "mMechGlobalSignals.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mInfoWindow.h"
+#endif
 #include "mMotionFlexBridge.h"
 #include "mMotionFlexMxExport.h"
 #include "mGeneralPickUp.h"
@@ -72,7 +74,16 @@ namespace MechMainWindow {
         m_attachPickWidget = mGeneralPickUp::createPickWidget(CBBlue);
         m_attachPickWidget->setDefultTip(QString::fromUtf8("附着节点（留空=自动按运动副收组）"));
         m_attachPickWidget->setPickFilter({ (int)MxFunctions::PickDataType::Node });
+#ifdef MX_MOTION_OCC_COMPAT
+        connect(m_attachPickWidget,&mPickWidgetController::dataChanged,this,[this] {
+            setProperty("mxFlexAttachmentSelectionEdited",true);
+        });
+#endif
         connect(m_attachPickWidget, &mPickWidgetController::pickActiveChanged, this, [this](bool isActive) {
+#ifdef MX_MOTION_OCC_COMPAT
+            if(isActive && getCVM) m_attachPickWidget->setAllowedParts(mMotionRefMap::getSet(
+                Physical_MotionBody,m_cmbTargetBody->currentData().toInt(),Physical_Part));
+#endif
             if (isActive)
                 emit MechCommon::mMechGlobalSignals::getInstance()->activePickSig(5);   // 节点拾取模式
             });
@@ -247,7 +258,7 @@ namespace MechMainWindow {
         //【刚柔耦合】目标刚体切换：预览其体网格表面（无网格时清预览）
         connect(m_cmbTargetBody, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
             const int bodyId = m_cmbTargetBody->currentData().toInt();
-            if (bodyId <= 0 || !mMotionFlexBridge::previewFlexBodyMesh(getCVM ? getCVM->getModelData() : nullptr, bodyId, QStringLiteral("__flex_preview__"))) {
+            if (m_cmbTargetBody->currentIndex()<0 || bodyId < 0 || !mMotionFlexBridge::previewFlexBodyMesh(getCVM ? getCVM->getModelData() : nullptr, bodyId, QStringLiteral("__flex_preview__"))) {
                 mMotionFlexBridge::clearFlexBodyPreview();
             }
             if (getCVM && getCVM->getPreRenderWidget())
@@ -490,7 +501,7 @@ namespace MechMainWindow {
         //【材料直输】所选材料的 E/ν/ρ → 直输框；缺属性/无选中 → 内置钢默认
         double E = 2.1e5, nu = 0.3, rho = 7.85e-6;
         const int matId = m_cmbMaterial->currentData().toInt();
-        if (matId > 0 && getCVM) {
+        if (matId >= 0 && m_cmbMaterial->currentIndex()>=0 && getCVM) {
             auto& matMgr = getCVM->getModelData()->getManager<MechMaterialData::mMaterialManager>(Physical_Material);
             if (auto mat = matMgr.getMaterialData(matId)) {
                 auto all = mat->getAllProps();
@@ -596,7 +607,7 @@ namespace MechMainWindow {
             return false;
         auto* modelData = getCVM->getModelData();
         const int bodyId = m_cmbTargetBody->currentData().toInt();
-        if (!modelData || bodyId <= 0)
+        if (!modelData || m_cmbTargetBody->currentIndex()<0 || bodyId < 0)
             return false;
 
         auto& relMgr = modelData->getMapRelationManager();
@@ -605,7 +616,7 @@ namespace MechMainWindow {
         std::vector<int> tets;
         std::map<int, int> g2l;
         auto log = [](const QString&) {};
-        if (!mMotionFlexBridge::collectBodyTetraMesh(modelData, partIds, m_flexData->getElementSize(), coords, tets, g2l, log))
+        if (!mMotionFlexBridge::collectBodyTetraMesh(modelData, partIds, m_spbElementSize->value(), coords, tets, g2l, log))
             return false;
 
         const auto pts = mMotionFlexBridge::collectJointAttachPointsGui(modelData, bodyId);
@@ -613,7 +624,7 @@ namespace MechMainWindow {
             return false;
 
         //容差 = 连接半径>0 ? 半径 : 3×平均单元边长；每个副点收最近 16 节点
-        double tol = m_flexData->getConnectionRadius();
+        double tol = m_spbConnectionRadius->value();
         if (tol <= 0) {
             double sum = 0; int cnt = 0;
             const int nT = (int)tets.size() / 4;
@@ -684,7 +695,7 @@ namespace MechMainWindow {
 
         //面板实时值 → 数据对象（照 slot_save 的字段写法，最小集）
         const int bodyId = m_cmbTargetBody->currentData().toInt();
-        if (bodyId <= 0) {
+        if (m_cmbTargetBody->currentIndex()<0 || bodyId < 0) {
             mGlobalSignals::getInstance()->outputMessageSig(
                 QString::fromUtf8("[MNF] 请先选择目标刚体"), true);
             return;
@@ -694,7 +705,7 @@ namespace MechMainWindow {
         //【材料直输】E/ν/ρ 回写所选材料对象（桥接按材料属性取值）
         {
             const int matId = m_flexData->getMaterialId();
-            if (matId > 0) {
+            if (matId >= 0) {
                 auto& matMgr = modelData->getManager<MechMaterialData::mMaterialManager>(Physical_Material);
                 if (auto mat = matMgr.getMaterialData(matId)) {
                     mat->addProperty(MxFunctions::MAT_Isotropy, MxFunctions::MatProp_YoungsModulus, m_spbMatE->text().toDouble());
@@ -892,7 +903,7 @@ namespace MechMainWindow {
         //【材料直输】E/ν/ρ 写回所选材料对象（材料自带持久化；桥接按材料属性取值）
         {
             const int matId = m_flexData->getMaterialId();
-            if (matId > 0 && getCVM) {
+            if (matId >= 0 && getCVM) {
                 auto& matMgr = getCVM->getModelData()->getManager<MechMaterialData::mMaterialManager>(Physical_Material);
                 if (auto mat = matMgr.getMaterialData(matId)) {
                     mat->addProperty(MxFunctions::MAT_Isotropy, MxFunctions::MatProp_YoungsModulus, m_spbMatE->text().toDouble());
@@ -958,6 +969,11 @@ namespace MechMainWindow {
         m_flexData->setRayleighMass(m_spbRayleighMass->value());
         m_flexData->setRayleighStiffness(m_spbRayleighStiffness->value());
 
+#ifdef MX_MOTION_OCC_COMPAT
+        if(getCVM->commitAutoFlexAttachments) getCVM->commitAutoFlexAttachments(id,
+            property("mxFlexAttachmentSelectionEdited").toBool());
+        setProperty("mxFlexAttachmentSelectionEdited",false);
+#endif
         emit MechCommon::mMechGlobalSignals::getInstance()->createUpdateMotionAutoFlexSig(isNew, id);
         //【刚柔耦合】保存即网格化（UG 式向导语义）：无体网格则按单元尺寸自动剖分，
         // 成功后立即预览网格。剖分日志吐消息栏。
@@ -981,7 +997,11 @@ namespace MechMainWindow {
 
     void mMotionAutoFlexPanel::slot_cancel()
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        if(getCVM && getCVM->closePanel)getCVM->closePanel();
+#else
         mInfoWindow::getInstance()->unEditInfoWindow();
+#endif
     }
 
     void mMotionAutoFlexPanel::connectSig()

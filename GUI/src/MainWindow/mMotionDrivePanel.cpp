@@ -9,6 +9,7 @@
 #include "mMotionScenario.h"
 
 #include <QPushButton>
+#include <QHeaderView>
 #include <QVector>
 #include "mAppConfiguration.h"
 #include "mGlobalSignals.h"
@@ -109,6 +110,12 @@ namespace MechMainWindow
 
         m_cmbControlMode = new QComboBox();
         m_cmbControlMode->addItems({ "位置", "速度" });  // 加速度模式暂不支持，隐藏（求解侧另有显式防护）
+#ifdef MX_MOTION_OCC_COMPAT
+        m_cmbControlMode->setItemData(0,int(DriveControlMode::Position));
+        m_cmbControlMode->setItemData(1,int(DriveControlMode::Velocity));
+        m_cmbControlMode->addItem(QStringLiteral("力"),int(DriveControlMode::Force));
+        m_cmbControlMode->addItem(QStringLiteral("力矩"),int(DriveControlMode::Torque));
+#endif
         foldSemantics->addRow(new QLabel("控制模式:"), m_cmbControlMode);
         m_mainLayout->addWidget(foldSemantics);
 
@@ -238,7 +245,11 @@ namespace MechMainWindow
             });
 
         connect(m_cmbControlMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+#ifdef MX_MOTION_OCC_COMPAT
+            if (m_motionDriveData) m_motionDriveData->setControlMode(static_cast<MechMotionData::DriveControlMode>(m_cmbControlMode->itemData(index).toInt()));
+#else
             if (m_motionDriveData) m_motionDriveData->setControlMode(static_cast<MechMotionData::DriveControlMode>(index));
+#endif
             refreshExcitationUnitLabel();
             });
 
@@ -349,11 +360,16 @@ namespace MechMainWindow
 
         //菜单按"目标×控制模式"入口创建（位置/速度）：显式同步数据与下拉框。
         //加速度模式面板暂不支持（下拉仅两项），菜单侧入口已禁用，不会走到
-        if (m_motionDriveData && static_cast<int>(mode) < m_cmbControlMode->count())
+#ifdef MX_MOTION_OCC_COMPAT
+        const int modeIndex=m_cmbControlMode->findData(int(mode));
+#else
+        const int modeIndex=int(mode);
+#endif
+        if (m_motionDriveData && modeIndex>=0 && modeIndex < m_cmbControlMode->count())
         {
             m_motionDriveData->setControlMode(mode);
             const QSignalBlocker blocker(m_cmbControlMode);
-            m_cmbControlMode->setCurrentIndex(static_cast<int>(mode));
+            m_cmbControlMode->setCurrentIndex(modeIndex);
             refreshExcitationUnitLabel();
         }
     }
@@ -434,6 +450,12 @@ namespace MechMainWindow
             return;
 
         const bool rotation = (m_cmbMotionType && m_cmbMotionType->currentIndex() == 1);
+#ifdef MX_MOTION_OCC_COMPAT
+        const auto mode=DriveControlMode(m_cmbControlMode->currentData().toInt());
+        if(mode==DriveControlMode::Force || mode==DriveControlMode::Torque) {
+            m_lblExcitationUnit->setText(mode==DriveControlMode::Force ? QStringLiteral("激励数值 (N):") : QStringLiteral("激励数值 (N·mm):"));return;
+        }
+#endif
         const bool velocity = (m_cmbControlMode && m_cmbControlMode->currentIndex() == 1);
 
         if (rotation)
@@ -479,7 +501,11 @@ namespace MechMainWindow
         m_cmbMotionType->setCurrentIndex(static_cast<int>(m_motionDriveData->getMotionType()));
 
         const QSignalBlocker bCtrl(m_cmbControlMode);
+#ifdef MX_MOTION_OCC_COMPAT
+        m_cmbControlMode->setCurrentIndex(m_cmbControlMode->findData(int(m_motionDriveData->getControlMode())));
+#else
         m_cmbControlMode->setCurrentIndex(static_cast<int>(m_motionDriveData->getControlMode()));
+#endif
 
         //单位标签须在两个语义下拉还原到数据值之后再刷新（此前刷新读到的是上一会话的旧索引，
         //从模型树 edit 进入时单位不跟随）

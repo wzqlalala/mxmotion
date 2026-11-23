@@ -722,7 +722,11 @@ namespace {
 
         connect(
             solverThread,
+#ifdef MX_MOTION_OCC_COMPAT
+            &mMotionSolverThread::finished,
+#else
             &QThread::finished,
+#endif
             solverThread,
             &QObject::deleteLater);
 

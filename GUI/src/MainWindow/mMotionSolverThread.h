@@ -1,4 +1,7 @@
 #pragma once
+#ifdef MX_MOTION_OCC_COMPAT
+#include "solver/LegacyMotionSolverThread.h"
+#else
 //解决中文乱码
 #pragma execution_character_set("utf-8")
 
@@ -131,3 +134,4 @@ namespace MechMainWindow
         mMotionPidSystem m_sys;
     };
 }
+#endif // MX_MOTION_OCC_COMPAT

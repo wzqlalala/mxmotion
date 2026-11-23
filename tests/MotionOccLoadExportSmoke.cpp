@@ -143,14 +143,84 @@ void extremaAndBodyInitial()
         std::fill(channel.values.begin(),channel.values.end(),0);
     require(!buildNativeLoadCases(f.input,flat,options,output,error),"flat history invented peak cases");
 }
+
+void movingTargetNode()
+{
+    Synthetic fixture;QString error;
+    PreparedBody prepared;prepared.body.id=0;prepared.properties.centerMm={1,2,3};
+    fixture.input.bodies.push_back(prepared);
+    // Frame 1 includes a 90-degree rotation and translation. Frame 2 keeps
+    // the translation but restores the CAD orientation, independently testing
+    // that the selected mesh point follows each actual accepted body pose.
+    fixture.result.frames[2].bodies.front().rotation={1,0,0,0};
+    for(auto& channel:fixture.result.channels)if(channel.sourceId==0) {
+        if(channel.variable=="ReactionForce") {
+            channel.values[6]=0;channel.values[7]=-3;channel.values[8]=0;
+        } else if(channel.variable=="Position"||channel.variable=="PositionJ") {
+            channel.values[6]=12;channel.values[7]=22;channel.values[8]=33;
+        }
+    }
+    QTemporaryDir directory;require(directory.isValid(),"temporary moving-target export");
+    const auto path=directory.filePath("moving-node.csv");
+    NativeLoadExportOptions options;options.frames=NativeLoadFrames::All;options.nodeId=321;
+    options.useTargetPoint=true;options.targetPointMm={3,2,3};options.targetBodyId=0;
+    require(exportNativeLoads(path,fixture.input,fixture.result,{"joints",0},options,error),error);
+    const auto rows=bytes(path).split('\n');
+    const auto row=[&](int frame) {
+        const auto values=rows.at(frame+1).split(',');
+        require(values.size()==16,"moving target CSV field count");
+        return values;
+    };
+    auto first=row(0);
+    expectNear(first[7].toDouble(),3,1e-12,"initial picked CAD point X");
+    expectNear(first[8].toDouble(),2,1e-12,"initial picked CAD point Y");
+    auto rotated=row(1);
+    expectNear(rotated[7].toDouble(),11,1e-12,"moving target rotated X");
+    expectNear(rotated[8].toDouble(),24,1e-12,"moving target rotated Y");
+    expectNear(rotated[9].toDouble(),33,1e-12,"moving target translated Z");
+    expectNear(rotated[13].toDouble(),0,1e-12,"moving target moment X");
+    expectNear(rotated[14].toDouble(),0,1e-12,"moving target moment Y");
+    expectNear(rotated[15].toDouble(),2,1e-12,"rotated-node moment omitted actual target motion");
+    auto translated=row(2);
+    expectNear(translated[7].toDouble(),13,1e-12,"translated target X");
+    expectNear(translated[8].toDouble(),22,1e-12,"translated target Y");
+    expectNear(translated[15].toDouble(),-3,1e-12,"translated-node moment has wrong lever arm");
+
+    // The existing explicit-world-point API remains fixed in world space.
+    options.targetBodyId=-1;
+    const auto fixedPath=directory.filePath("fixed-point.csv");
+    require(exportNativeLoads(fixedPath,fixture.input,fixture.result,{"joints",0},options,error),error);
+    const auto fixed=bytes(fixedPath).split('\n').at(2).split(',');
+    expectNear(fixed[7].toDouble(),3,0,"fixed global target moved with body");
+    expectNear(fixed[8].toDouble(),2,0,"fixed global target Y changed");
+    expectNear(fixed[14].toDouble(),60,1e-12,"fixed global reference compatibility moment Y");
+    expectNear(fixed[15].toDouble(),-42,1e-12,"fixed global reference compatibility moment Z");
+
+    options.targetBodyId=0;options.format=NativeLoadFormat::NastranBdf;
+    options.frames=NativeLoadFrames::Specified;options.frameIndex=1;
+    const auto bdfPath=directory.filePath("moving-node.bdf");
+    require(exportNativeLoads(bdfPath,fixture.input,fixture.result,{"joints",0},options,error),error);
+    const auto bdf=bytes(bdfPath);const auto start=bdf.indexOf("MOMENT,");
+    require(start>=0,"moving-node BDF has no moment card");
+    const auto moment=bdf.mid(start).split('\n').first().split(',');
+    expectNear(moment[7].toDouble(),2,1e-12,"BDF did not use moving target point");
+    require(bdf.contains("Target body ID: 0"),"BDF omitted moving reference identification");
+    auto flexible=fixture.result;RigidFlexResult flex;flex.bodyId=0;flexible.flexBodies.push_back(flex);
+    require(!exportNativeLoads(bdfPath,fixture.input,flexible,{"joints",0},options,error)
+        &&error.contains(QStringLiteral("柔性体"))&&bytes(bdfPath)==bdf,
+        "flexible target was silently treated as rigid or overwrote prior output");
+    auto missing=fixture.result;missing.frames[1].bodies.clear();
+    require(!exportNativeLoads(bdfPath,fixture.input,missing,{"joints",0},options,error)&&bytes(bdfPath)==bdf,
+        "missing target pose was silently accepted or overwrote prior output");
+}
 }
 
 int main(int argc,char** argv)
 {
     QCoreApplication app(argc,argv);
     try{
-        physicalEquilibriumAndExport();extremaAndBodyInitial();
-        qInfo()<<"PASS: physical I/J signs, wrench transfer, CSV/BDF, extrema and synchronous body-initial load cases";
+        physicalEquilibriumAndExport();extremaAndBodyInitial();movingTargetNode();
+        qInfo()<<"PASS: physical I/J signs, moving/fixed target wrench transfer, CSV/BDF, extrema and synchronous body-initial load cases";
         return 0;
     }catch(const std::exception& exception){qCritical()<<exception.what();return 1;}
 }

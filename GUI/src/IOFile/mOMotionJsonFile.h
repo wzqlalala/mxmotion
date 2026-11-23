@@ -9,6 +9,7 @@
 #include <QJsonArray>
 
 namespace MechModelData { class mModelData; }
+namespace MotionOcc { class LegacyMotionJsonAdapter; }
 
 namespace MechMotionData {
     class mMotionBody;
@@ -48,6 +49,7 @@ namespace MechIOFile
         void exportFinished(bool success, const QString& msg);
 
     private:
+        friend class MotionOcc::LegacyMotionJsonAdapter;
         void run() override;
 
         QJsonObject bodyToJson(MechMotionData::mMotionBody* body) const;

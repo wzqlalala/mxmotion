@@ -25,7 +25,13 @@ struct NativeLoadExportOptions {
     // If an actual target point is supplied, transfer the moment with r x F.
     // Otherwise moments are about the selected end's marker, stated in output.
     bool useTargetPoint = false;
-    Vector3d targetPointMm{}; // Current global frame, same mm unit as the CAD.
+    Vector3d targetPointMm{};
+    // -1: explicit fixed global point, preserving the original API.
+    // >=0: point is initial CAD world coordinates on this rigid body; every
+    // accepted frame transforms it with the body's actual pose and initial COM.
+    // Flexible-node mapping is a separate capability and must not be inferred
+    // from an interface rigid-body pose.
+    int targetBodyId = -1;
 };
 
 struct NativeLoadSample {

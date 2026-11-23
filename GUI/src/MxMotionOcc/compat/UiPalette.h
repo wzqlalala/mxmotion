@@ -34,6 +34,7 @@ public:
     static QColor focus() { return primary(); }
     static QColor error() { return QColor::fromRgb(colors().error); }
     static QColor onAction() { return QColor::fromRgb(colors().onAction); }
+    static QColor action() { return primary().darker(115); }
 
     static QString textHex() { return text().name(); }
     static QString labelHex() { return label().name(); }
@@ -50,6 +51,8 @@ public:
     static QString hoverHex() { return hover().name(); }
     static QString focusHex() { return focus().name(); }
     static QString errorHex() { return error().name(); }
+    static QString onActionHex() { return onAction().name(); }
+    static QString actionHex() { return action().name(); }
 
 private:
     struct Colors {

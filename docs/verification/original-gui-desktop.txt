@@ -1,0 +1,9 @@
+PASS original joint controls, 25 tree icons and 17 individual joint actions
+PASS original point input -> typed manager -> exact JSON delta -> saved project
+PASS original result queries: accepted frames / deg and Nmm units / continuous angles / actual distance derivatives / unavailable channels
+PASS STEP + original JSON -> original scenario -> MotionEngine: 11 accepted frames, 90 deg/s, 9 deg at 0.1 s
+PASS original animation slider/timer -> actual CAD pose; original curve controls -> exact accepted samples; display edits preserve results
+PASS original curve/face collectors, global topology IDs, exact OCC fingerprints
+PASS restored original panel construction and repeated controller teardown
+PASS project reopen, original composite point control, untouched precision/extensions
+PASS original GUI desktop regression including original AutoFlex workflow

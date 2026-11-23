@@ -30,7 +30,9 @@ namespace MechMotionData {
     enum class MXMOTIONDATA_EXPORT DriveControlMode {
         Position,       ///< 位置控制 (位移/角度)
         Velocity,       ///< 速度控制 (线速度/角速度)
-        Acceleration    ///< 加速度控制 (线加速度/角加速度)
+        Acceleration,   ///< 加速度控制 (线加速度/角加速度)
+        Force,          ///< MotionEngine effort actuator, N
+        Torque          ///< MotionEngine effort actuator, N·mm
     };
 
     /**

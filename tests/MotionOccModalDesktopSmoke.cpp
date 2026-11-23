@@ -2,6 +2,10 @@
 #include "OccViewport.h"
 #include "NativeMotionSolver.h"
 #include "RigidProject.h"
+#include "mMotionAnimationPanel.h"
+#include "mMotionResultData.h"
+#include "mMotionScenario.h"
+#include "compat/mViewportModelManager.h"
 
 #include <QApplication>
 #include <QAction>
@@ -133,21 +137,112 @@ int runMotionOccModalDesktopSmoke(QApplication& app,const QString& outputDirecto
         RigidModel staticModel;staticModel.nativeDocument=independent;syncNativeMotionModel(staticModel);
         const auto staticProject=output.filePath("independent-static.mxmotion");require(saveRigidProject(staticProject,cad,staticModel,error),error);
         require(window.openRigidProject(staticProject),"could not reopen independent FEM project");
-        require(window.command(Command::Solve)->isEnabled(),"static solve command unavailable");window.command(Command::Solve)->trigger();
-        require(waitFor([&]{return !window.command(Command::StopSolve)->isEnabled();},60000),"independent static solve did not finish");
+        require(window.command(Command::Solve)->isEnabled(),"static solve command unavailable");
+        qApp->setProperty("mpcomm_solve_requested",true);
+        window.command(Command::Solve)->trigger();
+        // The original scenario starts its solver through a queued adapter.
+        // An initially disabled Stop button is not proof of completion.
+        require(waitFor([&]{
+            if(!getCVM||!getCVM->getModelData())return false;
+            const auto* scenario=getCVM->getModelData()->getManager<MechMotionData::mMotionScenarioManager>(MxFunctions::Physical_MotionScenario).getData(0);
+            return scenario&&scenario->hasResult()&&scenario->getResult()->getFrameCount()==1
+                &&!window.command(Command::StopSolve)->isEnabled();
+        },60000),"independent static solve did not publish one accepted equilibrium frame");
         QTreeWidgetItem* animation=nullptr;
         for(QTreeWidgetItemIterator it(tree);*it;++it)if((*it)->data(0,Qt::UserRole+1).toInt()==int(ModelNode::Animation))animation=*it;
-        require(animation && !animation->isDisabled(),"static solve produced no reviewable equilibrium frame");tree->setCurrentItem(animation);
-        auto* contour=widget<QComboBox>(window,"motionFlexContour");
-        require(!widget<QPushButton>(window,"motionPlayButton")->isEnabled(),"single static frame should not fabricate time playback");
         auto* mainView=window.findChild<OccViewport*>();require(mainView,"main viewport missing");
-        contour->setCurrentIndex(0);app.processEvents();const auto plain=mainView->grabFramebuffer();
-        contour->setCurrentIndex(contour->findData(int(FlexContourKind::ElasticDisplacement)));app.processEvents();
-        require(mainView->grabFramebuffer()!=plain,"independent FEM static contour did not render");
-        require(!widget<QPushButton>(window,"motionInspectModes")->isEnabled(),"zero internal basis invented modal inspection modes");
+        QVector3D restMinimum,restMaximum;
+        require(mainView->queryVisibleBounds(restMinimum,restMaximum),"rest mesh bounds missing");
+        require(animation && !animation->isDisabled(),"static solve produced no reviewable equilibrium frame");tree->setCurrentItem(animation);
+        app.processEvents();
+        auto* original=widget<MechMainWindow::mMotionAnimationPanel>(window,"originalMotionAnimationPanel");
+        require(original->isVisible(),"the original animation panel is hidden");
+        QPushButton *originalPlay=nullptr,*originalPause=nullptr,*originalStop=nullptr;
+        for(auto* button:original->findChildren<QPushButton*>()) {
+            if(button->text()==QStringLiteral("播放"))originalPlay=button;
+            if(button->text()==QStringLiteral("暂停"))originalPause=button;
+            if(button->text()==QStringLiteral("停止"))originalStop=button;
+        }
+        auto* timeline=original->findChild<QSlider*>();
+        require(originalPlay&&originalPause&&originalStop&&timeline,"original playback controls are incomplete");
+        require(!originalPlay->isEnabled()&&!originalPause->isEnabled()&&!timeline->isEnabled()
+            &&timeline->minimum()==0&&timeline->maximum()==0,"single equilibrium frame enabled original time playback");
+        originalStop->click();
+        require(!originalPlay->isEnabled(),"original Stop re-enabled playback of a single equilibrium frame");
+        // A queued shortcut or preserved loop setting must not bypass the
+        // disabled button and create a fictitious transient timer.
+        require(QMetaObject::invokeMethod(original,"onPlayClicked",Qt::DirectConnection),"original Play slot unavailable");
+        for(auto* timer:original->findChildren<QTimer*>(QString{},Qt::FindDirectChildrenOnly))
+            require(!timer->isActive(),"original single-frame Play started an animation timer");
+        require(QMetaObject::invokeMethod(original,"onPauseClicked",Qt::DirectConnection),"original Pause slot unavailable");
+        require(!originalPlay->isEnabled()&&!originalPause->isEnabled(),"original Pause changed single-frame playback eligibility");
+
+        QComboBox* contour=nullptr;QCheckBox* adaptive=nullptr;
+        for(auto* combo:original->findChildren<QComboBox*>())
+            if(combo->count()==2&&combo->itemText(0)==QStringLiteral("变形参照: 整体运动")
+                &&combo->itemText(1)==QStringLiteral("变形参照: 弹性变形"))contour=combo;
+        for(auto* check:original->findChildren<QCheckBox*>())
+            if(check->text()==QStringLiteral("云图色标逐帧自适应"))adaptive=check;
+        require(contour&&adaptive&&contour->isVisible()&&adaptive->isVisible(),"original flexible contour controls were replaced");
+
+        // Read the actual original result object used by this visible panel.
+        // The independent FEM path has two moving interfaces and no invented
+        // reduced modal coordinates or expansion matrix for its boundary-only mesh.
+        require(getCVM&&getCVM->getModelData(),"original animation model facade unavailable");
+        const auto* originalScenario=getCVM->getModelData()->getManager<MechMotionData::mMotionScenarioManager>(MxFunctions::Physical_MotionScenario).getData(0);
+        require(originalScenario&&originalScenario->hasResult(),"original static result is missing");
+        const auto* originalResult=originalScenario->getResult();
+        require(originalResult->getFrameCount()==1&&originalResult->m_flexBodies.size()==1,"original static result did not preserve one physical frame / one FEM body");
+        const auto& originalFlex=originalResult->m_flexBodies.front();
+        require(originalFlex.m_nModes==0&&originalFlex.m_nInterfaces==2&&originalFlex.m_psi.isEmpty(),"independent FEM result invented an internal modal basis");
+        for(const auto& frame:originalFlex.m_frames)require(frame.m_modalQ.isEmpty(),"independent FEM result invented modal coordinates");
+
+        struct DisplayCalls { int count=0;int reference=-1;bool adaptive=false; };
+        const auto calls=std::make_shared<DisplayCalls>();
+        const auto display=getCVM->displayMotionTime;
+        require(bool(display),"original animation is not connected to real playback");
+        getCVM->displayMotionTime=[display,calls](int id,double time,int reference,bool perFrame) {
+            ++calls->count;calls->reference=reference;calls->adaptive=perFrame;
+            display(id,time,reference,perFrame); // Observe, then execute the real renderer unchanged.
+        };
+        contour->setCurrentIndex(0);adaptive->setChecked(false);originalStop->click();app.processEvents();
+        const auto overall=mainView->grabFramebuffer();require(!overall.isNull(),"original overall-motion contour did not render");
+        QVector3D deformedMinimum,deformedMaximum;
+        require(mainView->queryVisibleBounds(deformedMinimum,deformedMaximum),"real deformed FEM bounds missing");
+        require(deformedMaximum.x()>restMaximum.x()+1e-4f&&std::abs(deformedMinimum.x()-restMinimum.x())<1e-4f,
+            "static renderer did not show the actual loaded end displacement and fixed end");
+        const int callsBefore=calls->count;contour->setCurrentIndex(1);app.processEvents();
+        require(calls->count>callsBefore&&calls->reference==1,"original contour reference did not reach playback");
+        const auto elastic=mainView->grabFramebuffer();
+        const double mainDpr=mainView->devicePixelRatioF();
+        const auto pixels=[&](const QRectF& logical) {
+            return QRect(qRound(logical.x()*mainDpr),qRound(logical.y()*mainDpr),
+                qRound(logical.width()*mainDpr),qRound(logical.height()*mainDpr));
+        };
+        const QRect meshArea=pixels(QRectF(0,0,mainView->width()-190,mainView->height()-140));
+        const int mainBarHeight=std::min(220,mainView->height()-100);
+        const QRect legendArea=pixels(QRectF(mainView->width()-177,38,165,mainBarHeight+65));
+        require(overall.copy(meshArea)!=elastic.copy(meshArea),"original contour selector changed no real mesh colors");
+        require(overall.copy(legendArea)!=elastic.copy(legendArea),"original contour selector did not refresh the actual scalar legend");
+        const int mainBarX=qRound((mainView->width()-156)*mainDpr);
+        const auto elasticHigh=elastic.pixelColor(mainBarX,qRound((78+mainBarHeight*.1)*mainDpr));
+        const auto elasticLow=elastic.pixelColor(mainBarX,qRound((78+mainBarHeight*.9)*mainDpr));
+        require(elasticHigh.red()>elasticHigh.blue()*2&&elasticLow.blue()>elasticLow.red()*2,"original FEM contour has no actual scalar color bar");
+        QVector3D afterMinimum,afterMaximum;require(mainView->queryVisibleBounds(afterMinimum,afterMaximum),"FEM bounds vanished after contour switch");
+        require((afterMinimum-deformedMinimum).length()<1e-6f&&(afterMaximum-deformedMaximum).length()<1e-6f,
+            "changing a contour reference changed the solved equilibrium geometry");
+        const int adaptiveBefore=calls->count;adaptive->setChecked(true);app.processEvents();
+        require(calls->count>adaptiveBefore&&calls->adaptive,"original adaptive scalar range did not reach playback");
+        // One accepted frame has identical per-frame and all-frame limits.
+        // Its adaptive option must not manufacture a different displacement.
+        const auto adaptiveImage=mainView->grabFramebuffer();
+        require(adaptiveImage.copy(meshArea)==elastic.copy(meshArea)&&adaptiveImage.copy(legendArea)==elastic.copy(legendArea),
+            "single-frame adaptive scale fabricated a different displacement or range");
+        getCVM->displayMotionTime=display;
         window.repaint();app.processEvents();
         require(window.screen()->grabWindow(window.winId()).save(output.filePath("native-independent-static.png")),"failed to save full FEM static screenshot");
-        log<<"Independent full FEM -> real static solve -> single-frame deformed mesh / elastic contour passed, no fake internal modes\n";
+        log<<"Independent full FEM -> real static solve -> visible original AnimationPanel: one frame, Play/Pause/timer disabled, Stop retains correct state\n";
+        log<<"Original contour reference/adaptive controls -> real deformed mesh, scalar colors and legend; two interfaces with zero fabricated internal modes\n";
         window.close();log<<"PASS\n";log.flush();return 0;
     }catch(const std::exception& exception){log<<"FAIL: "<<exception.what()<<'\n';log.flush();return 1;}
 }

@@ -20,6 +20,7 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     void init();

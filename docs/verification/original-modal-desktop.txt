@@ -1,0 +1,5 @@
+Saved CAD + native JSON -> standalone real modal solve -> 4 frequencies, clamp node map, mode/phase/overlay/playback and CSV passed
+Modal inspection left model and transient results unchanged
+Independent full FEM -> real static solve -> visible original AnimationPanel: one frame, Play/Pause/timer disabled, Stop retains correct state
+Original contour reference/adaptive controls -> real deformed mesh, scalar colors and legend; two interfaces with zero fabricated internal modes
+PASS

@@ -141,6 +141,8 @@ namespace MechIOFile
     }
 
     static DriveControlMode stringToDriveControlMode(const QString& str) {
+        if (str == "Force") return DriveControlMode::Force;
+        if (str == "Torque") return DriveControlMode::Torque;
         if (str == "Position")      return DriveControlMode::Position;
         if (str == "Velocity")      return DriveControlMode::Velocity;
         if (str == "Acceleration")  return DriveControlMode::Acceleration;
@@ -1196,6 +1198,9 @@ namespace MechIOFile
         else if (scenario->hasCurrentCurveRequest()) {
             scenario->addCurveRequest(scenario->getCurrentCurveRequest());
         }
+        // addCurveRequest updates the last-edited request as a convenience.
+        // Restore an explicitly saved selection after importing the list.
+        if (reqVal.isObject())scenario->setCurrentCurveRequest(jsonToCurveRequest(reqVal.toObject()));
 
         return scenario;
     }
@@ -1225,17 +1230,31 @@ namespace MechIOFile
     mMotionCurveRequest mIMotionJsonFile::jsonToCurveRequest(const QJsonObject& obj)
     {
         mMotionCurveRequest req;
-        req.m_requestId = obj.value("requestId").toInt(-1);
-        req.m_requestName = obj.value("requestName").toString();
-        req.m_sourceType = stringToCurveSourceType(obj.value("sourceType").toString());
+        req.m_originalJson = obj;
+        req.m_requestId = obj.value("requestId").toInt(obj.value("id").toInt(-1));
+        req.m_requestName = obj.value("requestName").toString(obj.value("name").toString());
+        const QString source = obj.value("sourceType").toString();
+        const QString variable = obj.value("variable").toString();
+        req.m_sourceType = mMotionCurveRequest::sourceTypeFromName(source);
         req.m_sourceId = obj.value("sourceId").toInt(-1);
         req.m_sourceName = obj.value("sourceName").toString();
-        req.m_variable = stringToCurveVariable(obj.value("variable").toString());
-        req.m_component = stringToCurveComponent(obj.value("component").toString());
+        req.m_variable = mMotionCurveRequest::variableFromName(variable);
+        const auto component = obj.value("component");
+        req.m_component = component.isDouble()
+            ? component.toInt() == -1 ? CurveComponent::Magnitude : static_cast<CurveComponent>(component.toInt())
+            : stringToCurveComponent(component.toString());
+        const QString collection = mMotionCurveRequest::collectionForSource(req.m_sourceType);
+        if (component.isDouble() || source == collection || int(req.m_sourceType) >= int(CurveSourceType::Spring)
+            || req.m_variable == CurveVariable::NativeChannel) {
+            req.m_nativeSource = collection.isEmpty() ? source : collection;
+            req.m_nativeVariable = variable;
+            req.m_nativeComponent = component.isDouble() ? component.toInt()
+                : req.m_component == CurveComponent::Magnitude ? -1 : int(req.m_component);
+        }
         QJsonValue colorVal = obj.value("color");
         if (colorVal.isObject()) {
             req.m_color = jsonToColor(colorVal.toObject());
-        }
+        } else if (colorVal.isString()) req.m_color = QColor(colorVal.toString());
         req.m_visible = obj.value("visible").toBool(true);
         return req;
     }

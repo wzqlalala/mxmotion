@@ -2,11 +2,14 @@ set(common_dir "${CMAKE_CURRENT_SOURCE_DIR}/../Common")
 set(window_dir "${CMAKE_CURRENT_SOURCE_DIR}/../MainWindow")
 set(foundation_dir "${CMAKE_CURRENT_SOURCE_DIR}/../GUIFoundation")
 set(gui_root "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+include(OriginalGui.cmake)
 
 add_executable(MxMotion WIN32
     main.cpp
     MotionWindow.cpp MotionWindow.h
     MotionRibbon.cpp
+    OriginalMotionUi.cpp OriginalMotionResults.cpp OriginalResultUi.cpp OriginalUiActions.cpp OriginalSelection.cpp OriginalSelection.h
+    OriginalEngineExtensions.cpp OriginalEngineExtensions.h
     RigidMotionUi.cpp
     NativeMotionUi.cpp
     NativeMotionTypedPanels.cpp NativeMotionTypedPanels.h
@@ -22,6 +25,7 @@ add_executable(MxMotion WIN32
     "${common_dir}/mWindowTitleBar.cpp"
     "${common_dir}/mFramelessWindowHelper.cpp"
     "${common_dir}/mFramelessDialog.cpp"
+    "${common_dir}/mFramelessMessageBox.cpp" "${common_dir}/mFramelessMessageBox.h"
     "${common_dir}/mRibbonWidget.cpp"
     "${common_dir}/MyTabBar.cpp"
     "${common_dir}/mUiStyle.cpp"
@@ -34,7 +38,7 @@ if(WIN32)
 endif()
 set_target_properties(MxMotion PROPERTIES AUTOMOC ON)
 target_include_directories(MxMotion PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}" "${common_dir}" "${window_dir}" "${foundation_dir}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compat" "${CMAKE_CURRENT_SOURCE_DIR}" "${common_dir}" "${window_dir}" "${foundation_dir}"
     "${gui_root}/src/MxMech" "${gui_root}/src/CommonWidgets" compat)
 
 # Let Qt's Unicode-aware resource compiler handle the original asset paths.
@@ -49,7 +53,7 @@ add_dependencies(MxMotion MotionOccResources)
 # The shared chrome is compiled in this executable, not imported from MechCommon.dll.
 target_compile_definitions(MxMotion PRIVATE BUILD_STATIC NOMINMAX _HAS_STD_BYTE=0)
 target_compile_options(MxMotion PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8> $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
-target_link_libraries(MxMotion PRIVATE MotionOccRigid MotionEngine::Core Qt5::Widgets Qt5::Svg Qt5::PrintSupport
+target_link_libraries(MxMotion PRIVATE MotionOccOriginalGui MotionOccRigid MotionEngine::Core Qt5::Widgets Qt5::Svg Qt5::PrintSupport
     OpenGL::GL ads::qtadvanceddocking-qt5 Qwt::Qwt)
 if(WIN32)
     target_link_libraries(MxMotion PRIVATE dwmapi)
@@ -77,6 +81,14 @@ endif()
 if(BUILD_TESTING AND MX_TEST_DESKTOP)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNativeDesktopSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalGuiSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalAutoFlexSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalTreeSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalNativeCurvesSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalLoadExportSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalPickerSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalBackendSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalPlotSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccPickingSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccModalDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNavigationSmoke.cpp")
@@ -90,8 +102,29 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     file(MAKE_DIRECTORY "${native_desktop_output}")
     add_test(NAME MotionOcc.NativeDesktop COMMAND MxMotion --native-desktop-smoke "${native_desktop_output}")
     set_tests_properties(MotionOcc.NativeDesktop PROPERTIES TIMEOUT 180 LABELS desktop)
+    add_test(NAME MotionOcc.OriginalNativeCurves COMMAND MxMotion --original-native-curves-smoke "${PROJECT_BINARY_DIR}/original-native-curves-smoke")
+    set_tests_properties(MotionOcc.OriginalNativeCurves PROPERTIES TIMEOUT 120 LABELS desktop)
+    add_test(NAME MotionOcc.OriginalLoadExport COMMAND MxMotion --original-load-export-smoke "${PROJECT_BINARY_DIR}/original-load-export-smoke")
+    set_tests_properties(MotionOcc.OriginalLoadExport PROPERTIES TIMEOUT 120 LABELS desktop)
     add_test(NAME MotionOcc.Picking COMMAND MxMotion --picking-smoke "${PROJECT_BINARY_DIR}/picking-smoke")
     set_tests_properties(MotionOcc.Picking PROPERTIES TIMEOUT 90 LABELS desktop)
+    add_test(NAME MotionOcc.OriginalPicker COMMAND MxMotion --original-picker-smoke "${PROJECT_BINARY_DIR}/original-picker-smoke")
+    set_tests_properties(MotionOcc.OriginalPicker PROPERTIES TIMEOUT 90 LABELS desktop)
+    add_test(NAME MotionOcc.OriginalBackend COMMAND MxMotion --original-backend-smoke)
+    set_tests_properties(MotionOcc.OriginalBackend PROPERTIES TIMEOUT 90 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME MotionOcc.OriginalPlot COMMAND MxMotion --original-plot-smoke)
+    set_tests_properties(MotionOcc.OriginalPlot PROPERTIES TIMEOUT 90 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        get_target_property(original_qmake Qt5::qmake IMPORTED_LOCATION)
+        execute_process(COMMAND "${original_qmake}" -query QT_INSTALL_PLUGINS
+            OUTPUT_VARIABLE original_qt_plugins OUTPUT_STRIP_TRAILING_WHITESPACE
+            COMMAND_ERROR_IS_FATAL ANY)
+        foreach(original_offscreen_test IN ITEMS MotionOcc.OriginalBackend MotionOcc.OriginalPlot)
+            set_property(TEST ${original_offscreen_test} APPEND PROPERTY ENVIRONMENT
+                "QT_QPA_PLATFORM_PLUGIN_PATH=${original_qt_plugins}/platforms"
+                "QT_QPA_FONTDIR=C:/Windows/Fonts")
+        endforeach()
+    endif()
     add_test(NAME MotionOcc.Navigation COMMAND MxMotion --navigation-smoke "${PROJECT_BINARY_DIR}/navigation-smoke")
     set_tests_properties(MotionOcc.Navigation PROPERTIES TIMEOUT 90 LABELS desktop)
     add_test(NAME MotionOcc.RenderFeedback COMMAND MxMotion --render-feedback-smoke "${PROJECT_BINARY_DIR}/render-feedback-smoke")

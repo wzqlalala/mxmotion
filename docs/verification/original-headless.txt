@@ -1,0 +1,48 @@
+Internal ctest changing into directory: /workspace/scratch/62821ae63f18/build-support/full-build
+Test project /workspace/scratch/62821ae63f18/build-support/full-build
+      Start 15: MotionOcc.CadMesh
+      Start  4: MotionOcc.Native
+ 1/21 Test #15: MotionOcc.CadMesh ................   Passed    1.65 sec
+      Start 12: MotionOcc.IndependentFlex
+ 2/21 Test  #4: MotionOcc.Native .................   Passed    2.04 sec
+      Start 11: MotionOcc.StaticServo
+ 3/21 Test #12: MotionOcc.IndependentFlex ........   Passed    1.21 sec
+      Start 10: MotionOcc.NativeDynamics
+ 4/21 Test #10: MotionOcc.NativeDynamics .........   Passed    0.53 sec
+      Start 27: MotionOcc.OriginalPlot
+ 5/21 Test #11: MotionOcc.StaticServo ............   Passed    1.46 sec
+      Start  6: MotionOcc.NativeMass
+ 6/21 Test #27: MotionOcc.OriginalPlot ...........   Passed    0.18 sec
+      Start  2: MotionOcc.NativeTopology
+ 7/21 Test  #6: MotionOcc.NativeMass .............   Passed    0.09 sec
+      Start  7: MotionOcc.FunctionEditor
+ 8/21 Test  #2: MotionOcc.NativeTopology .........   Passed    0.22 sec
+      Start 14: MotionOcc.NativeDocument
+ 9/21 Test  #7: MotionOcc.FunctionEditor .........   Passed    0.27 sec
+      Start  5: MotionOcc.FlexResults
+10/21 Test #14: MotionOcc.NativeDocument .........   Passed    0.21 sec
+      Start 26: MotionOcc.OriginalBackend
+11/21 Test  #5: MotionOcc.FlexResults ............   Passed    0.14 sec
+      Start 19: MotionOcc.Plot
+12/21 Test #26: MotionOcc.OriginalBackend ........   Passed    0.09 sec
+      Start 16: MotionOcc.Rigid
+13/21 Test #19: MotionOcc.Plot ...................   Passed    0.21 sec
+      Start  3: MotionOcc.NativeProject
+14/21 Test #16: MotionOcc.Rigid ..................   Passed    0.26 sec
+      Start  9: MotionOcc.LoadExport
+15/21 Test  #3: MotionOcc.NativeProject ..........   Passed    0.21 sec
+      Start  1: MotionOcc.DisplayNormals
+16/21 Test  #9: MotionOcc.LoadExport .............   Passed    0.12 sec
+      Start 13: MotionOcc.Modes
+17/21 Test  #1: MotionOcc.DisplayNormals .........   Passed    0.11 sec
+      Start  8: MotionOcc.Symbols
+18/21 Test #13: MotionOcc.Modes ..................   Passed    0.11 sec
+      Start 17: MotionOcc.Playback
+19/21 Test  #8: MotionOcc.Symbols ................   Passed    0.09 sec
+      Start 18: MotionOcc.Curves
+20/21 Test #18: MotionOcc.Curves .................   Passed    0.01 sec
+21/21 Test #17: MotionOcc.Playback ...............   Passed    0.08 sec
+
+100% tests passed, 0 tests failed out of 21
+
+Total Test time (real) =   4.65 sec

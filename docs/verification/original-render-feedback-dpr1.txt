@@ -1,0 +1,5 @@
+Hidden face fill obeys the scene depth buffer
+Hidden CAD edge stroke obeys the scene depth buffer
+Visible face/vertex feedback and animated occlusion restoration passed
+Hide/show, scene replacement and selection cleanup passed
+PASS; Qt DPR=1

@@ -3,6 +3,9 @@
 #include "mMotionResultQueryService.h"
 #include "mAppConfiguration.h"
 #include "mGlobalSignals.h"
+#ifdef MX_MOTION_OCC_COMPAT
+#include "mMechGlobalSignals.h"
+#endif
 
 #include "mViewportModelManager.h"
 
@@ -41,14 +44,45 @@
 
 #include <QHeaderView>
 #include <QCoreApplication>
+#include <QScopedValueRollback>
+#include <QSet>
 
 #include <algorithm>
 #include <limits>
+#include <tuple>
 
 using namespace MechMotionData;
 
 namespace
 {
+    constexpr int nativeChannelRole = Qt::UserRole + 1;
+
+    QJsonArray nativeChannels(int scenarioId)
+    {
+#ifdef MX_MOTION_OCC_COMPAT
+        if (getCVM && getCVM->motionCurveChannels)return getCVM->motionCurveChannels(scenarioId);
+#else
+        Q_UNUSED(scenarioId);
+#endif
+        return {};
+    }
+
+    auto curveIdentity(const MechMotionData::mMotionCurveRequest& request, int scenarioId)
+    {
+        using namespace MechMotionData;
+        const auto source=request.isNativeChannel()?request.m_nativeSource:mMotionCurveRequest::collectionForSource(request.m_sourceType);
+        const auto variable=request.isNativeChannel()?request.m_nativeVariable:mMotionCurveRequest::nameForVariable(request.m_variable);
+        int component=request.isNativeChannel()?request.m_nativeComponent:int(request.m_component);
+        if(!request.isNativeChannel() && request.m_component==CurveComponent::Magnitude) {
+            component=-1;
+            for(const auto& value:nativeChannels(scenarioId)) {
+                const auto channel=value.toObject();
+                if(channel.value("sourceType").toString()==source && channel.value("sourceId").toInt(-1)==request.m_sourceId
+                    && channel.value("variable").toString()==variable && channel.value("components").toInt()==1) { component=0;break; }
+            }
+        }
+        return std::make_tuple(source,request.m_sourceId,variable,component);
+    }
     const MechMotionData::mMotionCurveRequest* findRequest(
         const MechMotionData::mMotionScenario* scenario, int requestId)
     {
@@ -74,6 +108,45 @@ namespace
             return nullptr;
         return getCVM->getModelData()->getManager<MechMotionData::mMotionControllerManager>(
             Physical_MotionController).getData(controllerId);
+    }
+
+    MechMainWindow::mMotionResultQueryService::ResultSeries queryRequest(
+        const MechMotionData::mMotionScenario* scenario, const MechMotionData::mMotionCurveRequest& request)
+    {
+        using MechMainWindow::mMotionResultQueryService;
+        if (!scenario || !scenario->hasResult())return {};
+        if (request.isNativeChannel()) {
+#ifdef MX_MOTION_OCC_COMPAT
+            mMotionResultQueryService::ResultSeries result;QString error;
+            if (getCVM && getCVM->queryMotionCurve && getCVM->queryMotionCurve(scenario->getId(),
+                request.m_nativeSource,request.m_sourceId,request.m_nativeVariable,request.m_nativeComponent,
+                result.times,result.values,error))return result;
+#endif
+            return {};
+        }
+        if (request.m_sourceType == MechMotionData::CurveSourceType::Sensor) {
+            const auto* sensor = findSensor(request.m_sourceId);
+            if (!sensor || !sensor->isEnabled())return {};
+            return mMotionResultQueryService::getSensorSeries(scenario->getResult(), sensor, request.m_component);
+        }
+        if (request.m_sourceType == MechMotionData::CurveSourceType::Controller) {
+            const auto* controller = findController(request.m_sourceId);
+            if (!controller || !controller->isEnabled())return {};
+            return mMotionResultQueryService::getControllerSeries(scenario->getResult(), request.m_sourceId, request.m_variable);
+        }
+        return mMotionResultQueryService::getResultSeries(scenario->getResult(), request);
+    }
+
+    void notifyCurveRequestChanged(int scenarioId)
+    {
+#ifdef MX_MOTION_OCC_COMPAT
+        // Rows are rebuilt after add/remove. Publishing the existing model
+        // change signal keeps those new controls connected to persistence,
+        // without relying on a one-time walk of the widget tree.
+        emit MechCommon::mMechGlobalSignals::getInstance()->createUpdateMotionScenarioSig(false, scenarioId);
+#else
+        Q_UNUSED(scenarioId);
+#endif
     }
 
     // 标量型传感器：曲线端只有一个"传感器值"，分量选择无意义
@@ -209,11 +282,26 @@ namespace MechMainWindow
         // 传感器源的变量下拉随所选传感器实例变化（标量型/矢量型）
         connect(m_comboObject, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int) {
+#ifdef MX_MOTION_OCC_COMPAT
+            const auto oldNative=m_comboVarComp->currentData(nativeChannelRole).toJsonObject();
+            const auto oldPair=m_comboVarComp->currentData().value<QPair<int,int>>();
+            {
+                const QSignalBlocker blockerVar(m_comboVarComp);
+                populateVarCompCombo(static_cast<MechMotionData::CurveSourceType>(m_comboSourceType->currentData().toInt()));
+                for(int i=0;i<m_comboVarComp->count();++i) {
+                    const auto candidate=m_comboVarComp->itemData(i,nativeChannelRole).toJsonObject();
+                    if(!oldNative.isEmpty() ? candidate.value("variable")==oldNative.value("variable") && candidate.value("component")==oldNative.value("component")
+                        : m_comboVarComp->itemData(i).value<QPair<int,int>>()==oldPair) { m_comboVarComp->setCurrentIndex(i);break; }
+                }
+            }
+            onUIChanged();
+#else
             if (static_cast<MechMotionData::CurveSourceType>(m_comboSourceType->currentData().toInt())
                 == MechMotionData::CurveSourceType::Sensor) {
                 const QSignalBlocker blockerVar(m_comboVarComp);
                 populateVarCompCombo(MechMotionData::CurveSourceType::Sensor);
             }
+#endif
         });
         connect(m_comboVarComp, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, &mMotionCurvePanel::onUIChanged);
@@ -266,7 +354,7 @@ namespace MechMainWindow
         if (scenario->hasResult() && scenario->getResult()->getFrameCount() > 0) {
             const QSignalBlocker blockerStart(m_editTimeStart);
             const QSignalBlocker blockerEnd(m_editTimeEnd);
-            m_editTimeStart->setText("0");
+            m_editTimeStart->setText(QString::number(scenario->getResult()->m_frames.front().m_time, 'g', 12));
             m_editTimeEnd->setText(QString::number(scenario->getResult()->getTotalTime(), 'g', 12));
         }
 
@@ -328,6 +416,13 @@ namespace MechMainWindow
         m_comboSourceType->addItem("驱动",   static_cast<int>(MechMotionData::CurveSourceType::Drive));
         m_comboSourceType->addItem("传感器", static_cast<int>(MechMotionData::CurveSourceType::Sensor));
         m_comboSourceType->addItem("控制器", static_cast<int>(MechMotionData::CurveSourceType::Controller));
+#ifdef MX_MOTION_OCC_COMPAT
+        const std::pair<const char*,CurveSourceType> extended[]{
+            {"弹簧",CurveSourceType::Spring},{"止挡",CurveSourceType::SoftStop},{"只拉绳索",CurveSourceType::TensionCable},
+            {"矢量载荷",CurveSourceType::VectorForce},{"标量力",CurveSourceType::ScalarForce},{"标量力矩",CurveSourceType::ScalarTorque},
+            {"三点力",CurveSourceType::ThreePointForce},{"三点力矩",CurveSourceType::ThreePointTorque},{"自动柔性体",CurveSourceType::AutoFlexBody}};
+        for(const auto& source:extended)m_comboSourceType->addItem(QString::fromUtf8(source.first),int(source.second));
+#endif
     }
 
     void mMotionCurvePanel::populateObjectCombo(MechMotionData::CurveSourceType type)
@@ -389,6 +484,16 @@ namespace MechMainWindow
             for (int id : mgr.getAllIDs()) {
                 auto* data = mgr.getData(id);
                 if (data && data->isEnabled()) m_comboObject->addItem(data->getName(), id);
+            }
+            break;
+        }
+        default: {
+            const auto collection=mMotionCurveRequest::collectionForSource(type);QSet<int> added;
+            for(const auto& value:nativeChannels(m_scenarioId)) {
+                const auto row=value.toObject();const int id=row.value("sourceId").toInt(-1);
+                if(row.value("sourceType").toString()!=collection || id<0 || added.contains(id))continue;
+                QString name=row.value("sourceName").toString();if(name.isEmpty())name=QString::number(id);
+                m_comboObject->addItem(name,id);added.insert(id);
             }
             break;
         }
@@ -491,7 +596,44 @@ namespace MechMainWindow
             addVC(MechMotionData::CurveVariable::PidOutput,   MechMotionData::CurveComponent::Magnitude, "输出");
             break;
         }
+        default: break;
         }
+#ifdef MX_MOTION_OCC_COMPAT
+        const auto collection=mMotionCurveRequest::collectionForSource(type);
+        const int objectId=getSelectedObjectId();QSet<QString> added;
+        for(const auto& value:nativeChannels(m_scenarioId)) {
+            const auto channel=value.toObject();
+            if(channel.value("sourceType").toString()!=collection || channel.value("sourceId").toInt(-1)!=objectId)continue;
+            const QString variable=channel.value("variable").toString();
+            const int components=channel.value("components").toInt();
+            if(variable.isEmpty() || components<1 || components>1024)continue;
+            const auto var=mMotionCurveRequest::variableFromName(variable);
+            const bool euler=variable=="Rotation" || variable=="RotationJ";
+            const int count=components+(components==3&&!euler?1:0);
+            for(int c=0;c<count;++c) {
+                const int nativeComponent=c==components?-1:c;
+                const QString key=variable+QLatin1Char('/')+QString::number(nativeComponent);
+                if(added.contains(key))continue;added.insert(key);
+                const auto comp=components==1||nativeComponent==-1?CurveComponent::Magnitude:static_cast<CurveComponent>(c);
+                const QPair<int,int> pair{int(var),int(comp)};int existing=-1;
+                if(var!=CurveVariable::NativeChannel)for(int i=0;i<m_comboVarComp->count();++i)
+                    if(m_comboVarComp->itemData(i).value<QPair<int,int>>()==pair
+                        && m_comboVarComp->itemData(i,nativeChannelRole).isNull()) { existing=i;break; }
+                QString label=channel.value("label").toString(variable);
+                if(nativeComponent==-1)label+=tr(" 幅值");
+                else if(components==3)label+=QLatin1Char(' ')+QString(QChar('X'+c));
+                else if(components>1)label+=tr(" 分量 %1").arg(c+1);
+                const auto unit=channel.value("unit").toString();
+                if(!unit.isEmpty())label+=QStringLiteral(" (%1)").arg(unit);
+                const bool legacyItem=existing>=0;
+                if(existing<0) { m_comboVarComp->addItem(label,QVariant::fromValue(pair));existing=m_comboVarComp->count()-1; }
+                auto metadata=channel;metadata["component"]=nativeComponent;metadata["displayLabel"]=label;
+                metadata["legacyItem"]=legacyItem;
+                m_comboVarComp->setItemData(existing,metadata,nativeChannelRole);
+                m_comboVarComp->setItemData(existing,label,Qt::ToolTipRole);
+            }
+        }
+#endif
     }
 
     void mMotionCurvePanel::onSourceTypeChanged(int index)
@@ -525,6 +667,7 @@ namespace MechMainWindow
         vc.variable = static_cast<MechMotionData::CurveVariable>(pair.first);
         vc.component = static_cast<MechMotionData::CurveComponent>(pair.second);
         vc.label = m_comboVarComp->currentText();
+        vc.nativeChannel = m_comboVarComp->currentData(nativeChannelRole).toJsonObject();
         return vc;
     }
 
@@ -613,11 +756,20 @@ namespace MechMainWindow
             scenario->updateCurveRequest(updated);
             styleColorBtn(picked);
             refreshPlotCurves();
+            notifyCurveRequestChanged(m_scenarioId);
         });
 
         // 曲线名称
         QLabel* nameLabel = new QLabel(requestTitle(req), row);
         nameLabel->setToolTip(requestTitle(req));
+#ifdef MX_MOTION_OCC_COMPAT
+        const auto* scenario = getScenario();
+        if (scenario && scenario->hasResult() && !queryRequest(scenario, req).isValid()) {
+            nameLabel->setText(requestTitle(req) + tr("（结果不可用）"));
+            nameLabel->setToolTip(requestTitle(req) + tr("\n结果不可用：目标未参与本次求解，或所需通道缺失、采样/单位不匹配。不会以零值代替。"));
+            row->setProperty("mxResultAvailable", false);
+        } else row->setProperty("mxResultAvailable", true);
+#endif
 
         // 可见性
         QCheckBox* visibleChk = new QCheckBox("显示", row);
@@ -631,6 +783,7 @@ namespace MechMainWindow
             updated.m_visible = visible;
             scenario->updateCurveRequest(updated);
             refreshPlotCurves();
+            notifyCurveRequestChanged(m_scenarioId);
         });
 
         // 删除
@@ -642,6 +795,7 @@ namespace MechMainWindow
             scenario->removeCurveRequest(requestId);
             rebuildCurveList();
             refreshPlotCurves();
+            notifyCurveRequestChanged(m_scenarioId);
         });
 
         layout->addWidget(colorBtn);
@@ -675,24 +829,7 @@ namespace MechMainWindow
             if (!req.m_visible)
                 continue;
 
-            mMotionResultQueryService::ResultSeries series;
-            if (req.m_sourceType == MechMotionData::CurveSourceType::Sensor) {
-                const MechMotionData::mMotionSensorBase* sensor = findSensor(req.m_sourceId);
-                if (!sensor || !sensor->isEnabled())
-                    continue;
-                series = mMotionResultQueryService::getSensorSeries(
-                    scenario->getResult(), sensor, req.m_component);
-            }
-            else if (req.m_sourceType == MechMotionData::CurveSourceType::Controller) {
-                const MechMotionData::mMotionControllerBase* controller = findController(req.m_sourceId);
-                if (!controller || !controller->isEnabled())
-                    continue;
-                series = mMotionResultQueryService::getControllerSeries(
-                    scenario->getResult(), req.m_sourceId, req.m_variable);
-            }
-            else {
-                series = mMotionResultQueryService::getResultSeries(scenario->getResult(), req);
-            }
+            const auto series = queryRequest(scenario, req);
             if (!series.isValid())
                 continue;
 
@@ -852,8 +989,7 @@ namespace MechMainWindow
 
         // 同源同变量同分量去重
         for (const auto& item : scenario->getCurveRequests()) {
-            if (item.m_sourceType == req.m_sourceType && item.m_sourceId == req.m_sourceId &&
-                item.m_variable == req.m_variable && item.m_component == req.m_component) {
+            if (curveIdentity(item,m_scenarioId) == curveIdentity(req,m_scenarioId)) {
                 QMessageBox::information(this, tr("提示"), tr("该曲线已在列表中。"));
                 return;
             }
@@ -867,6 +1003,7 @@ namespace MechMainWindow
         scenario->addCurveRequest(req);
         rebuildCurveList();
         refreshPlotCurves();
+        notifyCurveRequestChanged(m_scenarioId);
     }
 
     void mMotionCurvePanel::onClearCurves()
@@ -877,6 +1014,7 @@ namespace MechMainWindow
         scenario->clearCurveRequests();
         rebuildCurveList();
         refreshPlotCurves();
+        notifyCurveRequestChanged(m_scenarioId);
     }
 
     void mMotionCurvePanel::onExportCurve()
@@ -964,14 +1102,17 @@ namespace MechMainWindow
 
     void mMotionCurvePanel::onUIChanged()
     {
+        if(m_restoringRequest)return;
         auto* scenario = getScenario();
         if (!scenario) return;
 
         scenario->setCurrentCurveRequest(collectRequestFromUI());
+        notifyCurveRequestChanged(m_scenarioId);
     }
 
     void mMotionCurvePanel::applyRequestToUI(const MechMotionData::mMotionCurveRequest& req)
     {
+        const QScopedValueRollback<bool> restoring(m_restoringRequest,true);
         const QSignalBlocker blockerSrc(m_comboSourceType);
         const QSignalBlocker blockerObj(m_comboObject);
         const QSignalBlocker blockerVar(m_comboVarComp);
@@ -979,6 +1120,9 @@ namespace MechMainWindow
 
         // 恢复源类型
         int typeIdx = m_comboSourceType->findData(static_cast<int>(req.m_sourceType));
+        if(typeIdx<0 && req.isNativeChannel()) {
+            m_comboSourceType->addItem(tr("结果通道"),int(req.m_sourceType));typeIdx=m_comboSourceType->count()-1;
+        }
         if (typeIdx >= 0) {
             m_comboSourceType->setCurrentIndex(typeIdx);
             onSourceTypeChanged(typeIdx);
@@ -987,23 +1131,42 @@ namespace MechMainWindow
         // 恢复对象
         if (req.m_sourceId >= 0) {
             int objIdx = m_comboObject->findData(req.m_sourceId);
+            if(objIdx<0 && req.isNativeChannel()) {
+                m_comboObject->addItem((req.m_sourceName.isEmpty()?QString::number(req.m_sourceId):req.m_sourceName)+tr("（结果不可用）"),req.m_sourceId);
+                objIdx=m_comboObject->count()-1;
+            }
             if (objIdx >= 0)
                 m_comboObject->setCurrentIndex(objIdx);
         }
 
         // 传感器源的变量下拉依赖所选传感器实例，恢复对象后重建
+#ifdef MX_MOTION_OCC_COMPAT
+        populateVarCompCombo(req.m_sourceType);
+#else
         if (req.m_sourceType == MechMotionData::CurveSourceType::Sensor) {
             populateVarCompCombo(MechMotionData::CurveSourceType::Sensor);
         }
+#endif
 
         // 恢复变量-分量
         QPair<int, int> target(static_cast<int>(req.m_variable), static_cast<int>(req.m_component));
+        bool matched=false;
         for (int i = 0; i < m_comboVarComp->count(); ++i) {
             QPair<int, int> p = m_comboVarComp->itemData(i).value<QPair<int, int>>();
-            if (p == target) {
+            const auto native=m_comboVarComp->itemData(i,nativeChannelRole).toJsonObject();
+            if (req.isNativeChannel() ? native.value("variable").toString()==req.m_nativeVariable
+                && native.value("component").toInt(-2)==req.m_nativeComponent : p == target) {
                 m_comboVarComp->setCurrentIndex(i);
+                matched=true;
                 break;
             }
+        }
+        if(!matched && req.isNativeChannel()) {
+            m_comboVarComp->addItem(req.m_nativeVariable+tr("（结果不可用）"),QVariant::fromValue(target));
+            const int index=m_comboVarComp->count()-1;
+            m_comboVarComp->setItemData(index,QJsonObject{{"sourceType",req.m_nativeSource},{"sourceId",req.m_sourceId},
+                {"variable",req.m_nativeVariable},{"component",req.m_nativeComponent}},nativeChannelRole);
+            m_comboVarComp->setCurrentIndex(index);
         }
 
         // 恢复曲线名称
@@ -1020,6 +1183,29 @@ namespace MechMainWindow
         req.m_variable = vc.variable;
         req.m_component = vc.component;
         req.m_requestName = m_editCurveName->text().trimmed();
+        const auto* scenario=getScenario();
+        bool restoreNativeRequest=false;
+        if(scenario && scenario->hasCurrentCurveRequest()) {
+            const auto& current=scenario->getCurrentCurveRequest();
+            restoreNativeRequest=current.isNativeChannel() && current.m_sourceType==req.m_sourceType
+                && current.m_sourceId==req.m_sourceId
+                && current.m_nativeSource==vc.nativeChannel.value("sourceType").toString()
+                && current.m_nativeVariable==vc.nativeChannel.value("variable").toString()
+                && current.m_nativeComponent==vc.nativeChannel.value("component").toInt(-2);
+        }
+        // Existing items keep the original typed queries (including continuous sensor
+        // angles). Metadata also restores imported native requests without adding a
+        // second, visually identical choice to the original variable combo.
+        if(!vc.nativeChannel.isEmpty()
+            && (!vc.nativeChannel.value("legacyItem").toBool() || restoreNativeRequest)) {
+            req.m_nativeSource=vc.nativeChannel.value("sourceType").toString();
+            req.m_nativeVariable=vc.nativeChannel.value("variable").toString();
+            req.m_nativeComponent=vc.nativeChannel.value("component").toInt();
+            req.m_nativeVariableLabel=vc.nativeChannel.value("displayLabel").toString(vc.label);
+        }
+        if(scenario && scenario->hasCurrentCurveRequest()
+            && curveIdentity(scenario->getCurrentCurveRequest(),m_scenarioId)==curveIdentity(req,m_scenarioId))
+            req.m_originalJson=scenario->getCurrentCurveRequest().m_originalJson;
         return req;
     }
 

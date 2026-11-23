@@ -25,6 +25,16 @@ struct MotionSymbol {
     QColor color;
     bool emphasized = false;
     int partId = -1;
+    // Original GUI spring/arrow symbols contain both line and triangle indices.
+    // Each three entries is a face in initial/animated world mm, like linePoints.
+    std::vector<std::array<double, 3>> trianglePoints;
+    QColor faceColor;
+    std::vector<std::pair<QString, std::array<double, 3>>> texts;
+    QColor textColor;
+    bool drawOrigin = true;
+    bool retainOpacity = false;
+    bool lineDepthTest = false;
+    bool faceDepthTest = false;
 };
 
 QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,

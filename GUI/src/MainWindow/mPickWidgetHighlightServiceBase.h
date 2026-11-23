@@ -1,6 +1,10 @@
 #pragma once
 #pragma execution_character_set("utf-8")
 
+#ifdef MX_MOTION_OCC_COMPAT
+#include "picking/OccPickController.h"
+#else
+
 #include "mmainwindow_global.h"
 
 #include <QObject>
@@ -99,3 +103,4 @@ public:
         bool _highlightSuppressed = false; // 高亮抑制（云图模式）：抑制从共享选中容器重画高亮
     };
 }
+#endif // MX_MOTION_OCC_COMPAT

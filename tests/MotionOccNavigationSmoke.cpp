@@ -1,6 +1,7 @@
 #include "OccViewport.h"
 #include "CadDocument.h"
 #include "FemMesh.h"
+#include "navigation/ViewportOrientationTriad.h"
 
 #include <QApplication>
 #include <QDir>
@@ -13,6 +14,8 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QWheelEvent>
+#include <QDoubleSpinBox>
+#include <QImage>
 #include <array>
 #include <cmath>
 #include <functional>
@@ -118,6 +121,38 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         QObject::connect(&view, &OccViewport::pickCancelled, &view, [&] { ++cancelled; });
         const auto reset = [&] { view.viewTop(); view.fitAll(); };
         const QPointF center(view.width()*0.5, view.height()*0.5);
+
+        // Original Display-tab controls act in screen axes and must retain
+        // exact camera history, even after a back/forward/branch sequence.
+        auto originalProjection=projected(view,partId);
+        view.rotateView("+Sz",90);
+        const auto rotatedProjection=projected(view,partId);
+        for(std::size_t i=0;i<originalProjection.size();++i) {
+            const auto delta=originalProjection[i]-center;
+            require(pointsNear(rotatedProjection[i],center+QPointF(delta.y(),-delta.x()),0.01),
+                    "Original Sz rotation was not around the screen normal");
+        }
+        view.panView("right",20);
+        const auto pannedProjection=projected(view,partId);
+        translated(rotatedProjection,pannedProjection,{view.width()*0.1,0},
+                   "Original pan percentage does not match the uploaded control");
+        view.stepViewHistory(false);
+        require(sameProjection(rotatedProjection,projected(view,partId)),"View-history back did not restore the camera");
+        view.stepViewHistory(true);
+        require(sameProjection(pannedProjection,projected(view,partId)),"View-history forward did not restore the camera");
+        view.stepViewHistory(false);
+        const auto camera=view.queryCameraState();
+        view.zoomView(true,2);
+        require(std::abs(view.queryCameraState().ortho_zoom-camera.ortho_zoom/2)<1e-5,
+                "Original zoom factor did not update the actual orthographic camera");
+        const auto branchProjection=projected(view,partId);
+        view.stepViewHistory(true);
+        require(sameProjection(branchProjection,projected(view,partId)),"Camera history retained an invalid redo branch");
+        QVector3D boundsMin,boundsMax;
+        require(view.queryVisibleBounds(boundsMin,boundsMax) && boundsMin.length()<1e-4
+                && (boundsMax-QVector3D(40,30,20)).length()<1e-4,"Visible bounds did not describe actual CAD");
+        log<<"Original screen-axis rotation, percentage pan, zoom, camera history and visible bounds passed\n";
+        reset();
 
         require(view.mouseNavigationMode() == OccViewport::MouseNavigationMode::Classic,
                 "Classic navigation must remain the default");
@@ -282,6 +317,99 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         require(selected == 1, "Whole-part click stopped working after navigation and picker transitions");
         require(!view.grabFramebuffer().isNull(), "Navigation viewport did not render a real framebuffer");
         log << "CAD face IDs, initial global mm and original whole-part selection passed\n";
+
+        // Exercise the actual Motion HUD and its input filter, through public
+        // viewport events. It must never masquerade as a model reference.
+        auto* hud = dynamic_cast<ViewportOrientationTriad*>(view.findChild<QWidget*>(QStringLiteral("viewportOrientationTriad")));
+        require(hud && hud->width() >= 120 && hud->x() == 12 &&
+                hud->y()+hud->height()+12 == view.height() &&
+                hud->testAttribute(Qt::WA_TransparentForMouseEvents),
+                "Motion's transparent, DPI-aware lower-left triad was not installed");
+        QFont triadFont(QStringLiteral("Segoe UI")); triadFont.setStyleHint(QFont::SansSerif);
+        triadFont.setPointSizeF(std::max(7.5, hud->font().pointSizeF()*.85));
+        const auto textHeight = QFontMetricsF(triadFont).height();
+        view.viewIsometric(); app.processEvents();
+        require(view.grab().save(output.filePath(QStringLiteral("motion-triad-isometric.png"))),
+                "Could not capture the real Motion triad");
+        const auto imageBeforePan = hud->grab().toImage();
+        drag(view, center, center+QPointF(40,-30), Qt::MiddleButton);
+        app.processEvents();
+        require(imageBeforePan == hud->grab().toImage(), "Triad changed under camera pan");
+        QWheelEvent hudWheel(center, view.mapToGlobal(center.toPoint()), {}, {0,120},
+                             Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&view, &hudWheel); app.processEvents();
+        require(imageBeforePan == hud->grab().toImage(), "Triad changed under camera zoom");
+
+        view.viewTop(); app.processEvents();
+        const auto expectedTop = projected(view, partId);
+        view.viewIsometric(); app.processEvents();
+        QMatrix4x4 isoMatrix; isoMatrix.lookAt({1,-1,1}, {}, {0,0,1});
+        const auto iso = QQuaternion::fromRotationMatrix(isoMatrix.normalMatrix()).conjugated().normalized();
+        const auto faces = OrientationTriadFaces(iso, hud->size());
+        const auto topFace = std::find_if(faces.begin(), faces.end(), [](const auto& face) {
+            return face.hit.axis == 2 && face.hit.sign == 1;
+        });
+        require(topFace != faces.end(), "Isometric top face not available for navigation");
+        QPointF faceCenter;
+        for (const auto& point : topFace->polygon) faceCenter += point;
+        faceCenter /= topFace->polygon.size();
+        const int selectionsBeforeHud = selected;
+        click(view, QPointF(hud->pos())+faceCenter); app.processEvents();
+        require(sameProjection(expectedTop, projected(view, partId)) && selected == selectionsBeforeHud,
+                "Triad cube-face click did not set the correct camera view, or selected model geometry");
+
+        const auto labels = OrientationTriadLabelCenters(OrientationTriadAxes(QQuaternion()), hud->size(), textHeight);
+        const auto xHandle = QPointF(hud->pos()) + labels[0];
+        click(view, xHandle); app.processEvents();
+        auto* angle = view.findChild<QDoubleSpinBox*>(QStringLiteral("orientationTriadAngle"));
+        require(angle && angle->isVisible() && hud->Interaction().SelectedAxis() == 0,
+                "Motion XYZ handle did not open its existing relative-angle editor");
+        angle->setValue(45);
+        before = projected(view, partId);
+        QKeyEvent applyAngle(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(angle, &applyAngle); app.processEvents();
+        require(!sameProjection(before, projected(view, partId)) && selected == selectionsBeforeHud,
+                "Triad relative angle did not rotate the view only");
+        key(view, QEvent::KeyPress, Qt::Key_Escape); app.processEvents();
+        require(!angle->isVisible(), "Esc did not close the triad angle editor");
+
+        view.viewTop(); app.processEvents(); before = projected(view, partId);
+        mouse(view, QEvent::MouseButtonPress, xHandle, Qt::MiddleButton, Qt::MiddleButton);
+        mouse(view, QEvent::MouseMove, xHandle+QPointF(0,70), Qt::NoButton, Qt::MiddleButton);
+        require(hud->Interaction().IsDragging() && !sameProjection(before, projected(view, partId)),
+                "Motion middle-button axis drag did not rotate about its world axis");
+        key(view, QEvent::KeyPress, Qt::Key_Escape);
+        require(sameProjection(before, projected(view, partId)) && !hud->Interaction().IsDragging(),
+                "Esc did not restore the start orientation of the triad axis drag");
+        mouse(view, QEvent::MouseButtonRelease, xHandle+QPointF(0,70), Qt::MiddleButton, Qt::NoButton);
+        require(sameProjection(before, projected(view, partId)), "Cancelled triad release changed camera orientation");
+
+        view.beginPick(PickKind::Node, true, {partId});
+        PickResult saved; saved.kind=PickKind::Node; saved.partId=partId; saved.index=0; saved.nodeId=101;
+        saved.position=saved.hitPosition={2,2,20};
+        view.setPickSelection({saved});
+        const int cancellationsBeforeHud = cancelled;
+        click(view, xHandle); app.processEvents();
+        QKeyEvent overrideEscape(QEvent::ShortcutOverride, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(&view, &overrideEscape);
+        require(overrideEscape.isAccepted(), "Triad Esc escaped into the enclosing window shortcut");
+        key(view, QEvent::KeyPress, Qt::Key_Escape);
+        require(view.isPicking() && view.pickSelection().size()==1 &&
+                view.pickSelection().front().nodeId==101 && cancelled==cancellationsBeforeHud,
+                "Triad interaction changed/cancelled the accepted typed pick session");
+        view.endPick();
+        // The corner HUD is not a rectangular input shield: empty space must
+        // still reach ordinary whole-part selection (here it selects nothing).
+        click(view, QPointF(hud->pos())+QPointF(2,2));
+        require(selected == selectionsBeforeHud+1, "Empty triad rectangle swallowed viewport input");
+        view.viewIsometric(); app.processEvents();
+        const int oldSide = hud->width();
+        auto enlarged = hud->font(); enlarged.setPointSizeF(20); hud->setFont(enlarged);
+        app.processEvents();
+        require(hud->width() > oldSide && hud->y()+hud->height()+12 == view.height(),
+                "Triad failed to follow larger UI fonts at the lower-left corner");
+        log << "Motion triad source geometry, pan/zoom independence, face navigation, axis angle/drag, Esc, picker isolation and font scaling passed; DPR="
+            << view.devicePixelRatioF() << '\n';
         log.flush();
         return 0;
     } catch (const std::exception& exception) {

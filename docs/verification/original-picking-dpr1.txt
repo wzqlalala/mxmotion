@@ -1,0 +1,7 @@
+OCC vertex, edge, face, part IDs; representative coordinates, face hit, axis, selection filter and right-click undo passed
+Actual-node IDs, multi-pick, session restore, Ctrl rectangle, hover, Esc and whole-part signal isolation passed
+Posed geometry picking retained initial world CAD coordinates passed
+Real FEM edge, surface face and volume-element connectivity IDs, centroid and direction passed
+Per-node scalar interpolation, color legend and restoration passed
+Circular-edge center/axis and cylindrical-face axis passed
+PASS; selection changes=14

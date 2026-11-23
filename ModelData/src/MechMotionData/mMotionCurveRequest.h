@@ -6,6 +6,7 @@
 #include <vector>
 #include <QDataStream>
 #include <QColor>
+#include <QJsonObject>
 #include "MXMotionData_global.h"
 
 namespace MechMotionData {
@@ -20,7 +21,18 @@ namespace MechMotionData {
         Drive = 3,      ///< 驱动
         Coupling = 4,   ///< 耦合副
         Sensor = 5,     ///< 传感器（值由传感器定义决定，查询期求值）
-        Controller = 6  ///< 控制器（求解期记录的 PID 历史）
+        Controller = 6, ///< 控制器（求解期记录的 PID 历史）
+        // Appended values keep the original stored enum ordinals unchanged.
+        Spring = 7,
+        SoftStop = 8,
+        TensionCable = 9,
+        VectorForce = 10,
+        ScalarForce = 11,
+        ScalarTorque = 12,
+        ThreePointForce = 13,
+        ThreePointTorque = 14,
+        AutoFlexBody = 15,
+        NativeChannel = 16
     };
 
     /**
@@ -48,7 +60,8 @@ namespace MechMotionData {
         PidFeedback = 17,       ///< PID 反馈值（仅Controller）
         PidError = 18,          ///< PID 误差（仅Controller）
         PidOutput = 19,         ///< PID 输出（仅Controller）
-        KineticEnergy = 20      ///< 动能（仅Body）
+        KineticEnergy = 20,     ///< 动能（仅Body）
+        NativeChannel = 21     ///< Recorded channel named by m_nativeVariable.
     };
 
     /**
@@ -78,6 +91,21 @@ namespace MechMotionData {
 
         QColor m_color;                     ///< 曲线颜色（无效色=显示时自动分配）
         bool m_visible = true;              ///< 曲线可见性
+
+        // Native channels extend the original request without narrowing newer
+        // force/flexible variables to a legacy enum or losing JSON extensions.
+        // The old enum members above remain usable by every original caller.
+        QString m_nativeSource;
+        QString m_nativeVariable;
+        int m_nativeComponent = 0;           ///< -1=magnitude, otherwise exact component index.
+        QString m_nativeVariableLabel;      ///< UI label from the recorded channel catalogue.
+        QJsonObject m_originalJson;          ///< Preserve schema and unknown per-request fields.
+
+        bool isNativeChannel() const { return !m_nativeSource.isEmpty() && !m_nativeVariable.isEmpty(); }
+        static CurveSourceType sourceTypeFromName(const QString& name);
+        static QString collectionForSource(CurveSourceType type);
+        static CurveVariable variableFromName(const QString& name);
+        static QString nameForVariable(CurveVariable variable);
 
         mMotionCurveRequest() = default;
         ~mMotionCurveRequest() = default;

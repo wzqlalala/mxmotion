@@ -1,5 +1,8 @@
 #include "NativeMotionPickWidgets.h"
 #include "CadDocument.h"
+#include "picking/LegacyPickContext.h"
+#include "mPointPickerWidget.h"
+#include "mDirectionSelectorWidget.h"
 #include <QComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -26,6 +29,14 @@ NativePickSession::NativePickSession(OccViewport* viewport, const CadDocument& c
     const QJsonObject& references, QObject* parent)
     : QObject(parent), m_viewport(viewport), m_cad(cad), m_references(references)
 {
+    m_legacyContext=LegacyPickContext::forObject(parent);
+    if (!m_legacyContext || m_legacyContext->viewport()!=viewport || &m_legacyContext->document()!=&cad) {
+        m_legacyContext=new LegacyPickContext(qobject_cast<QWidget*>(parent),viewport,cad);
+        if(!m_legacyContext->parent())m_legacyContext->setParent(this);
+    }
+    connect(m_legacyContext,&LegacyPickContext::allowedTypesChanged,this,[this] {
+        if (MechMainWindow::mPickWidgetController::hasActivePickController() && m_button) finish();
+    });
     connect(viewport, &OccViewport::pickSelectionChanged, this, [this](const QVector<PickResult>& picks) {
         if (!ownsSession() || !m_changed) return;
         record(m_key,picks);
@@ -60,7 +71,7 @@ QVector<PickResult> NativePickSession::saved(const QString& key) const
     QVector<PickResult> result;
     for (const auto& value:m_references.value(key).toArray()) {
         const auto o=value.toObject(); const int kind=o.value("kind").toInt(-1);
-        if (kind<int(PickKind::Part) || kind>int(PickKind::Element)) continue;
+        if (kind<int(PickKind::Part) || kind>int(PickKind::Solid)) continue;
         PickResult p; p.kind=PickKind(kind); p.partId=o.value("partId").toInt(-1);
         if (!m_cad.part(p.partId)) continue;
         p.index=o.value("index").toInt(-1); p.nodeId=o.value("nodeId").toInt(-1);
@@ -78,6 +89,7 @@ void NativePickSession::begin(const QString& key, QPushButton* button, PickKind 
 {
     if (ownsSession() && m_button==button && m_viewport->isPicking()) { finish(); return; }
     finish();
+    if (auto* active=MechMainWindow::mPickWidgetController::activeController()) active->setPickActive(false);
     m_key=key; m_button=button; m_buttonText=button->text(); m_initial=initial; m_changed=std::move(changed); m_cancelled=std::move(cancelled);
     m_viewport->setProperty("nativePickOwner",QVariant::fromValue(reinterpret_cast<quintptr>(this)));
     button->setText(QStringLiteral("完成拾取")); button->setProperty("pickActive",true);
@@ -88,114 +100,111 @@ void NativePickSession::begin(const QString& key, QPushButton* button, PickKind 
 
 void NativePickSession::finish(bool cancel)
 {
-    if (!ownsSession()) return;
-    if (cancel && m_changed) { record(m_key,m_initial); m_changed(m_initial); }
-    if (cancel && m_cancelled) m_cancelled();
-    m_viewport->setProperty("nativePickOwner",QVariant{});
-    m_viewport->endPick();
+    if (ownsSession()) {
+        if (cancel && m_changed) { record(m_key,m_initial); m_changed(m_initial); }
+        if (cancel && m_cancelled) m_cancelled();
+        m_viewport->setProperty("nativePickOwner",QVariant{});
+        m_viewport->endPick();
+    }
     if (m_button) { m_button->setText(m_buttonText); m_button->setProperty("pickActive",false); }
     m_changed={}; m_cancelled={}; m_button=nullptr;
 }
 
 void NativePickSession::decorateVector(QFormLayout* form, QGroupBox* box, const QString& key, const QString& path)
 {
+    using namespace MechMainWindow;
     const QStringList positions{"origin","actionPoint","centerOfMass","localI","localJ","localTarget",
         "localOrigin","localPosition","referencePoint","localPos","position"};
     const QStringList directions{"axis","direction","fixedDirection","fixedAxis","actionSpin","actionPin",
         "baseSpin","basePin","actionVector","baseVector","axisDirection","gravity"};
     const bool isDirection=directions.contains(key);
-    if (!isDirection && !positions.contains(key)) return;
+    if ((!isDirection && !positions.contains(key)) || !m_legacyContext) return;
     std::array<QLineEdit*,3> edits{};
-    for (int i=0;i<3;++i) edits[i]=box->findChild<QLineEdit*>(QStringLiteral("native_")+QString(QChar('x'+i)));
-    if (!edits[0] || !edits[1] || !edits[2]) return;
-    auto read=[edits] { std::array<double,3> v{}; for (int i=0;i<3;++i) v[i]=edits[i]->text().toDouble(); return v; };
-    auto write=[edits](const std::array<double,3>& v) { for (int i=0;i<3;++i) edits[i]->setText(QString::number(v[i],'g',17)); };
-    auto* mode=new QComboBox(box); mode->setObjectName("native_pickMode_"+safeName(path));
-    mode->addItem(QStringLiteral("直接输入"),"manual");
-    if (isDirection) {
-        mode->addItem(QStringLiteral("X 轴"),"x"); mode->addItem(QStringLiteral("Y 轴"),"y"); mode->addItem(QStringLiteral("Z 轴"),"z");
-        mode->addItem(QStringLiteral("两顶点定向"),"twoVertices"); mode->addItem(QStringLiteral("两网格节点定向"),"twoNodes");
-        mode->addItem(QStringLiteral("几何边方向 / 圆轴"),"edge"); mode->addItem(QStringLiteral("面法向 / 回转轴"),"face");
-        mode->addItem(QStringLiteral("网格边方向"),"meshEdge"); mode->addItem(QStringLiteral("网格面法向"),"meshFace");
+    for(int i=0;i<3;++i)edits[i]=box->findChild<QLineEdit*>(QStringLiteral("native_")+QString(QChar('x'+i)));
+    if(!edits[0]||!edits[1]||!edits[2])return;
+    const auto initial=std::array<double,3>{edits[0]->text().toDouble(),edits[1]->text().toDouble(),edits[2]->text().toDouble()};
+    const auto write=[edits](const QVector3D& value) {
+        const double xyz[]={value.x(),value.y(),value.z()};
+        for(int i=0;i<3;++i)edits[i]->setText(QString::number(xyz[i],'g',17));
+    };
+    // Keep the existing serialized fields alive for the new engine additions,
+    // while the actual visible control is the uploaded original GUI source.
+    for(int i=0;i<form->count();++i)if(auto* widget=form->itemAt(i)->widget())widget->hide();
+    const QString title=box->title();
+    box->setTitle({});box->setProperty("originalPickerHost",true);
+    box->setStyleSheet(QStringLiteral("QGroupBox[originalPickerHost=\"true\"] { border:none; margin:0; padding:0; }"));
+    form->setContentsMargins(0,0,0,0);
+    const auto restored=[this,path] {
+        PickWidgetData data;
+        for(const auto& pick:saved(path)) {
+            const auto value=m_legacyContext->toLegacy(pick,MxFunctions::PickDataType::None);
+            if(value.first!=MxFunctions::PickDataType::None)data.pickedData[value.first].push_back(value.second);
+        }
+        return data;
+    };
+    if(!isDirection) {
+        auto* point=new mPointPickerWidget(title,QStringLiteral("模型拾取"),box);
+        point->setObjectName("originalPointPicker_"+safeName(path));
+        point->setCoordinate(QVector3D(initial[0],initial[1],initial[2]));
+        point->setPickData(restored());
+        form->addRow(point);
+        connect(point,&mPointPickerWidget::coordinateChanged,this,[this,point,path,write] {
+            write(point->coordinate());
+            record(path,m_legacyContext->resolve(point->pickData().pickedData));
+        });
+        return;
+    }
+    const bool gravity=key==QStringLiteral("gravity");
+    auto* selector=new mDirectionSelectorWidget(title,gravity,QStringLiteral("大小"),gravity,
+        gravity?QStringLiteral("mm/s²"):QString(),false,box,CBRed);
+    selector->setObjectName("originalDirectionPicker_"+safeName(path));
+    const double magnitude=std::hypot(initial[0],std::hypot(initial[1],initial[2]));
+    QVector3D initialVector(initial[0],initial[1],initial[2]);
+    if(gravity&&magnitude>0)initialVector/=magnitude;
+    const auto state=m_references.value(path+".originalPicker").toObject();
+    auto mode=mDirectionSelectorWidget::DirectInput;
+    if(state.contains("mode")) {
+        const int value=state.value("mode").toInt();
+        if(value>=mDirectionSelectorWidget::XAxis&&value<=mDirectionSelectorWidget::DirectInput)
+            mode=static_cast<mDirectionSelectorWidget::DirectionMode>(value);
     } else {
-        mode->addItem(QStringLiteral("几何顶点"),"vertex"); mode->addItem(QStringLiteral("边中点 / 圆心"),"edge");
-        mode->addItem(QStringLiteral("面中心"),"face"); mode->addItem(QStringLiteral("实体质心"),"part");
-        mode->addItem(QStringLiteral("网格节点"),"node"); mode->addItem(QStringLiteral("曲线上的点"),"edgeHit");
-        mode->addItem(QStringLiteral("曲面上的点"),"faceHit");
-        mode->addItem(QStringLiteral("网格边中点"),"meshEdge"); mode->addItem(QStringLiteral("网格面中心"),"meshFace");
-        mode->addItem(QStringLiteral("单元中心"),"element");
+        const auto oldMode=m_references.value(path+".mode").toString();
+        if(oldMode=="x")mode=mDirectionSelectorWidget::XAxis;
+        else if(oldMode=="y")mode=mDirectionSelectorWidget::YAxis;
+        else if(oldMode=="z")mode=mDirectionSelectorWidget::ZAxis;
+        else if(!saved(path).isEmpty())mode=mDirectionSelectorWidget::SelectObject;
     }
-    auto* pick=new QPushButton(QStringLiteral("在视口拾取"),box); pick->setObjectName("native_pick_"+safeName(path));
-    auto* status=new QLabel(box); status->setObjectName("native_pickStatus_"+safeName(path)); status->setWordWrap(true);
-    form->addRow(QStringLiteral("取值方式"),mode); form->addRow(pick);
-    if (isDirection) {
-        auto* reverse=new QPushButton(QStringLiteral("反向"),box); reverse->setObjectName("native_reverse_"+safeName(path));
-        form->addRow(reverse); connect(reverse,&QPushButton::clicked,box,[this,read,write,path] {
-            finish();
-            m_references.insert(path+".reversed",!m_references.value(path+".reversed").toBool());
-            auto v=read(); for (auto& x:v) x=-x; write(v);
-        });
+    const bool reversed=state.value("reversed").toBool(m_references.value(path+".reversed").toBool());
+    {
+        const QSignalBlocker block(selector);
+        selector->setDirectionMode(mode);selector->setReversed(reversed);
+        if(mode==mDirectionSelectorWidget::CustomCoordinate&&state.value("start").isArray()&&state.value("end").isArray()) {
+            const auto start=vector(state.value("start").toArray()),end=vector(state.value("end").toArray());
+            selector->setCustomCoordinatePoints(QVector3D(start[0],start[1],start[2]),QVector3D(end[0],end[1],end[2]));
+        } else if(mode==mDirectionSelectorWidget::SelectObject)selector->setObjectPickData(restored());
+        else selector->setDirection(reversed?-initialVector:initialVector);
+        if(gravity)selector->setMagnitudeValue(QString::number(magnitude,'g',17));
+        for(auto* controller:{selector->startPickController(),selector->endPickController(),selector->objectPickController()})
+            if(controller)controller->setPickActive(false);
     }
-    form->addRow(status);
-    for (auto* edit:edits) connect(edit,&QLineEdit::textEdited,box,[this,path,mode,status] {
-        finish(); m_references.remove(path); m_references.remove(path+".mode"); m_references.remove(path+".reversed");
-        const QSignalBlocker blocker(mode); mode->setCurrentIndex(mode->findData("manual"));
-        status->setText(QStringLiteral("已改为手动输入，几何引用已解除。"));
-    });
-    auto previous=saved(path);
-    if (!previous.isEmpty()) {
-        const auto kind=previous.back().kind;
-        const QString savedMode=m_references.value(path+".mode").toString();
-        const int index=mode->findData(savedMode.isEmpty() ? (kind==PickKind::Node ? "node" : kind==PickKind::Edge ? "edge" : kind==PickKind::Face ? "face" :
-            kind==PickKind::Part ? "part" : kind==PickKind::MeshEdge ? "meshEdge" : kind==PickKind::MeshFace ? "meshFace" : kind==PickKind::Element ? "element" : "vertex") : savedMode);
-        if (index>=0) mode->setCurrentIndex(index);
-        status->setText(QStringLiteral("已恢复 %1 项几何引用；激活后显示高亮。").arg(previous.size()));
-    }
-    connect(mode,qOverload<int>(&QComboBox::currentIndexChanged),box,[this,mode,read,write,isDirection,key,path] {
-        finish(); const auto name=mode->currentData().toString(); m_references.insert(path+".mode",name);
-        m_references.remove(path+".reversed");
-        if (isDirection && (name=="x" || name=="y" || name=="z")) {
-            const auto old=read(); const double mag=key=="gravity" ? std::sqrt(old[0]*old[0]+old[1]*old[1]+old[2]*old[2]) : 1.0;
-            std::array<double,3> v{}; v[name=="x"?0:name=="y"?1:2]=mag; write(v);
+    form->addRow(selector);
+    const auto update=[this,selector,path,write,gravity] {
+        const auto direction=selector->getDirection();
+        if(!direction.isValid())return;
+        QVector3D value=direction.value<QVector3D>();
+        if(gravity) {
+            const float length=value.length();
+            if(length>0)value=value/length*selector->magnitudeValue().toDouble();
         }
-    });
-    connect(pick,&QPushButton::clicked,box,[this,mode,pick,status,read,write,path,isDirection,key] {
-        auto name=mode->currentData().toString();
-        if (name=="manual" || name=="x" || name=="y" || name=="z") {
-            const QSignalBlocker blocker(mode); mode->setCurrentIndex(mode->findData(isDirection ? "edge" : "vertex"));
-            name=mode->currentData().toString();
-        }
-        m_references.insert(path+".mode",name);
-        const PickKind kind=(name=="edge" || name=="edgeHit") ? PickKind::Edge : (name=="face" || name=="faceHit") ? PickKind::Face
-            : (name=="node" || name=="twoNodes") ? PickKind::Node : name=="part" ? PickKind::Part :
-            name=="meshEdge" ? PickKind::MeshEdge : name=="meshFace" ? PickKind::MeshFace : name=="element" ? PickKind::Element : PickKind::Vertex;
-        const bool two=name=="twoVertices" || name=="twoNodes";
-        const auto original=read(); const bool originalReversed=m_references.value(path+".reversed").toBool(); auto initial=saved(path);
-        initial.erase(std::remove_if(initial.begin(),initial.end(),[kind](const auto& p) { return p.kind!=kind; }),initial.end());
-        const double magnitude=key=="gravity" ? std::sqrt(original[0]*original[0]+original[1]*original[1]+original[2]*original[2]) : 1.0;
-        begin(path,pick,kind,two,{},initial,[=](const QVector<PickResult>& picks) {
-            if (picks.isEmpty()) { write(original); status->setText(QStringLiteral("尚未拾取")); return; }
-            auto value=picks.back().position;
-            if (isDirection) {
-                if (two) {
-                    if (picks.size()<2) { write(original); status->setText(QStringLiteral("请选择第二个点。")); return; }
-                    for (int i=0;i<3;++i) value[i]=picks.back().position[i]-picks[picks.size()-2].position[i];
-                } else {
-                    if (!picks.back().hasDirection) { write(original); status->setText(QStringLiteral("所选几何没有可用方向，请选其他边或面。")); return; }
-                    value=picks.back().direction;
-                }
-                const double length=std::sqrt(value[0]*value[0]+value[1]*value[1]+value[2]*value[2]);
-                if (!(length>1e-12)) { write(original); status->setText(QStringLiteral("两点重合，不能确定方向。")); return; }
-                const double sign=m_references.value(path+".reversed").toBool() ? -1.0 : 1.0;
-                for (auto& x:value) x=x/length*magnitude*sign;
-            } else if (name.endsWith("Hit")) value=picks.back().hitPosition;
-            write(value);
-            status->setText(QStringLiteral("部件 %1 · %2 %3").arg(picks.back().partId)
-                .arg(kind==PickKind::Node ? QStringLiteral("节点") : QStringLiteral("拓扑"))
-                .arg(kind==PickKind::Node ? picks.back().nodeId : picks.back().index));
-        },[this,write,original,path,originalReversed] {
-            write(original); m_references.insert(path+".reversed",originalReversed);
-        });
-    });
+        write(value);
+        const auto start=selector->startPoint(),end=selector->endPoint();
+        m_references.insert(path+".originalPicker",QJsonObject{{"mode",int(selector->directionMode())},
+            {"reversed",selector->isReversed()},{"start",QJsonArray{start.x(),start.y(),start.z()}},
+            {"end",QJsonArray{end.x(),end.y(),end.z()}}});
+        m_references.remove(path+".mode");m_references.remove(path+".reversed");
+        record(path,m_legacyContext->resolve(selector->objectPickData().pickedData));
+    };
+    connect(selector,&mDirectionSelectorWidget::directionChanged,this,update);
+    connect(selector,&mDirectionSelectorWidget::magnitudeChanged,this,update);
 }
 } // namespace MotionOcc

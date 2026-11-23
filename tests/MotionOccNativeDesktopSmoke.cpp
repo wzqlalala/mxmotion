@@ -1167,6 +1167,12 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
 
 int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory)
 {
+#ifdef MX_MOTION_OCC_COMPAT
+    // The previous assertions below target the removed generated JSON forms.
+    // Keep the command-line/CI entry stable while exercising the original GUI.
+    extern int runMotionOccOriginalGuiSmoke(QApplication&,const QString&);
+    return runMotionOccOriginalGuiSmoke(*qobject_cast<QApplication*>(QCoreApplication::instance()),outputDirectory);
+#else
     using namespace MotionOcc;
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QDir output(outputDirectory);
@@ -1380,4 +1386,5 @@ int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory
         log(QStringLiteral("FAIL: %1").arg(QString::fromUtf8(error.what())));
         return 1;
     }
+#endif
 }

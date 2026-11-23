@@ -8,6 +8,12 @@
 #include "NativeFunctionEditor.h"
 #include "NativeMotionTypedPanels.h"
 #include "mFoldSection.h"
+#include "compat/model/LegacyMotionContext.h"
+#include "mUiMenu.h"
+#include "ThemeManager.h"
+#include "mFramelessMessageBox.h"
+#include "mMotionScenario.h"
+#include "mMotionScenarioPanel.h"
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -60,6 +66,8 @@ QString label(const QString& key)
         {"tensionCables", "只拉绳索"}, {"softStops", "止挡"}, {"contacts", "接触"}, {"markers", "标记点"},
         {"sensors", "传感器"}, {"controllers", "控制器"}, {"controlInputs", "控制输入"},
         {"autoFlexBodies", "自动柔性体"}, {"scenarios", "求解方案"},
+        {"electroImports", "机电导入"}, {"electroExports", "机电导出"},
+        {"hydraulics", "液压协同"}, {"rlTasks", "强化学习"},
         {"name", "名称"}, {"id", "编号"}, {"enabled", "启用"}, {"isFixed", "固定参考体"},
         {"bodyIId", "连接体 I"}, {"bodyJId", "连接体 J"}, {"bodyId", "运动体"},
         {"actionBodyId", "动作体"}, {"baseBodyId", "基本体"}, {"targetBodyId", "目标体"},
@@ -948,8 +956,9 @@ void MotionWindow::createNativeCommands()
     });
     add(Command::ExportMotionJson, tr("导出运动 JSON"), "movingBody.png", [this] {
         if (!ensureNativeModel()) return;
+        if(m_original)m_original->flush();
         snapshotNativeFlexMeshes();
-        for (const auto& scenario : m_model.scenarios) syncNativeScenarioCurves(m_model, scenario.id);
+        if(!m_original)for (const auto& scenario : m_model.scenarios) syncNativeScenarioCurves(m_model, scenario.id);
         auto path = QFileDialog::getSaveFileName(this, tr("导出运动数据"), "model.motion.json", tr("Motion 运动数据 (*.motion.json)"));
         if (path.isEmpty()) return;
         if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".motion.json";
@@ -1010,6 +1019,264 @@ bool MotionWindow::ensureNativeModel()
         row.insert("gravity", vec(g[0] * 1000.0, g[1] * 1000.0, g[2] * 1000.0)); put(document, "scenarios", row);
     }
     return commitNativeDocument(std::move(document), {});
+}
+
+namespace {
+MxFunctions::PhysicalFieldType originalTreeType(const QString& collection) {
+    using namespace MxFunctions;
+    static const QMap<QString,PhysicalFieldType> types{
+        {"bodies",Physical_MotionBody},{"joints",Physical_MotionJoint},{"couplings",Physical_MotionCoupling},
+        {"drives",Physical_MotionDrive},{"springs",Physical_MotionSpring},{"forceElements",Physical_MotionVectorForce},
+        {"vectorForces",Physical_MotionVectorForce},{"scalarForces",Physical_MotionVectorForce},
+        {"scalarTorques",Physical_MotionVectorForce},{"threePointForces",Physical_MotionVectorForce},
+        {"threePointTorques",Physical_MotionVectorForce},{"contacts",Physical_MotionContact},
+        {"markers",Physical_MotionMarker},{"sensors",Physical_MotionSensor},{"controllers",Physical_MotionController},
+        {"controlInputs",Physical_MotionControlInput},{"scenarios",Physical_MotionScenario},{"autoFlexBodies",Physical_MotionAutoFlex},
+        {"electroImports",Physical_MotionElectroImport},{"electroExports",Physical_MotionElectroExport},
+        {"hydraulics",Physical_MotionHydraulic},{"rlTasks",Physical_MotionRL}};
+    return types.value(collection,Physical_None);
+}
+QStringList originalTreeCollections(const QString& group) {
+    if(group=="forceElements")return {"vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques","tensionCables","softStops"};
+    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","springs","vectorForces","scalarForces","scalarTorques",
+        "threePointForces","threePointTorques","tensionCables","softStops","contacts","markers","sensors","controllers",
+        "controlInputs","scenarios","autoFlexBodies","electroImports","electroExports","hydraulics","rlTasks"};
+    return {group};
+}
+QString originalCurveCollection(const QString& source) {
+    static const QMap<QString,QString> aliases{{"Body","bodies"},{"Joint","joints"},{"Marker","markers"},
+        {"Drive","drives"},{"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
+        {"Spring","springs"},{"TensionCable","tensionCables"},{"SoftStop","softStops"},
+        {"VectorForce","vectorForces"},{"ScalarForce","scalarForces"},{"ScalarTorque","scalarTorques"},
+        {"ThreePointForce","threePointForces"},{"ThreePointTorque","threePointTorques"},{"AutoFlexBody","autoFlexBodies"}};
+    return aliases.value(source,source);
+}
+struct OriginalTreeCreation { const char* name;const char* icon;const char* action;const char* type=""; };
+QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
+    if(collection=="joints")return {
+        {"旋转副","Motion/joint_revolute.png","createMotionJoint","Revolute"},
+        {"移动副","Motion/joint_prismatic.png","createMotionJoint","Translational"},
+        {"柱面副","Motion/joint_cylindrical.png","createMotionJoint","Cylindrical"},
+        {"球面副","Motion/joint_spherical.png","createMotionJoint","Spherical"},
+        {"固定副","Motion/joint_fixed.png","createMotionJoint","Fixed"},
+        {"万向节","Motion/joint_universal.png","createMotionJoint","Universal"},
+        {"点面副","Motion/joint_pointPlane.png","createMotionJoint","PointPlane"},
+        {"平行约束","Motion/joint_parallel.png","createMotionJoint","Parallel"},
+        {"垂直约束","Motion/joint_perpendicular.png","createMotionJoint","Perpendicular"},
+        {"方向约束","Motion/joint_direction.png","createMotionJoint","Direction"},
+        {"恒速副","Motion/joint_cv.png","createMotionJoint","ConstantVelocity"},
+        {"螺纹副","Motion/joint_screw.png","createMotionJoint","Screw"},
+        {"平面副","Motion/joint_planar.png","createMotionJoint","Planar"},
+        {"点线副","Motion/joint_pointLine.png","createMotionJoint","PointLine"},
+        {"点在线上副","Motion/joint_pointOnCurve.png","createMotionJoint","PointOnCurve"},
+        {"点在面上副","Motion/joint_pointOnSurface.png","createMotionJoint","PointOnSurface"},
+        {"线在线上副","Motion/joint_curveOnCurve.png","createMotionJoint","CurveOnCurve"}};
+    if(collection=="couplings")return {
+        {"齿轮齿条副","Motion/joint_gear.png","createMotionCoupling","GearRack"},
+        {"齿轮副","Motion/joint_gear.png","createMotionCoupling","Gear"},
+        {"线缆副","Motion/coupling_cable.png","createMotionCoupling","Cable"}};
+    if(collection=="sensors")return {
+        {"体位移传感器","Motion/sensor_displacement.png","createMotionSensor","BodyDisplacement"},
+        {"体速度传感器","Motion/sensor_velocity.png","createMotionSensor","BodyVelocity"},
+        {"体加速度传感器","Motion/sensor_acceleration.png","createMotionSensor","BodyAcceleration"},
+        {"关节反力传感器","Motion/sensor_jointReaction.png","createMotionSensor","JointReaction"},
+        {"驱动输出传感器","Motion/sensor_driveActuation.png","createMotionSensor","DriveActuation"},
+        {"距离传感器","Motion/sensor_distance.png","createMotionSensor","Distance"},
+        {"角度传感器","Motion/sensor_angle.png","createMotionSensor","Angle"}};
+    if(collection=="springs")return {
+        {"拉压弹簧","Motion/tcSpring.png","createMotionSpring","Translational"},
+        {"扭转弹簧","Motion/torsionSpring.png","createMotionSpring","Torsional"},
+        {"体点弹簧","Motion/force_spring.png","createMotionSpring","BodyPoint"}};
+    if(collection=="forceElements")return {
+        {"矢量力","Motion/force_vector.png","createMotionVectorForce","Force"},
+        {"矢量力矩","Motion/force_torque.png","createMotionVectorForce","Torque"},
+        {"三点力","Motion/force_tri.png","createMotionVectorForce","TriForce"},
+        {"三点力矩","Motion/force_tri_torque.png","createMotionVectorForce","TriTorque"},
+        {"标量力","Motion/force.png","createMotionVectorForce","ScalarForce"},
+        {"标量力矩","Motion/moment.png","createMotionVectorForce","ScalarTorque"},
+        {"衬套","Motion/bush.png","createMotionVectorForce","Bushing"}};
+    if(collection=="drives")return {{"运动副驱动","Motion/rotaryJoint.png","createMotionDrive","Velocity"}};
+    static const QMap<QString,OriginalTreeCreation> simple{
+        {"bodies",{"新建运动体","BrowserTree/xinjian-23x.png","createMotionBody"}},
+        {"markers",{"新建标记点","caotu/dian.png","createMotionMarker"}},
+        {"controllers",{"新建控制器","BrowserTree/xinjian-23x.png","createMotionController"}},
+        {"controlInputs",{"新建控制输入","BrowserTree/xinjian-23x.png","createControlInput"}},
+        {"contacts",{"新建 3D 接触","","createMotionContact"}},
+        {"autoFlexBodies",{"新建自动柔性体","BrowserTree/xinjian-23x.png","createMotionAutoFlex"}},
+        {"scenarios",{"新建求解方案","BrowserTree/motion_solveParentItem.png","createMotionScenario"}},
+        {"electroImports",{"创建机电导入","BrowserTree/xinjian-23x.png","createElectroImport"}},
+        {"electroExports",{"创建机电导出","BrowserTree/xinjian-23x.png","createElectroExport"}},
+        {"hydraulics",{"创建液压协同","BrowserTree/xinjian-23x.png","createHydraulic"}},
+        {"rlTasks",{"创建强化学习","BrowserTree/xinjian-23x.png","createRLPanel"}}};
+    return simple.contains(collection)?QVector<OriginalTreeCreation>{simple.value(collection)}:QVector<OriginalTreeCreation>{};
+}
+}
+bool MotionWindow::renameOriginalDynamicTreeItem(QTreeWidgetItem* item) {
+    if(!item || !item->data(0,Qt::UserRole+4).toBool())return false;
+    const auto collection=item->data(0,Qt::UserRole+2).toString();const auto type=originalTreeType(collection);
+    if(type==MxFunctions::Physical_None)return false;
+    const int id=item->data(0,Qt::UserRole).toInt();const QString proposed=item->text(0).trimmed();
+    ensureOriginalMotionContext();if(!m_original)return true;
+    const auto previous=m_original->model()->getNameByPhyID(type,id);
+    if(previous==proposed)return true;
+    if(motionBusy()||m_jobPart>=0||proposed.isEmpty()||m_original->model()->isExistName(type,proposed)) {
+        const QSignalBlocker block(m_tree);item->setText(0,previous);
+        if(proposed.isEmpty()||m_original->model()->isExistName(type,proposed))setNotice(tr("名称不能为空或与现有对象重名。"),true);
+        return true;
+    }
+    closeEditor();m_original->model()->resetName(type,previous,proposed);m_original->flush();return true;
+}
+void MotionWindow::deleteOriginalTreeEntities(const QString& collection,int id) {
+    if(motionBusy()||m_jobPart>=0||!m_model.nativeDocument)return;
+    closeEditor();ensureOriginalMotionContext();if(!m_original)return;
+    const auto before=m_original->document();
+    QMap<QString,QSet<int>> removed;
+    for(const auto& name:originalTreeCollections(collection))
+        for(const auto& value:before.collection(name)) {
+            const int candidate=value.toObject().value("id").toInt(-1);
+            if(id<0||candidate==id)removed[name].insert(candidate);
+        }
+    if(removed.isEmpty())return;
+    // Check the exact removed records before touching typed managers. Removing
+    // an incoming relationship must not silently turn a formerly moving body
+    // into the ground body (-1). Existing incomplete drafts may still be deleted.
+    auto proposedModel=m_model;
+    for(auto it=removed.begin();it!=removed.end();++it)
+        for(int value:it.value())removeNativeEntityCurves(proposedModel,it.key(),value);
+    auto proposed=*proposedModel.nativeDocument;auto data=proposed.root.value("motionData").toObject();
+    for(auto it=removed.begin();it!=removed.end();++it) {
+        QJsonArray rows;for(const auto& value:proposed.collection(it.key()))
+            if(!it.value().contains(value.toObject().value("id").toInt(-1)))rows.append(value);
+        data.insert(it.key(),rows);
+        if(it.key()=="bodies")for(int value:it.value())proposed.bodyPartBindings.remove(value);
+    }
+    auto referencesRemoved=[&](const QJsonObject& request) {
+        return removed.value(originalCurveCollection(request.value("sourceType").toString()))
+            .contains(request.value("sourceId").toInt(-1));
+    };
+    auto scenarios=data.value("scenarios").toArray();
+    for(int i=0;i<scenarios.size();++i) {
+        auto row=scenarios[i].toObject();
+        if(referencesRemoved(row.value("currentCurveRequest").toObject()))row.insert("currentCurveRequest",QJsonObject{});
+        if(row.contains("trackedMarkerIds")) {
+            QJsonArray markers;for(const auto& value:row.value("trackedMarkerIds").toArray())
+                if(!removed.value("markers").contains(value.toInt(-1)))markers.append(value);
+            row.insert("trackedMarkerIds",markers);
+        }
+        scenarios[i]=row;
+    }
+    if(data.contains("scenarios"))data.insert("scenarios",scenarios);
+    proposed.root.insert("motionData",data);
+    QStringList oldIssues,newIssues;validateNativeMotionDocument(before,oldIssues);validateNativeMotionDocument(proposed,newIssues);
+    for(const auto& issue:newIssues)if(!oldIssues.contains(issue)) { setNotice(tr("无法删除：%1").arg(issue),true);return; }
+    auto* model=m_original->model();
+    auto& scenarioManager=model->getManager<MechMotionData::mMotionScenarioManager>(MxFunctions::Physical_MotionScenario);
+    for(const auto& value:scenarios) {
+        const auto row=value.toObject();const int scenarioId=row.value("id").toInt();auto* scenario=scenarioManager.getData(scenarioId);
+        if(!scenario)continue;
+        QSet<int> keep;for(const auto& request:row.value("curveRequests").toArray())keep.insert(request.toObject().value("requestId").toInt(-1));
+        const auto requests=scenario->getCurveRequests();
+        for(const auto& request:requests)if(!keep.contains(request.m_requestId))scenario->removeCurveRequest(request.m_requestId);
+        if(referencesRemoved(before.entity("scenarios",scenarioId).value("currentCurveRequest").toObject()))scenario->clearCurrentCurveRequest();
+        for(int marker:removed.value("markers"))scenario->removeTrackedMarkerId(marker);
+    }
+    for(auto it=removed.begin();it!=removed.end();++it) {
+        const auto type=originalTreeType(it.key());
+        if(type!=MxFunctions::Physical_None)for(int value:it.value())model->deleteByPhysicalType(type,value);
+    }
+    m_selectionNode={};m_original->flush();
+    // Native-only force elements share the original force tree but deliberately
+    // have no fake old data class. Apply only their actual collection deletions.
+    auto result=m_original->document();auto resultData=result.root.value("motionData").toObject();
+    for(auto it=removed.begin();it!=removed.end();++it)
+        if(originalTreeType(it.key())==MxFunctions::Physical_None)resultData.insert(it.key(),data.value(it.key()));
+    for(int i=0;i<scenarios.size();++i) {
+        const auto clean=scenarios[i].toObject();auto rows=resultData.value("scenarios").toArray();
+        for(int j=0;j<rows.size();++j)if(rows[j].toObject().value("id")==clean.value("id")) {
+            auto row=rows[j].toObject();
+            for(const auto* field:{"curveRequests","currentCurveRequest","trackedMarkerIds"})
+                if(clean.contains(field))row.insert(field,clean.value(field));
+            rows[j]=row;
+        }
+        resultData.insert("scenarios",rows);
+    }
+    result.root.insert("motionData",resultData);m_original->adoptExternalDocument(result);commitOriginalMotionDocument(result);
+}
+bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoint& position) {
+    if(!item)return false;const auto collection=item->data(0,Qt::UserRole+2).toString();
+    const auto type=originalTreeType(collection);const bool root=collection=="__motionRoot";
+    if(type==MxFunctions::Physical_None&&!root)return false;
+    const bool group=item->data(0,Qt::UserRole+3).toBool();const int id=item->data(0,Qt::UserRole).toInt();
+    const bool idle=!motionBusy()&&m_jobPart<0;
+    mUiMenu menu(this);menu.setObjectName("originalMotionTreeMenu");
+    const auto action=[&](QMenu* target,const char* artwork,const QString& text,const std::function<void()>& callback) {
+        auto* entry=target->addAction(*artwork?TreeIcons::resource(artwork):QIcon{},text);entry->setEnabled(idle);
+        connect(entry,&QAction::triggered,this,callback);return entry;
+    };
+    const auto create=[&](QMenu* target,const OriginalTreeCreation& entry,const QString& prefix=QString{}) {
+        auto* result=action(target,entry.icon,prefix+QString::fromUtf8(entry.name),[this,entry] {
+            dispatchOriginalMotionAction(QString::fromLatin1(entry.action),QString::fromLatin1(entry.type));
+        });
+        result->setProperty("mxOriginalAction",entry.action);result->setProperty("mxOriginalArgument",entry.type);
+    };
+    const auto submenu=[&](const QString& name,const QString& text,const QIcon& icon,bool rootMenu=false) {
+        auto* nested=menu.addMenu(icon,text);nested->setEnabled(idle);nested->setObjectName("originalMotionTreeCreate_"+name);
+        auto entries=originalTreeCreations(name);
+        if(rootMenu&&name=="couplings") { entries.resize(2);entries[0].icon="Motion/coupling_gearRack.png"; }
+        if(rootMenu&&name=="forceElements") { const auto bush=entries.takeLast();entries.insert(2,bush); }
+        for(const auto& entry:entries) {
+            if(rootMenu&&name=="forceElements"&&QString::fromLatin1(entry.type)=="ScalarForce")nested->addSeparator();
+            create(nested,entry);
+        }
+        MechMainWindow::ThemeManager::applyMenuStyle(nested);
+    };
+    if(root) {
+        create(&menu,{"新建运动体","BrowserTree/motion_movingBodyParentItem.png","createMotionBody"});
+        submenu("joints",tr("新建运动副"),TreeIcons::item("joints"),true);
+        submenu("couplings",tr("新建耦合副"),TreeIcons::item("couplings"),true);
+        create(&menu,{"新建驱动","BrowserTree/motion_driveParentItem.png","createMotionDrive","Velocity"});
+        create(&menu,originalTreeCreations("markers").first());
+        submenu("sensors",tr("新建传感器"),TreeIcons::item("sensors"),true);
+        create(&menu,{"新建控制器","Motion/controlCalculation.png","createMotionController"});
+        submenu("forceElements",tr("新建力元"),TreeIcons::item("forceElements"),true);
+        submenu("springs",tr("新建弹簧"),TreeIcons::item("springs"),true);
+        create(&menu,originalTreeCreations("scenarios").first());menu.addSeparator();
+        action(&menu,"BrowserTree/shanchu.png",tr("删除运动数据"),[this] {
+            const int answer=MechMainWindow::mFramelessMessageBox::warning(this,tr("警告"),
+                tr("将删除多体动力学下的全部运动数据（含求解方案及其结果），部件/几何/网格保留。\n是否继续？"),tr("是"),tr("否"));
+            if(answer==0)deleteOriginalTreeEntities("__motionRoot",-1);
+        });
+    } else if(group) {
+        if(QStringList{"joints","couplings","drives","sensors"}.contains(collection))
+            submenu(collection,tr("新建%1").arg(label(collection)),TreeIcons::item(collection));
+        else {
+            const bool multiple=collection=="springs"||collection=="forceElements";
+            const auto entries=originalTreeCreations(collection);
+            for(int i=0;i<entries.size();++i) {
+                if(collection=="forceElements"&&i==2)menu.addSeparator();
+                create(&menu,entries[i],multiple?tr("新建"):QString{});
+            }
+            if(multiple||collection=="contacts")menu.addSeparator();
+        }
+        const auto groupName=collection=="forceElements"?tr("力元"):label(collection);
+        action(&menu,"BrowserTree/shanchu.png",tr("删除所有%1").arg(groupName),[this,collection] { deleteOriginalTreeEntities(collection,-1); });
+    } else {
+        action(&menu,"BrowserTree/shanchu.png",tr("删除"),[this,collection,id] { deleteOriginalTreeEntities(collection,id); });
+        action(&menu,"BrowserTree/chongminmin.png",tr("重命名"),[this,item] { m_tree->editItem(item,0); });
+        if(collection=="scenarios")action(&menu,"BrowserTree/fuzhi.png",tr("求解"),[this,id] {
+            editOriginalMotionEntity("scenarios",id,{});
+            if(m_editor)if(auto* panel=m_editor->findChild<MechMainWindow::mMotionScenarioPanel*>())panel->onStartSolve(id);
+        });
+        else action(&menu,"BrowserTree/fuzhi.png",tr("复制"),[this,type,collection,id] {
+            closeEditor();ensureOriginalMotionContext();if(!m_original)return;
+            auto extensions=m_original->document().entity(collection,id);if(extensions.isEmpty())return;
+            extensions.remove("id");extensions.remove("name");
+            const int copy=m_original->model()->copyPhysicalField(type,id);if(copy<0)return;
+            m_selectionNode={ModelNode::Native,copy,collection};m_original->flush();
+            m_original->setExtensionFields(collection,copy,extensions);editOriginalMotionEntity(collection,copy,{});
+        });
+    }
+    MechMainWindow::ThemeManager::applyMenuStyle(&menu);menu.exec(position);return true;
 }
 
 bool MotionWindow::commitNativeDocument(NativeMotionDocument document, ModelNode selection)
@@ -1108,14 +1375,37 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
             item->setIcon(0, TreeIcons::entity(it.key(), row));
             item->setToolTip(0, label(it.key()) + QStringLiteral(" [%1]").arg(id));
             item->setData(0, Qt::UserRole, id); item->setData(0, Qt::UserRole + 1, int(ModelNode::Native)); item->setData(0, Qt::UserRole + 2, it.key());
+            if(originalTreeType(it.key())!=MxFunctions::Physical_None) {
+                item->setFlags(item->flags()|Qt::ItemIsEditable);
+                item->setData(0,Qt::UserRole+4,true);
+            }
             if (m_selectionNode.kind == ModelNode::Native && m_selectionNode.id == id && m_selectionNode.collection == it.key()) m_tree->setCurrentItem(item);
         }
         if (group->childCount()) group->setExpanded(true);
+    }
+    // These four groups are deliberately lazy in the uploaded mTreeModel /
+    // mTreeView. They disappear when their last typed object is deleted.
+    for(const auto* collection:{"electroImports","electroExports","hydraulics","rlTasks"}) {
+        const auto rows=m_model.nativeDocument->collection(collection);if(rows.isEmpty())continue;
+        auto* group=new QTreeWidgetItem(root,{label(collection)});group->setIcon(0,TreeIcons::item(collection));
+        group->setData(0,Qt::UserRole,-1);group->setData(0,Qt::UserRole+1,int(ModelNode::None));
+        group->setData(0,Qt::UserRole+2,QString::fromLatin1(collection));group->setData(0,Qt::UserRole+3,true);
+        for(const auto& value:rows) {
+            const auto row=value.toObject();const int id=row.value("id").toInt(-1);
+            auto* item=new QTreeWidgetItem(group,{row.value("name").toString()});item->setIcon(0,TreeIcons::entity(collection,row));
+            item->setFlags(item->flags()|Qt::ItemIsEditable);item->setToolTip(0,label(collection)+QStringLiteral(" [%1]").arg(id));
+            item->setData(0,Qt::UserRole,id);item->setData(0,Qt::UserRole+1,int(ModelNode::Native));
+            item->setData(0,Qt::UserRole+2,QString::fromLatin1(collection));item->setData(0,Qt::UserRole+4,true);
+            if(m_selectionNode.kind==ModelNode::Native&&m_selectionNode.collection==collection&&m_selectionNode.id==id)m_tree->setCurrentItem(item);
+        }
+        group->setExpanded(true);
     }
     for (const auto& scenario : m_model.scenarios) {
         auto* item = new QTreeWidgetItem(root, {scenario.name}); item->setData(0, Qt::UserRole, scenario.id);
         item->setIcon(0, TreeIcons::item("scenarios"));
         item->setData(0, Qt::UserRole + 1, int(ModelNode::Scenario)); item->setExpanded(true);
+        item->setData(0,Qt::UserRole+2,QStringLiteral("scenarios"));item->setData(0,Qt::UserRole+4,true);
+        item->setFlags(item->flags()|Qt::ItemIsEditable);
         if (m_selectionNode.kind == ModelNode::Scenario && m_selectionNode.id == scenario.id) m_tree->setCurrentItem(item);
         for (const auto& child : {std::pair{tr("动画"), ModelNode::Animation}, {tr("结果导出"), ModelNode::Export}, {tr("运动曲线"), ModelNode::Curves}}) {
             auto* leaf = new QTreeWidgetItem(item, {child.first}); leaf->setData(0, Qt::UserRole, scenario.id);
@@ -1143,6 +1433,7 @@ void MotionWindow::batchNativeBodies()
 
 void MotionWindow::editNativeEntity(const QString& collection, int id, const QString& requestedType)
 {
+    if (editOriginalMotionEntity(collection,id,requestedType)) return;
     if (motionBusy() || m_jobPart >= 0 || !m_model.nativeDocument) return;
     auto document = *m_model.nativeDocument;
     QJsonObject row = document.entity(collection, id);

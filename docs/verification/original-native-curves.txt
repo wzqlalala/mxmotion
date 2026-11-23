@@ -1,0 +1,3 @@
+PASS native-forces real solve: 101 accepted frames and all four saved requests through original controls/Qwt
+PASS original add/visibility/color/delete controls, exact channel identities and extension-preserving project save
+PASS project reopen -> original solve/panel/Qwt with all six native requests preserved

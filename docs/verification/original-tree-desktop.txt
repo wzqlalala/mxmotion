@@ -1,0 +1,4 @@
+PASS fixed/dynamic original groups, icons, root/group/entity/scenario menu structure
+PASS original typed copy/inline rename/delete, precision/extensions/references, live-panel deletion lifecycle
+PASS Planar/PointLine actual constructors/enums, unknown-type rejection, all four force subtype creation/selection/copy/delete, lazy/fixed group rules, curve-source cleanup
+PASS original scenario tree solve -> original onStartSolve started/finished -> actual solver adapter and engine results

@@ -1,0 +1,2 @@
+PASS: original CAD + JSON import; original AutoFlex save -> true Netgen mesh; real viewport node hit -> original field; manual end-face IDs -> native attachment; saved-mesh true flexible solve with worker disabled; original project and field reopen.
+Nodes=45 Tets=77 AttachmentNodes=8 Frames=3

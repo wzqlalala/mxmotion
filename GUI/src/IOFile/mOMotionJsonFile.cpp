@@ -149,6 +149,8 @@ namespace MechIOFile
         case DriveControlMode::Position:       return "Position";
         case DriveControlMode::Velocity:       return "Velocity";
         case DriveControlMode::Acceleration:   return "Acceleration";
+        case DriveControlMode::Force:          return "Force";
+        case DriveControlMode::Torque:         return "Torque";
         default:                               return "Unknown";
         }
     }
@@ -1051,16 +1053,36 @@ namespace MechIOFile
 
     QJsonObject mOMotionJsonFile::curveRequestToJson(const mMotionCurveRequest& req) const
     {
-        QJsonObject obj;
-        obj["requestId"] = req.m_requestId;
-        obj["requestName"] = req.m_requestName;
-        obj["sourceType"] = curveSourceTypeToString(req.m_sourceType);
+        QJsonObject obj = req.m_originalJson;
+        obj[obj.contains("id") && !obj.contains("requestId") ? "id" : "requestId"] = req.m_requestId;
+        obj[obj.contains("name") && !obj.contains("requestName") ? "name" : "requestName"] = req.m_requestName;
+        if (req.isNativeChannel()) {
+            const auto previousSource = obj.value("sourceType").toString();
+            const auto previousType = mMotionCurveRequest::sourceTypeFromName(previousSource);
+            if (mMotionCurveRequest::collectionForSource(previousType) != req.m_nativeSource)
+                obj["sourceType"] = req.m_nativeSource;
+            else if (!obj.contains("sourceType"))obj["sourceType"] = req.m_nativeSource;
+            obj["variable"] = req.m_nativeVariable;
+            if (obj.value("component").isString() && req.m_nativeComponent >= -1 && req.m_nativeComponent <= 2)
+                obj["component"] = req.m_nativeComponent == -1 ? QStringLiteral("Magnitude")
+                    : QString(QChar('X' + req.m_nativeComponent));
+            else obj["component"] = req.m_nativeComponent;
+        } else {
+            obj["sourceType"] = curveSourceTypeToString(req.m_sourceType);
+            obj["variable"] = curveVariableToString(req.m_variable);
+            obj["component"] = curveComponentToString(req.m_component);
+        }
         obj["sourceId"] = req.m_sourceId;
-        obj["sourceName"] = req.m_sourceName;
-        obj["variable"] = curveVariableToString(req.m_variable);
-        obj["component"] = curveComponentToString(req.m_component);
+        if (!req.m_sourceName.isEmpty() || obj.contains("sourceName"))obj["sourceName"] = req.m_sourceName;
         if (req.m_color.isValid()) {
-            obj["color"] = colorToJson(req.m_color);
+            if (obj.value("color").isString() || (req.isNativeChannel() && !obj.contains("color"))) {
+                if (QColor(obj.value("color").toString()) != req.m_color)
+                    obj["color"] = req.m_color.name(req.m_color.alpha()==255 ? QColor::HexRgb : QColor::HexArgb);
+            } else {
+                auto color = obj.value("color").toObject();const auto rgba = colorToJson(req.m_color);
+                for (auto it=rgba.begin();it!=rgba.end();++it)color[it.key()] = it.value();
+                obj["color"] = color;
+            }
         }
         obj["visible"] = req.m_visible;
         return obj;

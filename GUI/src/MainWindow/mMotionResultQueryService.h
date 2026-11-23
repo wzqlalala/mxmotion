@@ -102,7 +102,7 @@ namespace MechMainWindow
         /**
          * @brief 单帧传感器值（查询期曲线与求解期 PID 反馈共用）
          * @param ok 输出：该帧是否能取到有效值
-         * @details 支持体位移/体速度/体加速度、距离（仅距离变量）、角度传感器；
+         * @details 支持体位移/体速度/体加速度、距离及其真实点运动学导数、角度传感器；
          *          关节反力/驱动输出传感器依赖结果帧中的 link 数据，返回 ok=false。
          *          数学与 getSensorSeries 完全一致（同一套求值器）。
          */

@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "compat/model/LegacyMotionContext.h"
 #include "NativeMotionSymbols.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
@@ -176,6 +177,13 @@ MotionWindow::~MotionWindow()
         m_worker->disconnect(this);
         m_worker->kill();
         m_worker->waitForFinished(2000);
+    }
+    // Original editors retain pointers into the typed model and callbacks
+    // into the viewport. Release them while both services still exist.
+    closeEditor();
+    if(m_original) {
+        m_original->disconnect(this);
+        m_original.reset();
     }
 }
 
@@ -364,7 +372,11 @@ void MotionWindow::createWorkspace()
     auto* viewDock = addPane("ViewTree", tr("视图"), views);
     m_modelDock = addPane("Tree", tr("模型"), createModelBrowser());
     m_parameterDock = addPane("Info", tr("参数"), createParameterPage());
-    m_parameterDock->setMinimumSize(225, 150);
+    // Same Info-dock sizing rule as the uploaded mDockLayoutManager. A 225 px
+    // host fitted the simplified editor but clips the original compound rows.
+    const int parameterWidth = 12 * UiMetrics::baseH()
+        + 8 * qMax(0, 6 - UiMetrics::baseG()) + 8;
+    m_parameterDock->setMinimumSize(parameterWidth - 40, 150);
     m_modelDock->setMinimumWidth(220);
     auto* parameterArea = m_docks->addDockWidget(ads::LeftDockWidgetArea, m_parameterDock, center->dockAreaWidget());
     m_treeArea = m_docks->addDockWidget(ads::LeftDockWidgetArea, viewDock, parameterArea);
@@ -411,8 +423,12 @@ void MotionWindow::resetLayout(bool resetVisibility)
     if (auto* treeArea = m_modelDock->dockAreaWidget()) {
         treeArea->setCurrentDockWidget(m_modelDock);
         const auto sizes = m_docks->splitterSizes(treeArea);
-        if (sizes.size() == 3)
-            m_docks->setSplitterSizes(treeArea, { 280, 250, qMax(400, width() - 530) });
+        if (sizes.size() == 3) {
+            const int suggested = 12 * UiMetrics::baseH()
+                + 8 * qMax(0, 6 - UiMetrics::baseG()) + 8;
+            const int parameterWidth = qMax(suggested, m_parameterDock->minimumWidth());
+            m_docks->setSplitterSizes(treeArea, { 280, parameterWidth, qMax(400, width() - 280 - parameterWidth) });
+        }
     }
 }
 
@@ -528,6 +544,7 @@ QWidget* MotionWindow::createModelBrowser()
     m_tree->header()->setStretchLastSection(true);
     m_tree->setIndentation(14);
     m_tree->setUniformRowHeights(true);
+    m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_tree->setIconSize(QSize(16, 16));
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setStyleSheet(QStringLiteral("QTreeWidget { border:0; } QTreeWidget::item { min-height:24px; }"));
@@ -546,7 +563,9 @@ QWidget* MotionWindow::createModelBrowser()
     });
     connect(m_tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
         const auto node = treeNode(item);
-        if (m_syncingTree || column != 0 || node.kind != ModelNode::Part) return;
+        if (m_syncingTree || column != 0) return;
+        if (renameOriginalDynamicTreeItem(item)) return;
+        if (node.kind != ModelNode::Part) return;
         if (item->checkState(0) == Qt::Checked) m_hidden.erase(node.id);
         else m_hidden.insert(node.id);
         filterTree();
@@ -558,6 +577,10 @@ QWidget* MotionWindow::createModelBrowser()
         const auto node = treeNode(item);
         if (node.kind == ModelNode::Animation || node.kind == ModelNode::Curves || node.kind == ModelNode::Export)
             showRigidResult(node);
+        else if (node.kind == ModelNode::Native && item->data(0,Qt::UserRole+4).toBool())
+            editOriginalMotionEntity(node.collection,node.id,{});
+        else if (node.kind == ModelNode::Scenario && item->data(0,Qt::UserRole+4).toBool())
+            editOriginalMotionEntity("scenarios",node.id,{});
     });
     connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &MotionWindow::showPartMenu);
     return panel;
@@ -648,6 +671,9 @@ void MotionWindow::updateTree()
     m_tree->clear();
     auto* root = new QTreeWidgetItem(m_tree, { tr("多体动力学-%1").arg(m_modelNumber) });
     root->setIcon(0, TreeIcons::item("root"));
+    root->setData(0,Qt::UserRole,-1);
+    root->setData(0,Qt::UserRole+2,QStringLiteral("__motionRoot"));
+    root->setData(0,Qt::UserRole+3,true);
     const std::vector<std::pair<QString, QString>> groups = {
         {"parts", tr("部件")}, {"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")},
@@ -661,6 +687,11 @@ void MotionWindow::updateTree()
         groupItems.emplace(entry.second, group);
         group->setIcon(0, TreeIcons::item(entry.first));
         if (entry.first == "parts") m_partsItem = group;
+        else {
+            group->setData(0,Qt::UserRole,-1);
+            group->setData(0,Qt::UserRole+2,entry.first);
+            group->setData(0,Qt::UserRole+3,true);
+        }
     }
     std::vector<const CadPart*> sorted;
     for (const auto& part : m_document.parts()) sorted.push_back(&part);
@@ -802,6 +833,7 @@ void MotionWindow::showPartMenu(const QPoint& position)
 {
     auto* item = m_tree->itemAt(position);
     if (!item) return;
+    if (showOriginalDynamicTreeMenu(item,m_tree->viewport()->mapToGlobal(position))) return;
     const auto node = treeNode(item);
     if (node.kind != ModelNode::None && node.kind != ModelNode::Part) {
         showRigidMenu(node, m_tree->viewport()->mapToGlobal(position));
@@ -932,6 +964,7 @@ void MotionWindow::saveCad(bool all)
 bool MotionWindow::confirmReplace()
 {
     if (motionBusy()) return false;
+    if(m_original)m_original->flush();
     if (!m_modified) return true;
     return QMessageBox::question(this, tr("未保存的项目"), tr("放弃当前未保存的项目更改？"),
         QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;

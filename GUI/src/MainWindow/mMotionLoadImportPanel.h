@@ -10,6 +10,9 @@
 #include <QMap>
 #include <QSet>
 #include <QVector3D>
+#ifdef MX_MOTION_OCC_COMPAT
+#include <QJsonObject>
+#endif
 
 class QComboBox;
 class QLineEdit;
@@ -108,6 +111,9 @@ namespace MechMainWindow
 
         // ---- 数据 ----
         QString m_filePath;
+#ifdef MX_MOTION_OCC_COMPAT
+        QJsonObject m_loadCaseJson;
+#endif
         QVector<BodyInfo> m_bodies;
         QVector<JointInfo> m_joints;
         QVector<LoadCase> m_cases;

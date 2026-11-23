@@ -67,6 +67,7 @@ namespace MechMainWindow
             MechMotionData::CurveVariable variable;
             MechMotionData::CurveComponent component;
             QString label;
+            QJsonObject nativeChannel;
         };
 
         void setupUI();
@@ -106,6 +107,7 @@ namespace MechMainWindow
         bool timeWindow(double& start, double& end) const;
 
         int m_scenarioId = -1;
+        bool m_restoringRequest = false;
 
         // UI
         QVBoxLayout* m_mainLayout = nullptr;

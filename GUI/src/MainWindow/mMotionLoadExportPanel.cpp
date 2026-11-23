@@ -44,6 +44,13 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QTextStream>
+#ifdef MX_MOTION_OCC_COMPAT
+#include "NativeMotionLoadExport.h"
+#include "picking/LegacyPickContext.h"
+#include "model/LegacyMotionContext.h"
+#include <QSaveFile>
+#include <QTimer>
+#endif
 
 using namespace MxFunctions;
 
@@ -101,8 +108,42 @@ namespace MechMainWindow
 
         m_editNodeId = new QLineEdit();
         m_editNodeId->setPlaceholderText("3091");
+#ifdef MX_MOTION_OCC_COMPAT
+        m_editNodeId->setToolTip(QStringLiteral("手动输入仅指定输出节点编号，力矩关于所选 Marker；拾取节点则按该节点的随体位置逐帧转换力矩。拾取的节点必须属于唯一运动体。"));
+        connect(m_editNodeId,&QLineEdit::textEdited,this,[this] {
+            m_editNodeId->setProperty("mxPickedNodeId",QVariant{});
+            m_editNodeId->setProperty("mxPickedNodePartId",QVariant{});
+            m_editNodeId->setProperty("mxPickedNodePosition",QVariant{});
+        });
+#endif
         m_btnPickNode = new QPushButton("拾取");
         basicSection->addRow(new QLabel("节点编号"), m_editNodeId, m_btnPickNode);
+#ifdef MX_MOTION_OCC_COMPAT
+        // The original visible button keeps its layout. Its previously
+        // unconnected action now uses the same original controller as the
+        // other panels, resolving real mesh node IDs and coordinates.
+        auto* nodePick=mGeneralPickUp::createOnePickWidget(CBRed,this);
+        nodePick->setObjectName(QStringLiteral("originalLoadNodePickController"));
+        nodePick->setAllowedTypes(&MechCommon::pickOnlyNode);
+        nodePick->setKeepHighlightOnDeactivate(false);
+        nodePick->widget()->hide();
+        connect(m_btnPickNode,&QPushButton::clicked,this,[nodePick] {
+            if(nodePick->isPickActive())nodePick->setPickActive(false);
+            else { nodePick->displayData(PickWidgetData{});nodePick->setPickActive(true); }
+        });
+        connect(nodePick,&mPickWidgetController::dataChanged,this,[this,nodePick] {
+            auto* context=nodePick->context();
+            if(!context)return;
+            const auto picks=context->resolve(nodePick->getAllData().pickedData);
+            if(picks.isEmpty() || picks.back().kind!=MotionOcc::PickKind::Node)return;
+            const auto& pick=picks.back();
+            m_editNodeId->setText(QString::number(pick.nodeId));
+            m_editNodeId->setProperty("mxPickedNodeId",pick.nodeId);
+            m_editNodeId->setProperty("mxPickedNodePartId",pick.partId);
+            m_editNodeId->setProperty("mxPickedNodePosition",QVariantList{pick.position[0],pick.position[1],pick.position[2]});
+            QTimer::singleShot(0,nodePick,[nodePick] { nodePick->setPickActive(false); });
+        });
+#endif
         manualLayout->addWidget(basicSection);
 
         FoldSection* extractSection = new FoldSection("载荷提取", manualPage);
@@ -376,6 +417,10 @@ namespace MechMainWindow
             return;
         setEditing(false);
         m_scenarioId = -1;
+#ifdef MX_MOTION_OCC_COMPAT
+        if(auto* pick=findChild<mPickWidgetController*>(QStringLiteral("originalLoadNodePickController")))
+            pick->setPickActive(false);
+#endif
         // 失活并清空两页的几何面拾取控件：激活中的拾取全局互斥占用拾取会话，
         // 拾取数据是临时的，退出编辑清空防残留高亮与串到下个面板
         for (CasePageCtx* pageCtx : { &m_casePage, &m_syncPage }) {
@@ -482,9 +527,58 @@ namespace MechMainWindow
             exportBdf ? tr("Nastran BDF(*.bdf *.dat)") : tr("CSV File(*.csv)"));
         if (fileName.isEmpty())
             return;
-        if (!fileName.contains(QLatin1Char('.')))
+        if (QFileInfo(fileName).suffix().isEmpty())
             fileName += exportBdf ? ".bdf" : ".csv";
 
+#ifdef MX_MOTION_OCC_COMPAT
+        if (!getCVM->exportMotionLoads) {
+            QMessageBox::warning(this, tr("提示"), tr("当前方案的载荷结果服务未连接。"));
+            return;
+        }
+        MotionOcc::NativeLoadExportOptions options;
+        options.name = m_editName->text().trimmed().isEmpty()
+            ? m_editName->placeholderText() : m_editName->text().trimmed();
+        options.end = m_radioJMarker->isChecked() ? MotionOcc::NativeLoadEnd::J : MotionOcc::NativeLoadEnd::I;
+        options.frames = m_radioAllFrames->isChecked() ? MotionOcc::NativeLoadFrames::All
+            : m_radioSingleFrame->isChecked() ? MotionOcc::NativeLoadFrames::Specified : MotionOcc::NativeLoadFrames::Maximum;
+        options.frameIndex = std::size_t(m_spinFrameIndex->value());
+        options.format = exportBdf ? MotionOcc::NativeLoadFormat::NastranBdf : MotionOcc::NativeLoadFormat::Csv;
+        options.nodeId = m_editNodeId->text().trimmed().toInt();
+        options.scale = m_spinScale->value();
+        const auto target=m_editNodeId->property("mxPickedNodePosition").toList();
+        if(options.nodeId>0 && m_editNodeId->property("mxPickedNodeId").toInt()==options.nodeId && target.size()==3) {
+            const int partId=m_editNodeId->property("mxPickedNodePartId").toInt();
+            const auto* context=getCVM->getModelData()->context;
+            std::set<int> owners;
+            if(context) {
+                const auto& bindings=context->document().bodyPartBindings;
+                for(auto entry=bindings.begin();entry!=bindings.end();++entry)
+                    if(entry.value().contains(partId))owners.insert(entry.key());
+            }
+            if(owners.size()!=1) {
+                QMessageBox::warning(this,tr("提示"),tr("所拾取的目标节点没有唯一的运动体绑定，无法确定其逐帧位置。请检查部件与运动体的对应关系。"));
+                return;
+            }
+            options.useTargetPoint=true;
+            options.targetBodyId=*owners.begin();
+            for(int component=0;component<3;++component)options.targetPointMm[component]=target[component].toDouble();
+        }
+        options.components = {{
+            m_chkExportForce->isChecked() && m_chkFx->isChecked(),
+            m_chkExportForce->isChecked() && m_chkFy->isChecked(),
+            m_chkExportForce->isChecked() && m_chkFz->isChecked(),
+            m_chkExportTorque->isChecked() && m_chkMx->isChecked(),
+            m_chkExportTorque->isChecked() && m_chkMy->isChecked(),
+            m_chkExportTorque->isChecked() && m_chkMz->isChecked()}};
+        const QStringList collections{QStringLiteral("joints"),QStringLiteral("couplings"),QStringLiteral("drives")};
+        const MotionOcc::NativeLoadSource source{collections.value(m_comboSourceType->currentIndex()),sourceId};
+        QString error;
+        if (!getCVM->exportMotionLoads(m_scenarioId,fileName,source,options,error)) {
+            QMessageBox::warning(this,tr("提示"),error);
+            return;
+        }
+        MAppConfiguration::mAppConfiguration::getInstance()->_recentDir = QFileInfo(fileName).absolutePath();
+#else
         QFile file(fileName);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
             QMessageBox::warning(this, tr("提示"), tr("无法写入载荷文件。"));
@@ -502,6 +596,7 @@ namespace MechMainWindow
         else
             writeCsvContent(out, loadSeries, frameIndices, effectiveScale);
         file.close();
+#endif
 
         QMessageBox::information(this, tr("提示"),
             tr("载荷导出完成：已写入 %1 帧到\n%2")
@@ -663,15 +758,18 @@ namespace MechMainWindow
         if (hasScenario) {
             auto* scenario = getCVM->getModelData()->getManager<MechMotionData::mMotionScenarioManager>(
                 Physical_MotionScenario).getData(m_scenarioId);
-            hasResult = scenario && scenario->hasResult();
+            hasResult = scenario && scenario->hasResult()
+                && scenario->getResult()->getFrameCount() > 0;
             if (hasResult)
                 maxFrame = qMax(0, scenario->getResult()->getFrameCount() - 1);
         }
         m_spinFrameIndex->setRange(0, maxFrame);
-        m_btnExport->setEnabled(hasResult && maxFrame > 0);
-        // 特征工况/连杆同步导出同样需要有结果
-        m_casePage.btnExport->setEnabled(hasResult && maxFrame > 0);
-        m_syncPage.btnExport->setEnabled(hasResult && maxFrame > 0);
+        // A converged static equilibrium is one accepted frame (index 0),
+        // and is a valid load history for manual CSV/BDF export. The case
+        // selector reports if that history contains no internal extrema.
+        m_btnExport->setEnabled(hasResult);
+        m_casePage.btnExport->setEnabled(hasResult);
+        m_syncPage.btnExport->setEnabled(hasResult);
     }
 
     MechMotionData::CurveSourceType mMotionLoadExportPanel::getCurrentSourceType() const
@@ -896,6 +994,55 @@ namespace MechMainWindow
         bool autoGenerate, bool writeJson, QString& error,
         int* genCases, int* genLoads, int* genRbe3)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        if (!getCVM || !getCVM->buildMotionLoadCases) {
+            error = QStringLiteral("当前方案的载荷工况服务未连接。");
+            return false;
+        }
+        // No partial JSON or fictitious static cases when the separate
+        // structural-model backend has not been installed in this host.
+        if (autoGenerate && !getCVM->generateMotionStaticCases) {
+            error = QStringLiteral("隐式静力模型生成尚未连接：此流程需要结构工况、载荷、RBE3、集合及几何面到网格的真实数据接口。当前没有创建任何静力工况或写入文件。");
+            return false;
+        }
+        CasePageCtx* ctx = synchronized ? &m_syncPage : &m_casePage;
+        QVector<JointSel> selected;
+        if (!collectCaseJoints(*ctx,selected,error)) return false;
+        MotionOcc::NativeLoadCaseOptions options;
+        options.analysisBodyId = ctx->comboBody->currentData().toInt();
+        options.peaksPerSignal = ctx->spinPeaks->value();
+        options.mergeTolerance = ctx->spinMergeTol->value();
+        options.synchronized = synchronized;
+        QMap<int,QVector<int>> bindings;
+        for (const auto& joint:selected) {
+            options.jointIds.push_back(joint.jointId);
+            if (!autoGenerate) continue;
+            QVector<int> faces;
+            if (auto* picker=ctx->jointFacePicks.value(joint.jointId,nullptr)) {
+                const auto data=picker->getAllData();
+                for (const auto& entry:data.pickedData) if (entry.first==MxFunctions::PickDataType::GeoFace)
+                    for (const auto& face:entry.second) if (face.result_id>0 && !faces.contains(face.result_id))
+                        faces.push_back(face.result_id);
+            }
+            if (faces.isEmpty()) {
+                error=QStringLiteral("运动副「%1」还没有拾取几何面。").arg(joint.jointName);
+                return false;
+            }
+            bindings.insert(joint.jointId,faces);
+        }
+        QJsonObject data;
+        if (!getCVM->buildMotionLoadCases(m_scenarioId,options,data,error)) return false;
+        if (autoGenerate && !getCVM->generateMotionStaticCases(data,bindings,error,genCases,genLoads,genRbe3)) return false;
+        if (writeJson) {
+            QSaveFile file(fileName);
+            if (!file.open(QIODevice::WriteOnly|QIODevice::Text)
+                || file.write(QJsonDocument(data).toJson(QJsonDocument::Indented))<0 || !file.commit()) {
+                error=QStringLiteral("无法写入工况文件：%1").arg(file.errorString());
+                return false;
+            }
+        }
+        return true;
+#else
         CasePageCtx* ctx = synchronized ? &m_syncPage : &m_casePage;
         auto* scenario = getCVM->getModelData()->getManager<MechMotionData::mMotionScenarioManager>(
             Physical_MotionScenario).getData(m_scenarioId);
@@ -1186,6 +1333,7 @@ namespace MechMainWindow
                 return false;   // JSON（如写出）已落盘，生成失败原因在 error
         }
         return true;
+#endif
     }
 
     void mMotionLoadExportPanel::reportToPlatform(const QString& filePath)

@@ -4,25 +4,10 @@ MechMainWindow::mWorkingDirPanel::mWorkingDirPanel(QWidget* parent)
 {
 	workingDirFold = new FoldSection("工作目录");
 	workingDir = new QLabel("工作目录");
-	auto path = QCoreApplication::applicationDirPath() + "/../Setting" + "/Settings.ini";
-	QSettings Settings(path, QSettings::IniFormat);
-	Settings.beginGroup("WorkingDir");
-	auto map = Settings.childKeys();
-	QStringList keys;
-	QStringList values;
-	if (Settings.childKeys().isEmpty())
-	{
-		auto path = QCoreApplication::applicationDirPath() + "/../Setting" + "/Settings.ini";
-		QSettings Settings(path, QSettings::IniFormat);
-		// 添加一条“最近打开”
-		QString value1 = QCoreApplication::applicationDirPath()+"/../WorkingDir";
-		QString key1 = "WorkingDir/WorkingDir";
-		Settings.setValue(key1, value1);
-	}
-	for (const QString& k : Settings.childKeys()) {
-		workingDirEdit = new QLineEdit(Settings.value(k).toString());
-	}
-	Settings.endGroup();
+	// Always create the original editor, including the first run with no
+	// Settings.ini. The previous branch wrote through a second QSettings and
+	// then dereferenced an uninitialised workingDirEdit in that case.
+	workingDirEdit = new QLineEdit(MAppConfiguration::mAppConfiguration::getInstance()->_workingDir);
 	workingDirEdit->setReadOnly(true);
 	workingDirOpen = new QToolButton();
 	workingDirOpen->setIcon(QIcon(":/mMainWidgets/Icon/homepage/dakai.png"));

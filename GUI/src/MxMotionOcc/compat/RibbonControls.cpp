@@ -6,6 +6,7 @@
 #include "mUiStyle.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -117,7 +118,9 @@ void mRibbonButton::paintEvent(QPaintEvent*)
     const bool pressed = enabled && option.state.testFlag(QStyle::State_Sunken);
     const bool iconOnly = toolButtonStyle() == Qt::ToolButtonIconOnly;
 
-    MechMainWindow::mUiStyle::drawRibbonButton(&painter, rect(), iconOnly ? QString() : text(),
+    const QString dropText = property("dropText").toString();
+    const QString visibleText = dropText.isEmpty() ? text() : dropText;
+    MechMainWindow::mUiStyle::drawRibbonButton(&painter, rect(), iconOnly ? QString() : visibleText,
         iconOnly ? QIcon() : icon(), iconSize(), !iconOnly && isBig(), showsDropArrow(),
         hover, pressed, isChecked(), enabled, ribbonFont(), this);
     if (iconOnly) {
@@ -152,7 +155,9 @@ void mRibbonButton::mousePressEvent(QMouseEvent* event)
             inMenuZone = event->pos().y() >= labelTop;
         } else {
             const int iconWidth = icon().isNull() ? 0 : UiMetrics::menuIconSize() + UiMetrics::menuContentGap();
-            const int labelWidth = QFontMetrics(ribbonFont()).horizontalAdvance(text());
+            const QString dropText = property("dropText").toString();
+            const int labelWidth = QFontMetrics(ribbonFont()).horizontalAdvance(
+                dropText.isEmpty() ? text() : dropText);
             inMenuZone = event->pos().x() >= UiMetrics::menuInset() + iconWidth + labelWidth;
         }
     }
@@ -254,6 +259,23 @@ void mUiMenu::paintEvent(QPaintEvent* event)
         sharedMenuStyle->drawControl(QStyle::CE_MenuItem, &item, &painter, this);
         painter.restore();
     }
+}
+
+void mUiMenu::mouseReleaseEvent(QMouseEvent* event)
+{
+    QAction* action = actionAt(event->pos());
+    // The original resident-menu checklists stay open for consecutive toggles.
+    // Exclusive selections, ordinary commands and submenu navigation retain
+    // QMenu's normal dismissal and activation semantics.
+    if (event->button() == Qt::LeftButton && action && action->isEnabled()
+        && action->isCheckable() && !action->menu()
+        && (!action->actionGroup() || !action->actionGroup()->isExclusive())) {
+        action->trigger();
+        update(actionGeometry(action));
+        event->accept();
+        return;
+    }
+    QMenu::mouseReleaseEvent(event);
 }
 
 } // namespace MxFunctions

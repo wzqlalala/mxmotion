@@ -1,6 +1,10 @@
 #pragma once
 #pragma execution_character_set("utf-8")
 
+#ifdef MX_MOTION_OCC_COMPAT
+#include "picking/OccPickPersistence.h"
+#else
+
 #include <QObject>
 #include <QString>
 #include <QSet>
@@ -286,3 +290,5 @@ namespace MechMainWindow
         };
     }
 }
+
+#endif // MX_MOTION_OCC_COMPAT

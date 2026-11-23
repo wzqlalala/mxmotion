@@ -1,5 +1,9 @@
+#ifndef MX_MOTION_OCC_COMPAT
 #include <mGeoManager.h>
 #include <mMeshData.h>
+#else
+#include "picking/LegacyPickContext.h"
+#endif
 #include "mPointPickerWidget.h"
 #include "mGeneralPickUp.h"
 
@@ -7,7 +11,9 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QPointer>
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mGeoManager.h"  //【集成回补】GeoManager 完整类型（旧栈测量调用仍存）
+#endif
 #include "mFoldSection.h" //PanelLabel：行内标签定宽 labelWidth，随档位
 #include "mGroupBox.h"    //外层分组框(MxFunctions::mGroupBox 骑线标题)
 
@@ -80,6 +86,10 @@ namespace MechMainWindow
     // 默认坐标计算器（与起点-终点模式的 defaultCoordinateCalculator 逻辑完全一致）
     static QVector3D defaultCoordinateCalculator(const std::unordered_map<MxFunctions::PickDataType, std::vector<RenderPickResultData> >& picks)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        auto* context = MotionOcc::LegacyPickContext::current();
+        return context ? context->averageCoordinate(picks) : QVector3D();
+#else
         if (picks.empty())
             return QVector3D();
 
@@ -193,6 +203,8 @@ namespace MechMainWindow
         }
         if (count == 0) return QVector3D();
         return sum / count;
+
+#endif
     }
 
     // ========== 类实现 ==========
@@ -200,7 +212,7 @@ namespace MechMainWindow
         : QWidget(parent)
     {
         initUI(groupTitle, labelText);
-        _coordinateCalculator = &defaultCoordinateCalculator;
+        setCoordinateCalculator({});
 
         //档位/主题跟随：切档/切主题后按 UiMetrics 重发行高与标签列宽
         applyThemeStyles();
@@ -210,7 +222,7 @@ namespace MechMainWindow
 
     mPointPickerWidget::~mPointPickerWidget()
     {
-
+        clearPreviewRender();
     }
 
     void mPointPickerWidget::initUI(const QString& groupTitle, const QString& labelText)
@@ -374,6 +386,13 @@ namespace MechMainWindow
 
     void mPointPickerWidget::updatePreviewRender()
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        auto* context = MotionOcc::LegacyPickContext::forObject(this);
+        if (!context || !_pickController) return;
+        const auto& data = _pickController->getAllData().pickedData;
+        const QVector3D point = isPickDataValid(data) ? computeCoordinateFromController() : coordinate();
+        context->setPreviewPoints(QStringLiteral("point:%1").arg(quintptr(this)), {point}, UiPalette::primary());
+#else
         auto cvm = getCVM;
         if (!cvm || !cvm->getPreRenderWidget())
             return;
@@ -401,10 +420,16 @@ namespace MechMainWindow
 
         render->deletePoint(renderKey);
         render->appendPoint(renderKey, { renderPos }, color);
+
+#endif
     }
 
     void mPointPickerWidget::clearPreviewRender()
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        if (auto* context = MotionOcc::LegacyPickContext::forObject(this))
+            context->clearPreviewPoints(QStringLiteral("point:%1").arg(quintptr(this)));
+#else
         auto cvm = getCVM;
         if (!cvm || !cvm->getPreRenderWidget())
             return;
@@ -413,6 +438,8 @@ namespace MechMainWindow
             return;
 
         render->deletePoint("point_picker_preview");
+
+#endif
     }
 
     // ========== 对外接口 ==========
@@ -429,7 +456,14 @@ namespace MechMainWindow
 
     void mPointPickerWidget::setCoordinateCalculator(CoordinateCalculator calculator)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        _coordinateCalculator = calculator ? std::move(calculator) : CoordinateCalculator([this](const auto& picks) {
+            auto* context = _pickController ? _pickController->context() : MotionOcc::LegacyPickContext::forObject(this);
+            return context ? context->averageCoordinate(picks) : QVector3D();
+        });
+#else
         _coordinateCalculator = calculator ? std::move(calculator) : &defaultCoordinateCalculator;
+#endif
     }
 
     PickWidgetData mPointPickerWidget::pickData() const

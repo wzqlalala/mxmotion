@@ -1,8 +1,14 @@
+#ifndef MX_MOTION_OCC_COMPAT
 #include <mGeoManager.h>
 #include <mMeshData.h>
+#else
+#include "picking/LegacyPickContext.h"
+#endif
 #include "mDirectionSelectorWidget.h"
 //#include "mGeometricFeatureAttribute.h" //【OCC迁移·链A续清配套】CalculateGeometricAttr 显式自含 //【OCC摘除·S10/P0-1】调用已切 engine().geoCalculate() 同语法视图
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mGeoManager.h" //【GUI适配】geoManager->getGeoModelBase() 需完整类型（本头已零 OCC）
+#endif
 #include "mGeneralPickUp.h"
 
 #include <QDebug>
@@ -153,6 +159,10 @@ namespace MechMainWindow
     // 默认坐标计算：根据点/线/面/体/节点/单元等计算一个平均坐标
     static QVector3D defaultCoordinateCalculator(const std::unordered_map<MxFunctions::PickDataType, std::vector<RenderPickResultData> >& picks)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        auto* context = MotionOcc::LegacyPickContext::current();
+        return context ? context->averageCoordinate(picks) : QVector3D();
+#else
         if (picks.empty())
             return QVector3D();
 
@@ -324,11 +334,17 @@ namespace MechMainWindow
         if (count == 0)
             return QVector3D();
         return sum / count;
+
+#endif
     }
 
     // 默认方向计算：将单个对象的类型转换为方向（仅用于选择对象模式）
     static QVector3D defaultDirectionCalculator(const std::unordered_map<MxFunctions::PickDataType, std::vector<RenderPickResultData> >& picks)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        auto* context = MotionOcc::LegacyPickContext::current();
+        return context ? context->direction(picks) : QVector3D();
+#else
         if (picks.empty())
             return QVector3D();
 
@@ -392,6 +408,8 @@ namespace MechMainWindow
 
         // 兜底：返回 +X
         return QVector3D(0, 0, 0);
+
+#endif
     }
 
     mDirectionSelectorWidget::mDirectionSelectorWidget(
@@ -413,7 +431,7 @@ namespace MechMainWindow
         ThemeManager::addDockThemeExtraApplier([guard]() { if (guard) guard->applyThemeStyles(); });
     }
 
-    mDirectionSelectorWidget::~mDirectionSelectorWidget() = default;
+    mDirectionSelectorWidget::~mDirectionSelectorWidget() { clearPreviewRender(); }
 
     void mDirectionSelectorWidget::initUI(
         const QString& labelText,
@@ -524,8 +542,8 @@ namespace MechMainWindow
         }
 
         // 默认计算回调
-        _coordinateCalculator = &defaultCoordinateCalculator;
-        _calculator = &defaultDirectionCalculator;
+        setCoordinateCalculator({});
+        setDirectionCalculator({});
 
         _pickAllowedTypes.clear();
         _objectPickColorBlock = objectPickColorBlock;
@@ -1018,13 +1036,27 @@ namespace MechMainWindow
     void mDirectionSelectorWidget::setDirectionCalculator(DirectionCalculator calculator)
     {
         // 外部传入空函数时保留默认计算器，避免后续选择对象/自定义坐标模式无法计算方向。
+#ifdef MX_MOTION_OCC_COMPAT
+        _calculator = calculator ? std::move(calculator) : DirectionCalculator([this](const auto& picks) {
+            auto* context = _objectPickController ? _objectPickController->context() : MotionOcc::LegacyPickContext::forObject(this);
+            return context ? context->direction(picks) : QVector3D();
+        });
+#else
         _calculator = calculator ? std::move(calculator) : &defaultDirectionCalculator;
+#endif
     }
 
     void mDirectionSelectorWidget::setCoordinateCalculator(CoordinateCalculator calculator)
     {
         // 外部传入空函数时保留默认计算器，避免后续自定义坐标模式点击"应用"无法计算坐标。
+#ifdef MX_MOTION_OCC_COMPAT
+        _coordinateCalculator = calculator ? std::move(calculator) : CoordinateCalculator([this](const auto& picks) {
+            auto* context = _startPickController ? _startPickController->context() : MotionOcc::LegacyPickContext::forObject(this);
+            return context ? context->averageCoordinate(picks) : QVector3D();
+        });
+#else
         _coordinateCalculator = calculator ? std::move(calculator) : &defaultCoordinateCalculator;
+#endif
     }
 
     void mDirectionSelectorWidget::updateDirectionFromAxis()
@@ -1465,6 +1497,19 @@ namespace MechMainWindow
 
     void mDirectionSelectorWidget::updatePreviewRender(mPickWidgetController* controller)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        if (!controller || _currentMode != CustomCoordinate) return;
+        auto* context = MotionOcc::LegacyPickContext::forObject(this);
+        if (!context) return;
+        const bool start = controller == _startPickController;
+        if (!start && controller != _endPickController) return;
+        auto* edit = start ? _startDirEdit : _endDirEdit;
+        if (!edit) return;
+        const auto& data = controller->getAllData().pickedData;
+        const QVector3D point = isPickDataValid(data) ? computeCoordinateFromController(controller) : parseLineEditToVector(edit);
+        context->setPreviewPoints(QStringLiteral("direction:%1:%2").arg(quintptr(this)).arg(start ? "start" : "end"),
+                                  {point}, UiPalette::primary());
+#else
         if (!controller || _currentMode != CustomCoordinate)
             return;
 
@@ -1518,10 +1563,20 @@ namespace MechMainWindow
         // 先移除旧点避免叠加，再添加新点
         render->deletePoint(renderKey);
         render->appendPoint(renderKey, { renderPos }, color);
+
+#endif
     }
 
     void mDirectionSelectorWidget::clearPickPreview(mPickWidgetController* controller)
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        auto* context = MotionOcc::LegacyPickContext::forObject(this);
+        if (!context) return;
+        if (controller == _startPickController)
+            context->clearPreviewPoints(QStringLiteral("direction:%1:start").arg(quintptr(this)));
+        else if (controller == _endPickController)
+            context->clearPreviewPoints(QStringLiteral("direction:%1:end").arg(quintptr(this)));
+#else
         if (!controller)
             return;
 
@@ -1541,10 +1596,19 @@ namespace MechMainWindow
             return;
 
         render->deletePoint(renderKey);
+
+#endif
     }
 
     void mDirectionSelectorWidget::clearPreviewRender()
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        if (auto* context = MotionOcc::LegacyPickContext::forObject(this)) {
+            context->clearPreviewPoints(QStringLiteral("direction:%1:start").arg(quintptr(this)));
+            context->clearPreviewPoints(QStringLiteral("direction:%1:end").arg(quintptr(this)));
+        }
+        _activePickController = nullptr;
+#else
         auto cvm = getCVM;
         if (!cvm || !cvm->getPreRenderWidget())
             return;
@@ -1556,6 +1620,8 @@ namespace MechMainWindow
         render->deletePoint("dir_selector_end_preview");
 
         _activePickController = nullptr;
+
+#endif
     }
 
     void mDirectionSelectorWidget::resetToDefault()

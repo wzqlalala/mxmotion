@@ -2,7 +2,9 @@
 #include "mMotionAnimationPanel.h"
 #include "mMotionRefMap.h"
 #include "mMotionResultQueryService.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mMotionSolverThread.h"
+#endif
 #include "mAppConfiguration.h"
 #include "mGlobalSignals.h"
 
@@ -19,8 +21,10 @@
 #include "mMotionBody.h"
 #include "mMotionBodyManager.h"
 #include "mMotionResultData.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mxr/view/CCSMPreRender.h"
 #include "mxr/view/mFlexBodyRender.h"
+#endif
 #include <QVector4D>
 #include <cmath>
 #include <fstream>
@@ -39,14 +43,18 @@
 #include "mMotionSpringBase.h"
 #include "mMotionBodyPointSpring.h"
 #include "mMotionSpringManager.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mInfoWindow.h"
+#endif
 #include "mMotionSpringPanel.h"
 #include "mMotionCurvePanel.h"
 #include "mCurveWindow.h"
 #include "mPlotView.h"
 
 //Geo
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mGeometricFeatureAttribute.h"
+#endif
 
 //Qt
 #include <QComboBox>
@@ -74,6 +82,15 @@ namespace
 {
     // 动画当前时间在曲线上的标记线名
     const char* kCurveMarkerName = "动画当前帧";
+
+    bool canPlayResult(const MechMotionData::mMotionResultData* result)
+    {
+        if (!result || result->getFrameCount() < 2)
+            return false;
+        const double first = result->m_frames.front().m_time;
+        const double last = result->m_frames.back().m_time;
+        return std::isfinite(first) && std::isfinite(last) && last > first;
+    }
 }
 
 namespace MechMainWindow
@@ -94,6 +111,7 @@ namespace MechMainWindow
         m_btnPlay = new QPushButton("播放");
         m_btnPause = new QPushButton("暂停");
         m_btnStop = new QPushButton("停止");
+        m_btnPlay->setEnabled(false); // 没有时间历程时不能启动播放
         m_btnPause->setEnabled(false); // 初始状态不能暂停
         foldControl->addRow(m_btnPlay, m_btnPause, m_btnStop, QString());
         m_mainLayout->addWidget(foldControl);
@@ -134,6 +152,9 @@ namespace MechMainWindow
         // 切换口径时强制下一帧重刷图例（范围从全程 max 切到帧 max 或反之）
         connect(m_chkFlexAdaptiveScale, &QCheckBox::toggled, this, [this]() {
             m_flexLegendShownMax = -1.0;
+#ifdef MX_MOTION_OCC_COMPAT
+            renderCurrentFrame();
+#endif
         });
 
         //【刚柔耦合】云图参照系：默认整体运动口径（质量加权最优刚体拟合偏差）——
@@ -149,11 +170,15 @@ namespace MechMainWindow
         // 切换参照系：色标重定 + 图例标题随口径
         connect(m_cmbFlexContourRef, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
             m_flexLegendShownMax = -1.0;
+#ifdef MX_MOTION_OCC_COMPAT
+            renderCurrentFrame();
+#else
             if (getCVM && getCVM->getPreRenderWidget())
                 if (auto* ct = getCVM->getPreRenderWidget()->getColorTableRender())
                     ct->SetHeader(0, (m_cmbFlexContourRef->currentIndex() == 0
                         ? QString::fromUtf8("变形偏差 mm")
                         : QString::fromUtf8("弹性变形 mm")).toStdString());
+#endif
         });
 
         m_mainLayout->addWidget(foldSettings);
@@ -240,8 +265,11 @@ namespace MechMainWindow
         m_currentFrameIndex = 0;
         m_currentAnimTime = 0.0;
         m_isPlaying = false;
-        m_btnPlay->setEnabled(true);
+        const bool playable = canPlayResult(m_motionResultData);
+        m_btnPlay->setEnabled(playable);
         m_btnPause->setEnabled(false);
+        m_cmbPlaySpeed->setEnabled(playable);
+        m_chkLoop->setEnabled(playable);
         if (m_playTimer && m_playTimer->isActive()) {
             m_playTimer->stop();
         }
@@ -251,7 +279,7 @@ namespace MechMainWindow
         if (m_motionResultData && m_motionResultData->getFrameCount() > 0) {
             // 与拖动进度条到索引 0、点击停止保持一致：使用第一帧的实际时间
             m_currentAnimTime = m_motionResultData->m_frames.front().m_time;
-            m_sliderTimeline->setEnabled(true);
+            m_sliderTimeline->setEnabled(playable);
             m_sliderTimeline->setMaximum(m_motionResultData->getFrameCount() - 1);
             m_sliderTimeline->setValue(0);
 
@@ -293,6 +321,7 @@ namespace MechMainWindow
 
         // 退出面板时必须把所有运动体渲染矩阵重置为单位矩阵，恢复模型初始位姿
         resetBodyTransformsToIdentity();
+#ifndef MX_MOTION_OCC_COMPAT
         //【刚柔耦合】恢复被柔体替换部件的显隐原状，收掉变形云图图例与柔体网格
         if (getCVM && getCVM->getPreRenderWidget()) {
             if (auto* flexRend = getCVM->getPreRenderWidget()->getPreRender()->getFlexBodyRender())
@@ -307,6 +336,7 @@ namespace MechMainWindow
             m_flexLegendShownMax = -1.0;
             getCVM->getPreRenderWidget()->updatePaint();
         }
+#endif
         clearMarkerTraces();
 
         m_id = -1;
@@ -369,7 +399,7 @@ namespace MechMainWindow
 
     void mMotionAnimationPanel::onPlayClicked()
     {
-        if (!m_motionResultData || m_motionResultData->getFrameCount() == 0) return;
+        if (!canPlayResult(m_motionResultData)) return;
 
         double totalTime = m_motionResultData->getTotalTime();
         if (m_currentAnimTime >= totalTime) {
@@ -390,7 +420,7 @@ namespace MechMainWindow
     {
         m_isPlaying = false;
         m_playTimer->stop();
-        m_btnPlay->setEnabled(true);
+        m_btnPlay->setEnabled(canPlayResult(m_motionResultData));
         m_btnPause->setEnabled(false);
     }
 
@@ -416,7 +446,10 @@ namespace MechMainWindow
 
     void mMotionAnimationPanel::onTimerTick()
     {
-        if (!m_motionResultData) return;
+        if (!canPlayResult(m_motionResultData)) {
+            onPauseClicked();
+            return;
+        }
 
         // 获取当前速度倍率
         double speedMult = 1.0;
@@ -556,6 +589,10 @@ namespace MechMainWindow
 
     void mMotionAnimationPanel::resetBodyTransformsToIdentity()
     {
+#ifdef MX_MOTION_OCC_COMPAT
+        if (getCVM && getCVM->resetMotionDisplay)
+            getCVM->resetMotionDisplay();
+#else
         if (!getCVM || !getCVM->getModelData() || !getCVM->getPreRenderWidget())
             return;
 
@@ -630,6 +667,7 @@ namespace MechMainWindow
 
         preRender->updateModelMatrix();
         getCVM->getPreRenderWidget()->updatePaint();
+#endif
     }
 
     // ==================== 核心：将数据喂给 OpenGL 渲染引擎 ====================
@@ -638,13 +676,24 @@ namespace MechMainWindow
         if (!m_motionResultData || m_motionResultData->getFrameCount() == 0) return;
 
         double totalTime = m_motionResultData->getTotalTime();
-        if (m_currentAnimTime < 0.0) m_currentAnimTime = 0.0;
+        if (m_currentAnimTime < m_motionResultData->m_frames.front().m_time)
+            m_currentAnimTime = m_motionResultData->m_frames.front().m_time;
         if (m_currentAnimTime > totalTime) m_currentAnimTime = totalTime;
 
         // 更新 UI 时间文字
         m_lblTimeInfo->setText(QString("时间: %1 s / %2 s")
             .arg(m_currentAnimTime, 0, 'f', 3)
             .arg(totalTime, 0, 'f', 3));
+
+#ifdef MX_MOTION_OCC_COMPAT
+        if (!getCVM || !getCVM->displayMotionTime)
+            return;
+        getCVM->displayMotionTime(m_id, m_currentAnimTime,
+            m_cmbFlexContourRef->currentIndex(), m_chkFlexAdaptiveScale->isChecked());
+        updateMarkerTraceCurrentPoints();
+        if (getCVM->getPreRenderWidget())
+            getCVM->getPreRenderWidget()->updatePaint();
+#else
 
         // ==========================================
         // 1. 二分查找：当前时间卡在哪两个物理帧之间？
@@ -808,8 +857,10 @@ namespace MechMainWindow
         getCVM->getPreRenderWidget()->getPreRender()->updateModelMatrix();
         updateMarkerTraceCurrentPoints();
         getCVM->getPreRenderWidget()->updatePaint();
+#endif
     }
 
+#ifndef MX_MOTION_OCC_COMPAT
     // 四元数 [x,y,z,w] → 旋转向量（axis*angle），用于接口体 6 维增量中的转动部分
     static void quatToRotationVector(double qx, double qy, double qz, double qw, double& wx, double& wy, double& wz)
     {
@@ -1182,6 +1233,8 @@ namespace MechMainWindow
             }
         }
     }
+
+#endif
 
     void mMotionAnimationPanel::refreshMarkerTraceList()
     {

@@ -132,12 +132,12 @@ namespace MechMainWindow
                 "}"
                 "QToolButton:hover { background-color: %5; }"
                 "QToolButton:pressed { background-color: %6; }"
-            ).arg(UiPalette::surface().name())
-             .arg(UiPalette::border().name())
-             .arg(UiPalette::text().name())
-             .arg(edge)
-             .arg(UiPalette::hover().name())
-             .arg(UiPalette::selected().name()));
+            ).arg(UiPalette::surface().name(),
+                UiPalette::border().name(),
+                UiPalette::text().name(),
+                edge.arg(UiPalette::border().name()),
+                UiPalette::hover().name(),
+                UiPalette::selected().name()));
             update();
         }
 
@@ -206,7 +206,6 @@ namespace MechMainWindow
         {
             setHandleWidth(30);
             setStyleSheet("QSplitter::handle { background: transparent; }");
-            setCollapsible(0, false);
 
             connect(this, &QSplitter::splitterMoved, this, [this](int pos, int index) {
                 Q_UNUSED(pos);
@@ -355,6 +354,7 @@ namespace MechMainWindow
 
         splitter->addWidget(_plotView);
         splitter->addWidget(styleDlg);
+        splitter->setCollapsible(0, false);
         splitter->setStretchFactor(0, 2);
         splitter->setStretchFactor(1, 1);
         splitter->setSizes(QList<int>{800, 400});
@@ -381,6 +381,8 @@ namespace MechMainWindow
     /*================== 析构：释放曲线 ==================*/
     mCurveWindow::~mCurveWindow()
     {
+        if (_instance == this)
+            _instance = nullptr;
         //clearBaseCurve();
         //clearMultiCurves();
         if (_plotView)

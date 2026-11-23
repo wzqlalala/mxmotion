@@ -1,7 +1,9 @@
 #include "mGeneralPickUp.h"
 
 
+#ifndef MX_MOTION_OCC_COMPAT
 using namespace MechPreData;
+#endif
 namespace MechMainWindow
 {
     std::shared_ptr<mPickWidgetHighlightServiceBase> mGeneralPickUp::_highlightServiceBase = nullptr;

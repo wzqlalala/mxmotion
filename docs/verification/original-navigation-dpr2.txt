@@ -1,0 +1,9 @@
+Original screen-axis rotation, percentage pan, zoom, camera history and visible bounds passed
+Classic orbit/pan, click isolation and cursor-anchored wheel zoom passed
+NX left selection, middle orbit, Shift-middle pan and Ctrl-middle zoom passed
+Held-button modifier transitions, Ctrl precedence and second-button isolation passed
+Lost capture, focus, deactivate, disable and hide interruption passed
+Surface rotation center preserved screen position and followed displayed rigid poses
+NX typed-picker isolation, actual node numbering, right undo, Esc and interrupted rectangle passed
+CAD face IDs, initial global mm and original whole-part selection passed
+Motion triad source geometry, pan/zoom independence, face navigation, axis angle/drag, Esc, picker isolation and font scaling passed; DPR=2

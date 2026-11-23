@@ -16,11 +16,17 @@
 #include <functional>
 #include <vector>
 
+#ifdef MX_MOTION_OCC_COMPAT
+#include "mFoldSection.h"
+#else
 #include "mPanelBase.h"
+#endif
 #include "mPickWidgetData.h"
 #include "mModelStruct.h"
 #include "mPickWidgetController.h"
 #include "mCalcLineEdit.h"
+
+using MxFunctions::mCalcLineEdit;
 
 struct LableAndLineEdit
 {

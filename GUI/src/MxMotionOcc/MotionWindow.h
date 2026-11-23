@@ -7,6 +7,7 @@
 
 #include <QElapsedTimer>
 #include <QMainWindow>
+#include <QVariant>
 #include <atomic>
 #include <functional>
 #include <thread>
@@ -42,6 +43,7 @@ namespace MotionOcc {
 
 class OccViewport;
 class RigidPlot;
+class LegacyMotionContext;
 
 struct ModelNode {
     enum Kind { None, Part, Body, Joint, Drive, Scenario, Animation, Export, Curves, Native } kind = None;
@@ -76,12 +78,26 @@ public:
     bool importCad(const QString& path);
     bool openRigidProject(const QString& path);
     bool importMotionJson(const QString& path, bool interactiveBinding = true);
+    void dispatchOriginalMotionAction(const QString& action, const QVariant& argument = {});
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, long* result) override;
     void closeEvent(QCloseEvent* event) override;
 
 private:
+    bool dispatchOriginalWorkspaceAction(const QString&, const QVariant&);
+    void ensureOriginalMotionContext();
+    void ensureOriginalCurveHost();
+    bool editOriginalMotionEntity(const QString&, int, const QString&);
+    void commitOriginalMotionDocument(const NativeMotionDocument&);
+    void publishOriginalSolveProgress(int scenarioId,int percent);
+    void publishOriginalSolveFinished(int scenarioId,bool success,const QString& message);
+    void syncOriginalMotionResults(int scenarioId);
+    bool showOriginalMotionResult(ModelNode);
+    bool showOriginalDynamicTreeMenu(QTreeWidgetItem*,const QPoint&);
+    bool renameOriginalDynamicTreeItem(QTreeWidgetItem*);
+    void deleteOriginalTreeEntities(const QString& collection,int id);
+    bool showOriginalMotionLoadImport(const QString& path);
     void createCommands();
     void createWorkspace();
     void createStatusBar();
@@ -170,6 +186,7 @@ private:
     ModelNode m_selectionNode;
     std::map<int, std::shared_ptr<RigidRun>> m_results;
     std::shared_ptr<RigidRun> m_running;
+    bool m_runningInputChanged = false;
     std::thread m_solverThread;
     int m_resultScenario = -1;
     bool m_animationActive = false;
@@ -183,6 +200,7 @@ private:
     int m_modelNumber = 1;
     bool m_modified = false;
     bool m_syncingTree = false;
+    std::unique_ptr<LegacyMotionContext> m_original;
 
     OccViewport* m_viewport = nullptr;
     ads::CDockManager* m_docks = nullptr;

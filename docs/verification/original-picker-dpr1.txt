@@ -1,0 +1,14 @@
+Qt=5.15.15 DPR=1 platform=xcb
+PASS original point field / Apply / coordinate / clear workflow
+PASS original direction modes / reverse icon / CAD tangent / controller mutual exclusion
+PASS original start/end fields / independent Apply buttons / actual two-point direction
+PASS real multi-solid subshape selection / global topology identity / inactive feedback
+PASS FEM IDs / multi-selection / right undo / Esc commit / original Clear icon
+PASS original displayData false is UI-only / true synchronizes selection and feedback
+PASS cloud feedback suppression / live typed picking / hover and node overlay / restoration
+PASS cloud suppression also covers real CAD selected and hovered topology
+PASS auxiliary index validation / changed OCC identity / fewer subshapes / deletion and reimport
+PASS zero-origin geometry / original numeric-input API with expression and range validation
+PASS new-engine fields reuse original controls / hidden serialization / magnitude and reverse round-trip
+PASS original symbol selection clear / indexed face fill / independent layers / duplicate suppression / depth semantics
+PASS all original picker regression checks

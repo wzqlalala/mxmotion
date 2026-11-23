@@ -80,6 +80,24 @@ const BodyState& bodyState(const RigidFrame& frame,int id)
     return *found;
 }
 
+Vec targetBodyOffset(const NativeMotionInput& input,const RigidResult& result,
+                     const NativeLoadExportOptions& options)
+{
+    if(options.targetBodyId<0)return vector(options.targetPointMm);
+    if(input.document.entity("bodies",options.targetBodyId).isEmpty())
+        fail(QStringLiteral("目标节点绑定的运动体不存在。"));
+    for(const auto& flex:result.flexBodies)if(flex.bodyId==options.targetBodyId)
+        fail(QStringLiteral("目标节点属于柔性体，尚未建立该节点到真实逐帧变形网格的对应关系；不能用接口刚体位姿代替其节点位置。"));
+    const PreparedBody* prepared=nullptr;
+    for(const auto& body:input.bodies)if(body.body.id==options.targetBodyId) {
+        if(prepared)fail(QStringLiteral("目标节点的运动体定义重复。"));
+        prepared=&body;
+    }
+    if(!prepared || !vector(prepared->properties.centerMm).allFinite())
+        fail(QStringLiteral("目标节点缺少求解时的初始质心数据。"));
+    return vector(options.targetPointMm)-vector(prepared->properties.centerMm);
+}
+
 void writeAtomic(const QString& path,const QByteArray& data)
 {
     if(path.isEmpty())fail(QStringLiteral("导出路径为空。"));
@@ -151,11 +169,21 @@ bool exportNativeLoads(const QString& path,const NativeMotionInput& input,const 
             fail(QStringLiteral("载荷缩放系数无效或未选择任何分量。"));
         if(options.format==NativeLoadFormat::NastranBdf&&options.nodeId<=0)fail(QStringLiteral("BDF 载荷导出需要正的有限元节点编号。"));
         if(options.useTargetPoint&&!vector(options.targetPointMm).allFinite())fail(QStringLiteral("载荷目标点坐标无效。"));
+        if(options.targetBodyId < -1 || (options.targetBodyId>=0&&!options.useTargetPoint))
+            fail(QStringLiteral("随体载荷目标需要有效的初始节点坐标和运动体编号。"));
         auto values=series(input,result,source,options.end);
-        for(auto& value:values){
+        const Vec targetOffset=options.useTargetPoint ? targetBodyOffset(input,result,options) : Vec::Zero();
+        for(std::size_t frame=0;frame<values.size();++frame){
+            auto& value=values[frame];
             if(options.useTargetPoint){
-                value.torqueNmm=array(vector(value.torqueNmm)+(vector(value.pointMm)-vector(options.targetPointMm)).cross(vector(value.forceN)));
-                value.pointMm=options.targetPointMm;
+                Vec target=targetOffset;
+                if(options.targetBodyId>=0) {
+                    const auto& body=bodyState(result.frames[frame],options.targetBodyId);
+                    target=vector(body.positionMm)+quaternion(body.rotation)*targetOffset;
+                }
+                if(!target.allFinite())fail(QStringLiteral("载荷目标节点的逐帧坐标不是有限值。"));
+                value.torqueNmm=array(vector(value.torqueNmm)+(vector(value.pointMm)-target).cross(vector(value.forceN)));
+                value.pointMm=array(target);
             }
             for(int component=0;component<3;++component){
                 value.forceN[component]*=options.components[component]?options.scale:0;
@@ -183,7 +211,10 @@ bool exportNativeLoads(const QString& path,const NativeMotionInput& input,const 
             QString name=options.name;name.replace('\r',' ');name.replace('\n',' ');
             output<<"$ MxSim.Motion constraint loads\n$ LoadCase: "<<name<<"\n$ End: "<<end
                 <<"\n$ Units: N, mm, N*mm, s; CID=0\n$ Physical wrench acting on the selected body end.\n"
-                <<"$ Moment reference: "<<(options.useTargetPoint?"explicit target point":"selected marker; target grid must be located there")<<'\n';
+                <<"$ Moment reference: "<<(options.targetBodyId>=0
+                    ? "picked node transformed with body pose each frame"
+                    : options.useTargetPoint?"explicit fixed global target point":"selected marker; target grid must be located there")<<'\n';
+            if(options.targetBodyId>=0)output<<"$ Target body ID: "<<options.targetBodyId<<'\n';
             for(auto frame:frames){
                 const auto& value=values[frame];const auto sid=frame+1;
                 output<<"$ Frame "<<frame<<" Time "<<number(value.seconds)<<" Point_mm "

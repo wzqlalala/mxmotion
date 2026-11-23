@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "compat/model/LegacyMotionContext.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
 #include "RigidPlot.h"
@@ -8,8 +9,11 @@
 #include "NativeMotionSymbols.h"
 #include "NativeModeInspector.h"
 #include "ThemeManager.h"
+#include "UiMetrics.h"
 #include "mFoldSection.h"
 #include "mUiMenu.h"
+#include "mMotionScenarioPanel.h"
+#include "mCurveWindow.h"
 
 #include <DockAreaWidget.h>
 #include <DockManager.h>
@@ -27,9 +31,11 @@
 #include <QProgressBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QPointer>
 #include <QQuaternion>
 #include <QSignalBlocker>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSlider>
 #include <QTimer>
 #include <QTreeWidget>
@@ -155,7 +161,12 @@ void MotionWindow::createRigidCommands()
     add(Command::Solve, tr("求解"), "solve.png", [this] {
         int id = m_model.scenarios.empty() ? -1 : m_model.scenarios.back().id;
         if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves) id = m_selectionNode.id;
-        if (id >= 0) startRigidSolve(id);
+        if (id >= 0 && m_model.nativeDocument) {
+            editOriginalMotionEntity(QStringLiteral("scenarios"),id,{});
+            if(m_editor)if(auto* panel=m_editor->findChild<MechMainWindow::mMotionScenarioPanel*>())
+                panel->onStartSolve(id);
+        }
+        else if (id >= 0) startRigidSolve(id);
         else editScenario();
     });
     add(Command::StopSolve, tr("停止求解"), "solve.png", [this] {
@@ -310,13 +321,17 @@ void MotionWindow::createRigidControls()
         }
         seekRigidTime(time);
     });
-    connect(m_animationDock, &ads::CDockWidget::closed, this, &MotionWindow::leaveRigidAnimation);
+    connect(m_animationDock, &ads::CDockWidget::closed, this, [this] {
+        if(!m_animationDock->property("mxOriginalAnimationControllerActive").toBool())leaveRigidAnimation();
+    });
     auto* animationArea = m_animationDock->dockAreaWidget();
     connect(animationArea, &ads::CDockAreaWidget::currentChanged, this, [this, animationArea](int) {
+        if(m_animationDock->property("mxOriginalAnimationControllerActive").toBool())return;
         if (m_animationActive && m_animationDock->dockAreaWidget() == animationArea
             && !m_animationDock->isCurrentTab()) leaveRigidAnimation();
     });
     connect(m_animationDock, &ads::CDockWidget::visibilityChanged, this, [this](bool visible) {
+        if(m_animationDock->property("mxOriginalAnimationControllerActive").toBool())return;
         // Switching the shared parameter column to another editor ends the
         // animation session just like uneditAnimationPanel in the original UI.
         // ADS emits Hide before changing its current-widget pointer. The area
@@ -324,6 +339,7 @@ void MotionWindow::createRigidControls()
         // after reparenting for dock areas created by a later drag operation.
         // Minimizing the window keeps the animation as its area's current tab.
         if (!visible && m_animationActive) QTimer::singleShot(0, this, [this] {
+            if(m_animationDock->property("mxOriginalAnimationControllerActive").toBool())return;
             if (m_animationActive && !m_animationDock->isCurrentTab()) leaveRigidAnimation();
         });
     });
@@ -418,7 +434,12 @@ void MotionWindow::selectRigidNode(ModelNode node)
     case ModelNode::Scenario: editScenario(node.id); break;
     case ModelNode::Animation:
     case ModelNode::Curves: showRigidResult(node); break;
-    case ModelNode::Export: leaveRigidAnimation(); break;
+    case ModelNode::Export:
+        // The original mTreeView opens LoadExport from its selection handler,
+        // just like Animation and Curves. The legacy flat model still opens
+        // its direct CSV chooser only on an explicit export activation.
+        if (!showOriginalMotionResult(node)) leaveRigidAnimation();
+        break;
     default: break;
     }
     if (!m_animationActive && m_model.nativeDocument)
@@ -466,16 +487,50 @@ void MotionWindow::showEditor(QWidget* editor)
     m_parameterLayout->setStretch(m_parameterLayout->count() - 1, scrollable ? 0 : 1);
     openDock(m_parameterDock);
     m_editor->show();
+    if (editor->property("mxOriginalMotionPanel").toBool()) {
+        QPointer<QWidget> guard(editor);
+        QTimer::singleShot(0, this, [this, guard] {
+            if (!guard || guard != m_editor)return;
+            auto* scroll = qobject_cast<QScrollArea*>(guard.data());
+            QWidget* content = scroll ? scroll->widget() : guard.data();
+            if (!content)return;
+            content->ensurePolished();
+            if (content->layout())content->layout()->activate();
+            const auto margins = m_parameterLayout->contentsMargins();
+            const int scrollWidth = scroll ? scroll->verticalScrollBar()->sizeHint().width() + 2 * scroll->frameWidth() : 0;
+            const int required = content->minimumSizeHint().expandedTo(content->minimumSize()).width()
+                + margins.left() + margins.right() + scrollWidth + 2;
+            const int suggested = 12 * MxFunctions::UiMetrics::baseH()
+                + 8 * qMax(0, 6 - MxFunctions::UiMetrics::baseG()) + 8;
+            // Respect the original content's own measured minimum. In
+            // particular, the picker + Apply row must not be hidden behind an
+            // extra horizontal scroll area added by the compatibility host.
+            m_parameterDock->setMinimumWidth(qMax(suggested - 40, required));
+            if (auto* area = m_parameterDock->dockAreaWidget()) {
+                auto sizes = m_docks->splitterSizes(area);
+                const int preferred = qMax(suggested, required);
+                if (sizes.size() == 3 && sizes[1] < preferred) {
+                    const int growth = preferred - sizes[1];
+                    sizes[1] = preferred;sizes[2] = qMax(1, sizes[2] - growth);
+                    m_docks->setSplitterSizes(area, sizes);
+                }
+            }
+        });
+    }
 }
 
 void MotionWindow::closeEditor()
 {
+    if (m_original && m_editor && m_editor->property("mxOriginalMotionPanel").toBool()) m_original->endEdit();
     if (m_viewport && m_viewport->isPicking()) { m_viewport->endPick(); m_viewport->setProperty("nativePickOwner",QVariant{}); }
     if (!m_editor) return;
     m_editor->hide();
     m_parameterLayout->removeWidget(m_editor);
     m_editor->deleteLater();
     m_editor = nullptr;
+    const int suggested = 12 * MxFunctions::UiMetrics::baseH()
+        + 8 * qMax(0, 6 - MxFunctions::UiMetrics::baseG()) + 8;
+    m_parameterDock->setMinimumWidth(suggested - 40);
     m_parameterLayout->setStretch(m_parameterLayout->count() - 1, 1);
     m_parameterTitle->show();
     m_parameterDetails->show();
@@ -704,9 +759,15 @@ void MotionWindow::clearResults()
 {
     leaveRigidAnimation();
     m_rigidPlot->setResult(nullptr, nullptr);
+    if(m_curveDock)if(auto* originalCurve=qobject_cast<MechMainWindow::mCurveWindow*>(m_curveDock->widget()))
+        originalCurve->clearAllPlot();
     m_resultScenario = -1;
     m_playbackTime = 0.0;
     m_results.clear();
+    if(m_original) {
+        auto& scenarios=m_original->model()->getManager<MechMotionData::mMotionScenarioManager>(MxFunctions::Physical_MotionScenario);
+        for(int id:scenarios.getAllIDs())if(auto* scenario=scenarios.getData(id))scenario->attachResult(nullptr);
+    }
     m_viewport->clearPartPoses();
     const QSignalBlocker blocker(m_timeline);
     m_timeline->setRange(0, 0);
@@ -718,12 +779,13 @@ void MotionWindow::clearResults()
 
 void MotionWindow::startRigidSolve(int scenarioId)
 {
-    if (motionBusy() || m_jobPart >= 0) return;
+    if (motionBusy() || m_jobPart >= 0) { publishOriginalSolveFinished(scenarioId,false,tr("当前有求解或网格任务正在运行。"));return; }
+    if (m_original) m_original->flush();
     snapshotNativeFlexMeshes();
     auto run = std::make_shared<RigidRun>();
     QString error;
-    if (!prepareRigidModel(m_document, m_model, scenarioId, run->input, error)) { setNotice(error, true); return; }
-    closeEditor();
+    if (!prepareRigidModel(m_document, m_model, scenarioId, run->input, error)) { setNotice(error, true);publishOriginalSolveFinished(scenarioId,false,error);return; }
+    if (!m_editor || !m_editor->property("mxOriginalMotionPanel").toBool()) closeEditor();
     leaveRigidAnimation();
     try {
         m_solverThread = std::thread([run] {
@@ -735,8 +797,9 @@ void MotionWindow::startRigidSolve(int scenarioId)
             catch (...) { run->error = QStringLiteral("MotionEngine 求解异常。"); }
             run->done.store(true, std::memory_order_release);
         });
-    } catch (const std::exception& e) { setNotice(QString::fromUtf8(e.what()), true); return; }
+    } catch (const std::exception& e) { const auto error=QString::fromUtf8(e.what());setNotice(error,true);publishOriginalSolveFinished(scenarioId,false,error);return; }
     m_running = std::move(run);
+    m_runningInputChanged = false;
     m_progress->setRange(0, 100);
     m_progress->setValue(0);
     m_progress->show();
@@ -750,12 +813,20 @@ void MotionWindow::pollRigidSolve()
     auto run = m_running;
     if (!run) return;
     m_progress->setValue(int(std::clamp(run->progress.load(), 0.0, 1.0) * 100));
+    if(run->inspectionFlexId<0)publishOriginalSolveProgress(run->input.scenario.id,m_progress->value());
     if (!run->done.load(std::memory_order_acquire)) return;
     m_solverThread.join();
     m_running.reset();
     m_rigidPoll->stop();
     m_progress->hide();
     m_progress->setRange(0, 0);
+    if(m_runningInputChanged) {
+        m_runningInputChanged=false;
+        const auto message=tr("模型输入已更改，已停止旧输入的求解。修改已保留，请重新求解。");
+        setNotice(message,true);
+        if(run->inspectionFlexId<0)publishOriginalSolveFinished(run->input.scenario.id,false,message);
+        updateParameters();updateActions();return;
+    }
     if(run->inspectionFlexId>=0){
         if(run->status==SolveStatus::Completed && !run->result.flexBodies.empty()){
             const auto& basis=run->result.flexBodies.front().modalBasis;
@@ -785,9 +856,11 @@ void MotionWindow::pollRigidSolve()
             : tr("MotionEngine 求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
                 .arg(run->result.frames.size()).arg(run->result.frames.back().seconds);
         setNotice(message + (run->result.diagnostics.isEmpty() ? QString{} : QLatin1Char('\n') + run->result.diagnostics.join(QLatin1Char('\n'))));
+        publishOriginalSolveFinished(id,true,message);
         if (!run->result.diagnostics.isEmpty()) openDock(m_outputDock);
     } else {
         setNotice(run->status == SolveStatus::Stopped ? tr("已停止求解。") : tr("求解失败：%1").arg(run->error), run->status != SolveStatus::Stopped);
+        publishOriginalSolveFinished(run->input.scenario.id,false,run->status==SolveStatus::Stopped ? tr("已停止求解。") : run->error);
     }
     updateParameters();
     updateActions();
@@ -795,6 +868,7 @@ void MotionWindow::pollRigidSolve()
 
 void MotionWindow::showRigidResult(ModelNode node)
 {
+    if (showOriginalMotionResult(node)) return;
     const auto it = m_results.find(node.id);
     if (motionBusy() || m_jobPart >= 0 || it == m_results.end() || it->second->result.frames.empty()) return;
     const auto& run = *it->second;
@@ -973,6 +1047,7 @@ void MotionWindow::updatePlaybackControls()
 
 void MotionWindow::saveProject(bool choosePath)
 {
+    if(m_original)m_original->flush();
     snapshotNativeFlexMeshes();
     QString path = m_projectPath;
     if (choosePath || path.isEmpty()) path = QFileDialog::getSaveFileName(this, tr("保存刚体项目"),

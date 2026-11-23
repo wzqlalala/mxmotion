@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMatrix4x4>
+#include <QColor>
 #include <QOpenGLWidget>
 #include <QString>
 #include <QVector>
@@ -25,7 +26,7 @@ class CadDocument;
 struct FemMesh;
 struct MotionSymbol;
 
-enum class PickKind { Part, Vertex, Edge, Face, Node, MeshEdge, MeshFace, Element };
+enum class PickKind { Part, Vertex, Edge, Face, Node, MeshEdge, MeshFace, Element, Solid };
 
 // Coordinates are initial global CAD coordinates in millimetres, including
 // STEP placement. Topology indices follow TopExp::MapShapes (one based).
@@ -56,6 +57,12 @@ public:
     Q_ENUM(DisplayMode)
     enum class MouseNavigationMode { Classic, Nx };
     Q_ENUM(MouseNavigationMode)
+    struct ViewCameraState {
+        QVector3D eye, target, up;
+        double ortho_zoom = 1.0; // vertical visible span in world millimetres
+    };
+    ViewCameraState queryCameraState() const;
+    bool queryVisibleBounds(QVector3D& minimum,QVector3D& maximum) const;
 
     // Snapshot of visible geometry; does not fit, recenter or reset the view.
     // Retains poses for IDs still in the document, including hidden parts.
@@ -71,6 +78,7 @@ public:
     void clearPartPoses();
     void selectPart(int id);
     void setDisplayMode(DisplayMode mode);
+    DisplayMode displayMode() const;
     // Navigation is view-only; changing it keeps the active typed-pick session.
     void setMouseNavigationMode(MouseNavigationMode mode);
     MouseNavigationMode mouseNavigationMode() const;
@@ -82,12 +90,24 @@ public:
     bool isPicking() const;
     QVector<PickResult> pickSelection() const;
     void setPickSelection(const QVector<PickResult>& selection);
+    void setPickHighlightColor(const QColor& color);
+    // Presentation only: cloud plots retain their live typed selection while
+    // suppressing active selection, hover and selectable-node feedback.
+    void setPickFeedbackVisible(bool visible);
+    // Original picker services keep independent inactive highlights and point
+    // previews. These layers do not replace the active pick session or symbols.
+    void setAuxiliaryPickHighlights(const QString& key, const QVector<PickResult>& picks, const QColor& color);
+    void clearAuxiliaryPickHighlights(const QString& key);
+    void setAuxiliaryPoints(const QString& key, const QVector<QVector3D>& points, const QColor& color, float pointSize = 10.f);
+    void clearAuxiliaryPoints(const QString& key);
     // Replaces this part's selectable node cloud without modifying the FEM mesh.
     void setPickNodes(int partId, const FemMesh& mesh, const QVector<int>& nodeIds = {});
     void setMeshScalars(const std::map<int, std::vector<double>>& values,
                         double minimum, double maximum, const QString& title);
     void clearMeshScalars();
     void setMotionSymbols(const QVector<MotionSymbol>& symbols);
+    void setAuxiliaryMotionSymbols(const QString& key, const QVector<MotionSymbol>& symbols);
+    void clearAuxiliaryMotionSymbols(const QString& key);
     PickResult pickAt(const QPointF& position) const;
     QPointF projectPoint(const std::array<double, 3>& position, int partId = -1) const;
     void fitAll();
@@ -95,6 +115,13 @@ public:
     void viewFront();
     void viewTop();
     void viewRight();
+    // Original display-menu controls use screen axes Sx/Sy/Sz. They never
+    // change the document's world coordinates or the active pick collector.
+    void rotateView(const QString& screenAxis, double degrees);
+    void panView(const QString& direction, double percent);
+    void zoomView(bool zoomIn, double factor);
+    void stepViewHistory(bool forward);
+    void setAutoRotation(const QString& screenAxis, bool enabled);
     bool glReady() const;
 
 signals:
@@ -127,7 +154,6 @@ private:
     bool uploadScene();
     bool uploadChangedMeshes();
     int pickPart(const QPointF& position) const;
-    void drawAxes();
     void drawCadPickFeedback();
     void drawPickOverlay();
     void drawScalarLegend();

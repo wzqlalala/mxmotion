@@ -11,6 +11,7 @@ class QPushButton;
 
 namespace MotionOcc {
 class CadDocument;
+class LegacyPickContext;
 
 // One selection session per property editor. CAD coordinates stay in the
 // original placed world frame, matching the original motion picker contract.
@@ -31,6 +32,7 @@ private:
     bool ownsSession() const;
     void record(const QString&, const QVector<PickResult>&);
     QPointer<OccViewport> m_viewport;
+    QPointer<LegacyPickContext> m_legacyContext;
     const CadDocument& m_cad;
     QJsonObject m_references;
     QPointer<QPushButton> m_button;

@@ -1,6 +1,10 @@
 #pragma once
 #pragma execution_character_set("utf-8")
 
+#ifdef MX_MOTION_OCC_COMPAT
+#include "picking/OccPickController.h"
+#else
+
 #include <QObject>
 #include <QString>
 #include <QColor>
@@ -41,3 +45,4 @@ namespace MechMainWindow
         QColor _color;
     };
 }
+#endif // MX_MOTION_OCC_COMPAT

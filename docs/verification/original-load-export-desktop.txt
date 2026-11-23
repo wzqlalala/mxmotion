@@ -1,0 +1,6 @@
+PASS actual project -> Netgen -> original queued Scenario solve -> original Result Export -> Qt file chooser CSV
+PASS 101 accepted frames, original source/end/components/scale/name, real global node 5, moving body pose and M_target = M_marker + (p_marker - p_target) x F
+PASS original feature page: 11 actual peak cases, selected joint/body, accepted times, initial-body axes and N/Nmm JSON
+PASS original synchronized page: 11 actual peak cases, selected joint/body, accepted times, initial-body axes and N/Nmm JSON
+PASS same CAD / Netgen mesh + original Static JSON import / solve: one accepted equilibrium frame; original CSV and BDF buttons export real N/Nmm support and picked-node moment
+PASS all three visible original load-export pages, actual engine bridge and styled save dialogs

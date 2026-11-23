@@ -5,15 +5,20 @@
 #include "mMotionLoadCaseGenerator.h"
 #include "mViewportModelManager.h"
 #include "mViewportModel.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mGeoEngineHandle.h"
 #include "mMeshData.h"
+#endif
 #include "mMechGlobalSignals.h"
 #include "mGlobalSignals.h"
 #include "mGetSetTypeTemplate.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mBrowserWindow.h"
 #include "mTreeView.h"
+#endif
 
 #include "mModelData.h"
+#ifndef MX_MOTION_OCC_COMPAT
 #include "mConnectorManager.h"
 #include "mConnectorDistributedCoupling.h"
 #include "mLoadBoundaryManager.h"
@@ -23,6 +28,7 @@
 #include "mCaseImplicitLinearStatic.h"
 #include "mMapRelationManager.h"
 #include "mMixSet.h"
+#endif
 
 #include <QComboBox>
 #include <QLineEdit>
@@ -167,6 +173,9 @@ namespace MechMainWindow
         m_bodies.clear(); m_joints.clear(); m_cases.clear();
         m_analysisBodyId = -1; m_analysisBodyName.clear();
         m_filePath.clear();
+#ifdef MX_MOTION_OCC_COMPAT
+        m_loadCaseJson={};
+#endif
 
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -248,6 +257,9 @@ namespace MechMainWindow
             return false;
         }
         m_filePath = path;
+#ifdef MX_MOTION_OCC_COMPAT
+        m_loadCaseJson=root;
+#endif
         return true;
     }
 
@@ -385,6 +397,14 @@ namespace MechMainWindow
             return false;
         }
 
+#ifdef MX_MOTION_OCC_COMPAT
+        if (!getCVM->generateMotionStaticCases) {
+            error=QStringLiteral("隐式静力模型生成尚未连接：此流程需要结构工况、载荷、RBE3、集合及几何面到网格的真实数据接口。当前没有创建任何静力工况。");
+            return false;
+        }
+        int nCases=0,nLoads=0,nRbe3=0;
+        if (!getCVM->generateMotionStaticCases(m_loadCaseJson,faceBindings,error,&nCases,&nLoads,&nRbe3)) return false;
+#else
         // 组装共用生成内核的输入（载荷为 JSON 原值：分析体初始姿态系最终值）
         QVector<mMotionLoadCaseGenerator::GenJoint> genJoints;
         for (auto it = faceBindings.begin(); it != faceBindings.end(); ++it) {
@@ -415,6 +435,7 @@ namespace MechMainWindow
         if (!mMotionLoadCaseGenerator::generate(genJoints, genCases, faceBindings, error,
                 &nCases, &nLoads, &nRbe3))
             return false;
+#endif
 
         mGlobalSignals::getInstance()->outputMessageSig(
             QStringLiteral("[多体载荷] 已生成 %1 个静力工况、%2 个载荷、%3 个 RBE3 耦合。")
