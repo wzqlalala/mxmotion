@@ -16,6 +16,8 @@ namespace MotionOcc {
 // Joint kinds are "revolute", "prismatic", "fixed"; drive kinds are "speed", "displacement".
 // Vectors are arrays of three numbers. Units and references follow RigidMotion.h.
 // nextPartId is greater than every part ID (including previously allocated IDs).
+// Limits: 128 MiB JSON, 32 MiB decoded BREP per part, 80 MiB decoded BREP total,
+// at most 20,000 parts and 1,024 UTF-16 code units per name.
 // Neither meshes, analysis results nor external geometry paths are stored.
 // A failed load changes neither output. Save atomically replaces the destination.
 bool saveRigidProject(const QString& path, const CadDocument& cad, const RigidModel& model, QString& error);

@@ -12,7 +12,7 @@
 namespace {
 using namespace MotionOcc;
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
-void near(double actual, double expected, const char* message)
+void expectNear(double actual, double expected, const char* message)
 {
     require(std::isfinite(actual) && std::abs(actual - expected) < 2e-4, message);
 }
@@ -72,26 +72,26 @@ int main(int argc, char** argv)
         }
         auto series = rigidCurveSeries(input, result, request(RigidCurveMetric::BodyPosition, 42));
         require(series.isValid() && series.times.size() == 4, "absolute position series missing");
-        near(series.values.front(), 100, "position was silently changed to displacement");
-        near(series.values.back(), 109, "body state was looked up by array position instead of ID");
+        expectNear(series.values.front(), 100, "position was silently changed to displacement");
+        expectNear(series.values.back(), 109, "body state was looked up by array position instead of ID");
         require(series.times == QVector<double>({0.25, 0.35, 0.8, 1.3}), "physical timestamps were replaced with frame indices");
         series = rigidCurveSeries(input, result, request(RigidCurveMetric::BodyDisplacement, 42, 3));
-        near(series.values.front(), 0, "initial displacement is not zero");
-        near(series.values.back(), 15, "displacement norm is not relative to initial COM");
+        expectNear(series.values.front(), 0, "initial displacement is not zero");
+        expectNear(series.values.back(), 15, "displacement norm is not relative to initial COM");
         series = rigidCurveSeries(input, result, request(RigidCurveMetric::BodyVelocity, 42, 3));
-        near(series.values.back(), 5, "velocity magnitude is wrong");
+        expectNear(series.values.back(), 5, "velocity magnitude is wrong");
         require(series.unit == QStringLiteral("mm/s"), "linear velocity unit is wrong");
         series = rigidCurveSeries(input, result, request(RigidCurveMetric::BodyAngularVelocity, 42, 2));
-        near(series.values.back(), 90, "angular velocity was converted twice");
+        expectNear(series.values.back(), 90, "angular velocity was converted twice");
         require(series.unit == QStringLiteral("°/s"), "angular velocity unit is wrong");
         series = rigidCurveSeries(input, result, request(RigidCurveMetric::BodyRotation, 42, 2));
-        for (int i = 0; i < 4; ++i) near(series.values[i], angles[i], "Euler curve was not unwrapped across 180 or 360 degrees");
+        for (int i = 0; i < 4; ++i) expectNear(series.values[i], angles[i], "Euler curve was not unwrapped across 180 or 360 degrees");
         require(!rigidCurveSeries(input, result, request(RigidCurveMetric::BodyRotation, 42, 3)).isValid(), "Euler magnitude was accepted as physical angle");
         series = rigidCurveSeries(input, result, request(RigidCurveMetric::JointCoordinate, 9));
-        near(series.values.back(), 270, "continuous joint coordinate was confused with global node position");
+        expectNear(series.values.back(), 270, "continuous joint coordinate was confused with global node position");
         require(series.quantity.contains(QStringLiteral("相对转角")) && series.unit == QStringLiteral("°"), "revolute coordinate mislabeled");
         series = rigidCurveSeries(input, result, request(RigidCurveMetric::JointRate, 20));
-        near(series.values.back(), -2, "slider rate wrong");
+        expectNear(series.values.back(), -2, "slider rate wrong");
         require(series.unit == QStringLiteral("mm/s"), "slider units confused with revolute units");
         auto invalid = result;
         invalid.frames[2].bodies.erase(invalid.frames[2].bodies.begin() + 1);
@@ -125,22 +125,22 @@ int main(int argc, char** argv)
             query.variable = QStringLiteral("ReactionForce");
             series = rigidCurveSeries(nativeInput, native, query);
             require(series.isValid() && series.unit == QStringLiteral("N"), "six-component native drive result missing");
-            near(series.values.front(), 6, "native component six did not read its frame-major column");
-            near(series.values.back(), 24, "native object ID zero was confused with an array index");
+            expectNear(series.values.front(), 6, "native component six did not read its frame-major column");
+            expectNear(series.values.back(), 24, "native object ID zero was confused with an array index");
             require(series.times == QVector<double>({0.25,0.35,0.8,1.3}), "native result timestamps changed");
             query.sourceType = QStringLiteral("sensors");
             query.variable = QStringLiteral("SensorValue");
             query.component = -1;
             series = rigidCurveSeries(nativeInput, native, query);
             require(series.isValid(), "three-component native magnitude rejected");
-            near(series.values.front(), 5, "native magnitude did not use selected stable source ID");
-            near(series.values.back(), 13, "native magnitude was not computed for each physical frame");
+            expectNear(series.values.front(), 5, "native magnitude did not use selected stable source ID");
+            expectNear(series.values.back(), 13, "native magnitude was not computed for each physical frame");
             query.sourceType = QStringLiteral("controllers");
             query.variable = QStringLiteral("PidError");
             query.component = 0;
             series = rigidCurveSeries(nativeInput, native, query);
             require(series.isValid() && series.unit.isEmpty(), "dimensionless native scalar was rejected or relabeled");
-            near(series.values.back(), -1, "signed controller value was changed");
+            expectNear(series.values.back(), -1, "signed controller value was changed");
             auto broken = native;
             broken.channels.push_back(broken.channels.back());
             require(!rigidCurveSeries(nativeInput, broken, query).isValid(), "duplicate native result key was accepted");
@@ -170,14 +170,14 @@ int main(int argc, char** argv)
             query.component = 17;
             series = rigidCurveSeries(nativeInput, native, query);
             require(series.isValid(), "modal result was incorrectly limited to six components");
-            near(series.values.front(), 9, "modal component index was truncated");
+            expectNear(series.values.front(), 9, "modal component index was truncated");
             native.channels.push_back({"bodies",0,"Rotation","°",3,{0,0,170, 0,0,-170, 0,0,-90, 0,0,10}});
             query.sourceType = QStringLiteral("bodies");
             query.variable = QStringLiteral("Rotation");
             query.component = 2;
             series = rigidCurveSeries(nativeInput, native, query);
             require(series.isValid(), "native Euler curve missing");
-            for (int i = 0; i < 4; ++i) near(series.values[i], angles[i], "native Euler curve did not preserve original continuous-angle display");
+            for (int i = 0; i < 4; ++i) expectNear(series.values[i], angles[i], "native Euler curve did not preserve original continuous-angle display");
             query.component = -1;
             require(!rigidCurveSeries(nativeInput, native, query).isValid(), "native Euler magnitude was accepted as a physical angle");
         }

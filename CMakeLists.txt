@@ -297,15 +297,21 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME MotionOcc.Plot COMMAND MotionOccPlotSmoke)
         set_tests_properties(MotionOcc.Plot PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-        if(WIN32)
-            # windeployqt may only deploy qwindows for the desktop executable;
-            # the headless widget regression needs the matching SDK's qoffscreen.
-            get_target_property(qmake_path Qt5::qmake IMPORTED_LOCATION)
-            execute_process(COMMAND "${qmake_path}" -query QT_INSTALL_PLUGINS
-                OUTPUT_VARIABLE qt_plugins OUTPUT_STRIP_TRAILING_WHITESPACE
-                COMMAND_ERROR_IS_FATAL ANY)
-            set_property(TEST MotionOcc.Plot APPEND PROPERTY ENVIRONMENT
-                "QT_QPA_PLATFORM_PLUGIN_PATH=${qt_plugins}/platforms")
-        endif()
     endif()
+endif()
+
+# Windows offscreen tests otherwise start without any font directory, which
+# breaks text metrics and fails width/layout assertions that pass on Linux;
+# qoffscreen is also not deployed next to the desktop executable.
+if(WIN32 AND BUILD_TESTING AND TARGET Qt5::qmake)
+    get_target_property(qmake_path Qt5::qmake IMPORTED_LOCATION)
+    execute_process(COMMAND "${qmake_path}" -query QT_INSTALL_PLUGINS
+        OUTPUT_VARIABLE qt_plugins OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY)
+    foreach(mx_offscreen_test IN ITEMS MotionOcc.Plot MotionOcc.FunctionEditor)
+        set_property(TEST ${mx_offscreen_test} APPEND PROPERTY ENVIRONMENT
+            "QT_QPA_PLATFORM_PLUGIN_PATH=${qt_plugins}/platforms"
+            "QT_QPA_FONTDIR=C:/Windows/Fonts")
+    endforeach()
+
 endif()

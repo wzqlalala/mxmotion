@@ -20,7 +20,7 @@
 using namespace MotionOcc;
 namespace {
 void require(bool ok,const QString& message){if(!ok)throw std::runtime_error(message.toStdString());}
-void near(double actual,double expected,double tolerance,const QString& message)
+void expectNear(double actual,double expected,double tolerance,const QString& message)
 {
     require(std::isfinite(actual)&&std::abs(actual-expected)<=tolerance,
         QStringLiteral("%1: %2 != %3 (tol %4)").arg(message).arg(actual,0,'g',16).arg(expected,0,'g',16).arg(tolerance));
@@ -77,13 +77,13 @@ void staticAxialAndPortIdentity()
     require(!flex.reducedDynamics&&flex.interfaceCount==2&&flex.modeCount==0,"full FEM incorrectly advertised as reduced CMS");
     require(flex.modalCoordinates.front().empty(),"full FEM fabricated modal coordinate history");
     require(flex.modalBasis.frequenciesHz.size()==3&&flex.modalBasis.attachmentGroups.size()==2,"missing real clamped inspection basis");
-    near(flex.interfacePoses[0][7]-flex.initialInterfacePoses[7],.04,2e-6,"independent axial compliance F L / E A");
+    expectNear(flex.interfacePoses[0][7]-flex.initialInterfacePoses[7],.04,2e-6,"independent axial compliance F L / E A");
     for(std::size_t i=0;i<flex.referenceNodes.size()/3;++i){
         const double x=flex.referenceNodes[3*i];
-        near(flex.nodePositions[0][3*i]-x,.001*x,3e-6,"tetrahedral axial patch displacement");
+        expectNear(flex.nodePositions[0][3*i]-x,.001*x,3e-6,"tetrahedral axial patch displacement");
     }
     std::vector<double> elastic;QString error;require(flexNodeScalars(flex,0,FlexContourKind::ElasticDisplacement,elastic,error),error);
-    near(*std::max_element(elastic.begin(),elastic.end()),.04,3e-6,"full FEM elastic contour lost static preload");
+    expectNear(*std::max_element(elastic.begin(),elastic.end()),.04,3e-6,"full FEM elastic contour lost static preload");
     qInfo()<<"independent static beam: tip extension"<<flex.interfacePoses[0][7]-flex.initialInterfacePoses[7]<<"mm, analytic 0.04 mm";
 }
 void gravityMassOnlyOnce()
@@ -96,7 +96,7 @@ void gravityMassOnlyOnce()
         reaction+=channel.values[1];++found;
     }
     require(found==2,"missing independent support reactions");
-    near(reaction,-39.24,2e-5,"FEM gravity mass must be 4 kg once, not original 41 kg or duplicated ports");
+    expectNear(reaction,-39.24,2e-5,"FEM gravity mass must be 4 kg once, not original 41 kg or duplicated ports");
     qInfo()<<"independent gravity: summed support-side reaction"<<reaction<<"N, mesh weight -39.24 N";
 }
 void preloadedDynamicsKeepsStrain()
@@ -106,7 +106,7 @@ void preloadedDynamicsKeepsStrain()
     data["scenarios"]=QJsonArray{scenario};fixture.document.root["motionData"]=data;
     const auto result=solve(prepare(fixture));require(result.frames.size()==21,"preloaded FEM time axis");
     const auto& flex=result.flexBodies.front();
-    for(const auto& poses:flex.interfacePoses)near(poses[7]-flex.initialInterfacePoses[7],.04,2e-5,"preload strain reset or initial transient impulse");
+    for(const auto& poses:flex.interfacePoses)expectNear(poses[7]-flex.initialInterfacePoses[7],.04,2e-5,"preload strain reset or initial transient impulse");
 }
 void independentPortTransmitsTorque()
 {
@@ -117,32 +117,32 @@ void independentPortTransmitsTorque()
     const auto result=solve(prepare(fixture));const auto& flex=result.flexBodies.front();const auto& pose=flex.interfacePoses[0];
     const double angle=2*std::atan2(pose[11],pose[10]);
     require(std::isfinite(angle)&&angle>1e-8&&angle<1e-3,"independent torque port did not develop a small positive relative rotation");
-    near(pose[4],0,1e-10,"root port rotated under tip torque");
+    expectNear(pose[4],0,1e-10,"root port rotated under tip torque");
     double total=0;int reactions=0;
     for(const auto& channel:result.channels)if(channel.sourceType=="joints"&&channel.variable=="ReactionTorque"){
         total+=channel.values[0];++reactions;
     }
     require(reactions==2,"missing actual torque reactions at independent ports");
-    near(total,.1,2e-5,"root/support torque equilibrium at independently rotating port");
+    expectNear(total,.1,2e-5,"root/support torque equilibrium at independently rotating port");
     const std::size_t corner=flex.referenceNodes.size()/3-1;
     require(flex.nodePositions[0][3*corner+1]<flex.referenceNodes[3*corner+1]-1e-8
         &&flex.nodePositions[0][3*corner+2]>flex.referenceNodes[3*corner+2]+1e-8,"actual tip patch did not twist with its independent port");
     const motion::MotionQuaternion<> rotation(pose[10],pose[11],pose[12],pose[13]);
     const auto expected=motion::MotionVector<>(pose[7],pose[8],pose[9])+rotation.Rotate(motion::MotionVector<>(0,5,5));
-    for(int d=0;d<3;++d)near(flex.nodePositions[0][3*corner+d],expected[d],2e-8,"full FEM tip patch broke its real rotational weld");
+    for(int d=0;d<3;++d)expectNear(flex.nodePositions[0][3*corner+d],expected[d],2e-8,"full FEM tip patch broke its real rotational weld");
     qInfo()<<"independent 0.1 Nmm torque: relative tip rotation"<<angle<<"rad, support-side torque"<<total<<"Nmm";
 }
 void noInternalModesStillElastic()
 {
     Fixture fixture;makeBeam(fixture,1);const auto result=solve(prepare(fixture));
     const auto& flex=result.flexBodies.front();require(flex.modalBasis.frequenciesHz.empty(),"fully attached coarse mesh invented internal modes");
-    near(flex.interfacePoses[0][7]-flex.initialInterfacePoses[7],.04,2e-6,"zero internal modes must not rigidify independent boundaries");
+    expectNear(flex.interfacePoses[0][7]-flex.initialInterfacePoses[7],.04,2e-6,"zero internal modes must not rigidify independent boundaries");
 }
 void sparseStaticAndEigenPaths()
 {
     Fixture staticFixture;makeBeam(staticFixture,24);
     const auto result=solve(prepare(staticFixture));const auto& flex=result.flexBodies.front();
-    near(flex.interfacePoses[0][7]-flex.initialInterfacePoses[7],.04,3e-6,"sparse FEM stiffness equilibrium F L / E A");
+    expectNear(flex.interfacePoses[0][7]-flex.initialInterfacePoses[7],.04,3e-6,"sparse FEM stiffness equilibrium F L / E A");
     Fixture modesFixture;makeBeam(modesFixture,103);const auto input=prepare(modesFixture);
     RigidFlexResult modes;QString error;const auto status=inspectNativeFlexModes(input,0,modes,error);
     require(status==SolveStatus::Completed,error);
@@ -173,7 +173,7 @@ void rigidRotationObjectivity()
     auto runtime=buildNativeFlex(system,input,{});require(runtime.size()==1&&!runtime[0].reducedDynamics,"full FEM runtime missing");
     auto& assembly=*runtime[0].result.assembly;const motion::MotionQuaternion<> rotation=motion::Q_from_AngAxis(1.2,motion::MotionVector<>(1,2,3).GetNormalized());
     const motion::MotionVector<> translation(7,-3,11);
-    for(const auto& body:runtime[0].result.interface_bodies){near(body->GetMass(),0,0,"port retained duplicate rigid mass");body->SetPos(translation+rotation.Rotate(body->GetPos()));body->SetRot(rotation);}
+    for(const auto& body:runtime[0].result.interface_bodies){expectNear(body->GetMass(),0,0,"port retained duplicate rigid mass");body->SetPos(translation+rotation.Rotate(body->GetPos()));body->SetRot(rotation);}
     double maximumForce=0,mass=0;
     for(const auto& mesh:assembly.Get_internal_meshlist()){
         for(const auto& node:mesh->GetNodes()){const auto p=std::dynamic_pointer_cast<motion::fea::MotionNodeFEAxyz>(node);p->SetPos(translation+rotation.Rotate(p->GetPos()));}
@@ -184,7 +184,7 @@ void rigidRotationObjectivity()
             maximumForce=std::max(maximumForce,force.cwiseAbs().maxCoeff());
         }
     }
-    near(mass,4.0,1e-12,"actual finite element mass");
+    expectNear(mass,4.0,1e-12,"actual finite element mass");
     require(maximumForce<1e-6,QStringLiteral("pure 1.2 rad rigid rotation generated elastic force %1 mN").arg(maximumForce));
     captureNativeFlex(runtime,0.0);require(runtime[0].modalCoordinates[0].empty(),"full FEM capture invented modal state");
     qInfo()<<"full FEM pure rigid rotation: max internal force"<<maximumForce<<"mN";

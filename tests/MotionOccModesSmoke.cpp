@@ -14,7 +14,7 @@
 using namespace MotionOcc;
 namespace {
 void require(bool yes,const QString& reason){if(!yes)throw std::runtime_error(reason.toStdString());}
-void near(double actual,double expected,double tolerance,const QString& reason){require(std::isfinite(actual)&&std::abs(actual-expected)<=tolerance,
+void expectNear(double actual,double expected,double tolerance,const QString& reason){require(std::isfinite(actual)&&std::abs(actual-expected)<=tolerance,
     QStringLiteral("%1: %2 vs %3").arg(reason).arg(actual,0,'g',17).arg(expected,0,'g',17));}
 QJsonObject xyz(double x,double y,double z){return {{"x",x},{"y",y},{"z",z}};}
 
@@ -30,7 +30,11 @@ struct Fixture {
             {"tetrahedra",QJsonArray{QJsonArray{0,1,3,4},QJsonArray{1,2,3,6},QJsonArray{1,3,4,6},QJsonArray{1,4,5,6},QJsonArray{3,4,6,7}}}};
         const QJsonObject flex{{"id",0},{"name","real basis"},{"targetBodyId",0},{"enabled",true},{"modeCount",4},
             {"dampingType",0},{"material",QJsonObject{{"youngModulus",100},{"poissonRatio",.3},{"density",.001}}},
-            {"mesh",mesh},{"attachGroups",QJsonArray{QJsonArray{0,3,4,7}}}};
+            // Wrap the inner array in an explicit QJsonValue: a single same-type
+            // element in QJsonArray{...} list-initializes via the copy constructor
+            // on MSVC (flattening [[0,3,4,7]] to [0,3,4,7]) but via the
+            // initializer_list constructor on GCC, which nests as intended.
+            {"mesh",mesh},{"attachGroups",QJsonArray{QJsonValue(QJsonArray{0,3,4,7})}}};
         QJsonObject data;
         data.insert("bodies",QJsonArray{body});data.insert("autoFlexBodies",QJsonArray{flex});
         data.insert("scenarios",QJsonArray{QJsonObject{{"id",0},{"endTime",1},{"stepSize",.01},{"gravity",xyz(0,0,0)}}});
@@ -54,14 +58,14 @@ void physicalModes(){
         require(frequencies[mode]>0,"clamped elastic mode has zero frequency");
         if(mode)require(frequencies[mode]>=frequencies[mode-1],"frequencies not ordered");
         FlexModeSample sample;require(sampleFlexMode(baseline,int(mode),.2,1,sample,error),error);
-        near(*std::max_element(sample.magnitudes.begin(),sample.magnitudes.end()),1,1e-12,"shape not normalized by vector norm");
-        for(int node:{0,3,4,7})near(sample.magnitudes[node],0,1e-8,"clamped attachment moved in fixed-interface mode");
+        expectNear(*std::max_element(sample.magnitudes.begin(),sample.magnitudes.end()),1,1e-12,"shape not normalized by vector norm");
+        for(int node:{0,3,4,7})expectNear(sample.magnitudes[node],0,1e-8,"clamped attachment moved in fixed-interface mode");
     }
     auto material=fixture.document.entity("autoFlexBodies",0).value("material").toObject();
     material["youngModulus"]=400;fixture.flexField("material",material);const auto stiff=fixture.inspect();
-    for(std::size_t mode=0;mode<frequencies.size();++mode)near(stiff.modalBasis.frequenciesHz[mode]/frequencies[mode],2,2e-7,"f must scale with sqrt(E)");
+    for(std::size_t mode=0;mode<frequencies.size();++mode)expectNear(stiff.modalBasis.frequenciesHz[mode]/frequencies[mode],2,2e-7,"f must scale with sqrt(E)");
     material["youngModulus"]=100;material["density"]=.004;fixture.flexField("material",material);const auto heavy=fixture.inspect();
-    for(std::size_t mode=0;mode<frequencies.size();++mode)near(heavy.modalBasis.frequenciesHz[mode]/frequencies[mode],.5,2e-7,"f must scale with inverse sqrt(rho)");
+    for(std::size_t mode=0;mode<frequencies.size();++mode)expectNear(heavy.modalBasis.frequenciesHz[mode]/frequencies[mode],.5,2e-7,"f must scale with inverse sqrt(rho)");
     material["density"]=.001;fixture.flexField("material",material);
     const double cutoff=(frequencies[1]+frequencies[2])*.5;fixture.flexField("freqCutoff",cutoff);
     const auto cut=fixture.inspect();require(cut.modalBasis.frequenciesHz.size()>=1&&cut.modalBasis.frequenciesHz.size()<4,"cutoff did not remove modes");
@@ -80,10 +84,10 @@ void displayAndExport(){
     require(sampleFlexMode(result,0,2,1,positive,error)&&sampleFlexMode(result,0,2,-1,negative,error)
         &&sampleFlexMode(result,0,2,0,zero,error),error);
     for(std::size_t row=0;row<result.referenceNodes.size();++row){
-        near((positive.positions[row]+negative.positions[row])*.5,result.referenceNodes[row],1e-12,"signed mode phase");
-        near(zero.positions[row],result.referenceNodes[row],0,"zero phase changed geometry");
+        expectNear((positive.positions[row]+negative.positions[row])*.5,result.referenceNodes[row],1e-12,"signed mode phase");
+        expectNear(zero.positions[row],result.referenceNodes[row],0,"zero phase changed geometry");
     }
-    for(double value:zero.magnitudes)near(value,0,0,"zero phase retained end-state color");
+    for(double value:zero.magnitudes)expectNear(value,0,0,"zero phase retained end-state color");
     require(result.modalBasis.shapes==raw,"preview changed solver basis");
     auto malformed=result;malformed.modalBasis.shapes.pop_back();const auto preserved=positive.positions;
     require(!sampleFlexMode(malformed,0,1,1,positive,error)&&positive.positions==preserved,"invalid basis overwrote display");
@@ -105,14 +109,14 @@ void fullFemContour(){
     result.nodePositions={{20,-5,3,20,5,3,19,5,3},{20,-5,3,18,5,3,17,5,3}};
     QString error;std::vector<double> values;
     require(flexNodeScalars(result,0,FlexContourKind::ElasticDisplacement,values,error),error);
-    for(double value:values)near(value,0,1e-12,"full FEM rigid motion leaked into elastic contour");
+    for(double value:values)expectNear(value,0,1e-12,"full FEM rigid motion leaked into elastic contour");
     require(flexNodeScalarsAt(result,0,1,.5,FlexContourKind::ElasticDisplacement,values,error),error);
-    near(values[0],0,1e-12,"first interface rigid motion");near(values[1],1,1e-12,"independent second interface displacement omitted");
+    expectNear(values[0],0,1e-12,"first interface rigid motion");expectNear(values[1],1,1e-12,"independent second interface displacement omitted");
     // The first stored frame may already be preloaded: referenceInterfacePoses
     // remain the undeformed material frame, so the load deformation stays.
     result.nodePositions.erase(result.nodePositions.begin());result.interfacePoses.erase(result.interfacePoses.begin());
     require(flexNodeScalars(result,0,FlexContourKind::ElasticDisplacement,values,error),error);
-    near(values[1],2,1e-12,"preload was treated as new stress-free geometry");
+    expectNear(values[1],2,1e-12,"preload was treated as new stress-free geometry");
 }
 }
 

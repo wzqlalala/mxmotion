@@ -39,7 +39,7 @@
 using namespace MotionOcc;
 namespace {
 void require(bool value,const QString& message){if(!value)throw std::runtime_error(message.toStdString());}
-void near(double value,double expected,double tolerance,const QString& what){require(std::isfinite(value)&&std::abs(value-expected)<=tolerance,QStringLiteral("%1: got %2 expected %3 ± %4").arg(what).arg(value,0,'g',16).arg(expected,0,'g',16).arg(tolerance));}
+void expectNear(double value,double expected,double tolerance,const QString& what){require(std::isfinite(value)&&std::abs(value-expected)<=tolerance,QStringLiteral("%1: got %2 expected %3 ± %4").arg(what).arg(value,0,'g',16).arg(expected,0,'g',16).arg(tolerance));}
 QJsonObject xyz(double x,double y,double z){return { {"x",x},{"y",y},{"z",z} };}
 QJsonObject body(int id,int part=0,bool fixed=false,double x=5,double y=5,double z=5){
     return {{"id",id},{"name",QString("body%1").arg(id)},{"geoEntityIds",part>0?QJsonArray{part}:QJsonArray{}},{"isFixed",fixed},{"mass",2.0},{"isCustomMassProps",true},{"centerOfMass",xyz(x,y,z)},{"inertia",QJsonArray{100.0/3,100.0/3,100.0/3,0,0,0}},{"initialVelocity",xyz(0,0,0)},{"initialAngularVelocity",xyz(0,0,0)}};
@@ -58,7 +58,7 @@ struct Fixture {
         doc.bodyPartBindings.insert(0,{part});
     }
     RigidResult solve(){NativeMotionInput input;QString error;const bool prepared=prepareNativeMotion(cad,doc,0,input,error);require(prepared,"prepare: "+error);RigidResult result;const auto status=solveNativeMotion(input,result,error);require(status==SolveStatus::Completed,"solve: "+error);
-        require(result.scenarioId==0&&result.frames.size()>=2,"native zero IDs lost");near(result.frames.front().seconds,0,1e-12,"initial time");near(result.frames.back().seconds,input.scenario.duration,1e-10,"terminal time");
+        require(result.scenarioId==0&&result.frames.size()>=2,"native zero IDs lost");expectNear(result.frames.front().seconds,0,1e-12,"initial time");expectNear(result.frames.back().seconds,input.scenario.duration,1e-10,"terminal time");
         for(const auto& channel:result.channels)require(channel.values.size()==result.frames.size()*channel.components,"unaligned channel");return result;}
     void scenario(double duration,double step){auto s=doc.entity("scenarios",0);s["endTime"]=duration;s["stepSize"]=step;collection(doc,"scenarios",{s});}
     int fixedPart(double dx,double dy,double dz){
@@ -82,8 +82,8 @@ void pinchedPlanarTessellation(){
         const auto topology=face.TShape();const auto orientation=face.Orientation();const auto location=face.Location();
         GProp_GProps before,after;BRepGProp::SurfaceProperties(face,before);
         QString error;require(ensureOccFaceTriangulation(face,.05,error),error);
-        BRepGProp::SurfaceProperties(face,after);near(after.Mass(),before.Mass(),1e-10,"tessellation changed exact analytic area");
-        near(after.Mass(),1000*M_PI,1e-8,"tangent ring area");
+        BRepGProp::SurfaceProperties(face,after);expectNear(after.Mass(),before.Mass(),1e-10,"tessellation changed exact analytic area");
+        expectNear(after.Mass(),1000*M_PI,1e-8,"tangent ring area");
         require(face.TShape()==topology&&face.Orientation()==orientation&&face.Location()==location,"tessellation replaced original topology or placement");
         TopLoc_Location meshLocation;const auto mesh=BRep_Tool::Triangulation(face,meshLocation);
         require(!mesh.IsNull()&&mesh->NbTriangles()>100,"pinched face triangles missing");
@@ -95,7 +95,7 @@ void pinchedPlanarTessellation(){
             require(cross.Dot(gp_Vec(normal))>=-1e-12,"merged triangulation has reversed normals");
             auto centroid=gp_Pnt((pa.X()+pb.X()+pc.X())/3,(pa.Y()+pb.Y()+pc.Y())/3,(pa.Z()+pb.Z()+pc.Z())/3);
             if(mode)centroid.Transform(pose.Inverted());
-            near(centroid.Z(),0,1e-10,"located mesh is off its exact support");
+            expectNear(centroid.Z(),0,1e-10,"located mesh is off its exact support");
             require(std::hypot(centroid.X(),centroid.Y()+8)>=58.5-.05,"tessellation filled the inner hole");
             require(std::hypot(centroid.X(),centroid.Y())<=66.5+.05,"tessellation expanded the outer boundary");
         }
@@ -106,14 +106,14 @@ void drivesAndSensors(){
     Fixture f;collection(f.doc,"joints",{joint("Revolute")});collection(f.doc,"drives",{drive()});
     collection(f.doc,"markers",{QJsonObject{{"id",0},{"name","point"},{"bodyId",0},{"localPosition",xyz(7,5,5)},{"localRotation",QJsonObject{{"w",1},{"x",0},{"y",0},{"z",0}}}}});
     collection(f.doc,"sensors",{QJsonObject{{"id",0},{"name","omega"},{"sensorType","BodyVelocity"},{"targetBodyId",0},{"variable","AngularVelocity"},{"componentMode","Z"}},QJsonObject{{"id",1},{"name","drive"},{"sensorType","DriveActuation"},{"targetDriveId",0},{"variable","ImposedValue"}}});
-    auto result=f.solve();const auto& omega=channel(result,"bodies",0,"AngularVelocity");near(omega.values.back(),120,1e-4,"native degrees/s");
-    near(channel(result,"drives",0,"ImposedValue").values.back(),2.4,.01,"speed motor integrated coordinate");
-    near(channel(result,"sensors",1,"SensorValue").values.back(),2.4,.01,"drive sensor degrees");
-    const auto& marker=channel(result,"markers",0,"Position");near(marker.values[0],7,1e-10,"marker initial-global x");
-    near(marker.values[marker.values.size()-3],5+2*std::cos(2.4*M_PI/180),1e-4,"marker rotates around COM");
+    auto result=f.solve();const auto& omega=channel(result,"bodies",0,"AngularVelocity");expectNear(omega.values.back(),120,1e-4,"native degrees/s");
+    expectNear(channel(result,"drives",0,"ImposedValue").values.back(),2.4,.01,"speed motor integrated coordinate");
+    expectNear(channel(result,"sensors",1,"SensorValue").values.back(),2.4,.01,"drive sensor degrees");
+    const auto& marker=channel(result,"markers",0,"Position");expectNear(marker.values[0],7,1e-10,"marker initial-global x");
+    expectNear(marker.values[marker.values.size()-3],5+2*std::cos(2.4*M_PI/180),1e-4,"marker rotates around COM");
     auto d=drive("Position","unused(invalid)");d["driveTableX"]=QJsonArray{0,.02};d["driveTableY"]=QJsonArray{0,5};collection(f.doc,"drives",{d});result=f.solve();
-    near(channel(result,"drives",0,"ImposedValue").values.back(),5,1e-8,"table takes precedence over inactive formula");
-    d=drive("Position","30*t*t");collection(f.doc,"drives",{d});result=f.solve();near(channel(result,"drives",0,"ImposedValue").values.back(),.012,1e-9,"expression position drive");
+    expectNear(channel(result,"drives",0,"ImposedValue").values.back(),5,1e-8,"table takes precedence over inactive formula");
+    d=drive("Position","30*t*t");collection(f.doc,"drives",{d});result=f.solve();expectNear(channel(result,"drives",0,"ImposedValue").values.back(),.012,1e-9,"expression position drive");
 }
 
 void exactAcceptedTimeline(){
@@ -122,15 +122,15 @@ void exactAcceptedTimeline(){
     const auto result=f.solve();
     require(result.frames.size()==15001,"integer-duration solve added a fictitious tiny final dynamics step");
     for(std::size_t i=0;i<result.frames.size();++i){
-        near(result.frames[i].seconds,i*.001,0,"accepted time grid");
-        if(i)near(result.frames[i].seconds-result.frames[i-1].seconds,.001,2e-15,"uniform accepted interval");
+        expectNear(result.frames[i].seconds,i*.001,0,"accepted time grid");
+        if(i)expectNear(result.frames[i].seconds-result.frames[i-1].seconds,.001,2e-15,"uniform accepted interval");
     }
-    near(result.frames.back().bodies[0].positionMm[0],20.0,2e-10,"long constant-velocity motion");
-    for(double value:channel(result,"bodies",0,"Acceleration").values)near(value,0,1e-8,"no terminal acceleration spike");
+    expectNear(result.frames.back().bodies[0].positionMm[0],20.0,2e-10,"long constant-velocity motion");
+    for(double value:channel(result,"bodies",0,"Acceleration").values)expectNear(value,0,1e-8,"no terminal acceleration spike");
     f.scenario(.0035,.001);const auto shortened=f.solve();
     require(shortened.frames.size()==5,"physical shortened final step lost");
-    near(shortened.frames.back().seconds,.0035,0,"fractional end time");
-    near(shortened.frames.back().seconds-shortened.frames[3].seconds,.0005,1e-16,"physical shortened interval");
+    expectNear(shortened.frames.back().seconds,.0035,0,"fractional end time");
+    expectNear(shortened.frames.back().seconds-shortened.frames[3].seconds,.0005,1e-16,"physical shortened interval");
 }
 
 void inertiaConventionsWithCadEvidence(){
@@ -152,20 +152,20 @@ void inertiaConventionsWithCadEvidence(){
     auto b=body(0,bound[0],false,center.X(),center.Y(),center.Z());b["mass"]=3.0;b["geoEntityIds"]=QJsonArray{bound[0],bound[1]};b["inertia"]=products;
     collection(f.doc,"bodies",{b});f.doc.bodyPartBindings[0]=bound;
     NativeMotionInput input;require(prepareNativeMotion(f.cad,f.doc,0,input,error),error);
-    for(int i=0;i<6;++i)near(input.bodies[0].properties.inertiaKgM2[i],tensor[i]*1e-6,1e-13,"CAD-proven products conversion");
+    for(int i=0;i<6;++i)expectNear(input.bodies[0].properties.inertiaKgM2[i],tensor[i]*1e-6,1e-13,"CAD-proven products conversion");
     require(input.document.root==f.doc.root,"inertia convention recovery rewrote source JSON");
     collection(f.doc,"vectorForces",{QJsonObject{{"id",0},{"name","tensor probe"},{"loadType","Torque"},{"bodyId",0},{"actionPoint",xyz(12,-7,5)},{"direction",xyz(1,0,0)},{"magnitude",.001},{"magnitudeMode","Constant"},{"directionMode","GlobalFixed"}}});
     auto result=f.solve();require(!result.diagnostics.empty()&&result.diagnostics.join('\n').contains("CAD"),"automatic inertia recovery omitted its evidence diagnostic");
     const Eigen::Vector3d angularAcceleration=expected.inverse()*Eigen::Vector3d(1,0,0);
-    const auto& actual=channel(result,"bodies",0,"AngularAcceleration");for(int i=0;i<3;++i)near(actual.values[i],angularAcceleration[i]*57.29577951308232,1e-5,"full non-diagonal torque response");
+    const auto& actual=channel(result,"bodies",0,"AngularAcceleration");for(int i=0;i<3;++i)expectNear(actual.values[i],angularAcceleration[i]*57.29577951308232,1e-5,"full non-diagonal torque response");
     b["inertiaConvention"]="tensor";collection(f.doc,"bodies",{b});require(prepareNativeMotion(f.cad,f.doc,0,input,error),error);
-    for(int i=0;i<6;++i)near(input.bodies[0].properties.inertiaKgM2[i],products[i].toDouble()*1e-6,1e-13,"explicit tensor convention changed");
+    for(int i=0;i<6;++i)expectNear(input.bodies[0].properties.inertiaKgM2[i],products[i].toDouble()*1e-6,1e-13,"explicit tensor convention changed");
     b["inertiaConvention"]="products";b["centerOfMass"]=xyz(13,-7,5);collection(f.doc,"bodies",{b});require(prepareNativeMotion(f.cad,f.doc,0,input,error),error);
-    for(int i=0;i<6;++i)near(input.bodies[0].properties.inertiaKgM2[i],tensor[i]*1e-6,1e-13,"explicit products convention ignored");
+    for(int i=0;i<6;++i)expectNear(input.bodies[0].properties.inertiaKgM2[i],tensor[i]*1e-6,1e-13,"explicit products convention ignored");
     b["inertiaConvention"]="auto";collection(f.doc,"bodies",{b});require(prepareNativeMotion(f.cad,f.doc,0,input,error),error);
-    for(int i=0;i<6;++i)near(input.bodies[0].properties.inertiaKgM2[i],products[i].toDouble()*1e-6,1e-13,"auto flipped products without matching COM evidence");
+    for(int i=0;i<6;++i)expectNear(input.bodies[0].properties.inertiaKgM2[i],products[i].toDouble()*1e-6,1e-13,"auto flipped products without matching COM evidence");
     b["centerOfMass"]=xyz(12,-7,5);b["inertia"]=matrix;collection(f.doc,"bodies",{b});require(prepareNativeMotion(f.cad,f.doc,0,input,error),error);
-    for(int i=0;i<6;++i)near(input.bodies[0].properties.inertiaKgM2[i],tensor[i]*1e-6,1e-13,"already-correct auto tensor changed");
+    for(int i=0;i<6;++i)expectNear(input.bodies[0].properties.inertiaKgM2[i],tensor[i]*1e-6,1e-13,"already-correct auto tensor changed");
     // This positive-definite matrix fails the physical inertia triangle test.
     // Flipping signs would make it physical, but unrelated CAD is no proof that
     // its author used products rather than a different custom mass distribution.
@@ -178,7 +178,7 @@ void inertiaConventionsWithCadEvidence(){
     declared.root["generatorNotes"]=QJsonObject{{"coordinateAndInertiaConvention",QJsonObject{{"inertia",QStringLiteral("kg*mm^2: [ Ixx, Iyy, Izz, -CAD_tensor_xy, -CAD_tensor_xz, -CAD_tensor_yz ]")}}}};
     const auto unchanged=declared.root;
     require(prepareNativeMotion(noCad,declared,0,input,error),error);
-    for(int i=0;i<6;++i)near(input.bodies[0].properties.inertiaKgM2[i],b.value("inertia").toArray()[i].toDouble()*(i<3?1e-6:-1e-6),1e-15,"declared products convention without CAD");
+    for(int i=0;i<6;++i)expectNear(input.bodies[0].properties.inertiaKgM2[i],b.value("inertia").toArray()[i].toDouble()*(i<3?1e-6:-1e-6),1e-15,"declared products convention without CAD");
     require(input.document.root==unchanged,"source convention declaration or numbers were rewritten");
     RigidResult declaredResult;require(solveNativeMotion(input,declaredResult,error)==SolveStatus::Completed,error);
     require(declaredResult.diagnostics.join('\n').contains("generatorNotes"),"declared convention provenance missing from diagnostics");
@@ -239,22 +239,22 @@ void jointFamilies(){
     for(const QString& type:QStringList{"Revolute","Translational","Cylindrical","Spherical","Fixed","Universal","Hooke","PointPlane","Parallel","Perpendicular","Direction","ConstantVelocity","Screw","Planar","PointLine"}){
         Fixture f;f.scenario(.002,.001);auto j=joint(type);j["lead"]=10;j["actionSpin"]=xyz(0,0,1);j["baseSpin"]=xyz(0,0,1);j["actionPin"]=xyz(1,0,0);j["basePin"]=xyz(0,1,0);j["actionVector"]=xyz(0,0,1);j["baseVector"]=type=="Perpendicular"?xyz(1,0,0):xyz(0,0,1);
         collection(f.doc,"joints",{j});const auto result=f.solve();channel(result,"joints",0,"ReactionForce");
-        near(result.frames.back().bodies[0].positionMm[0],5,1e-7,type+" stationary closure");
+        expectNear(result.frames.back().bodies[0].positionMm[0],5,1e-7,type+" stationary closure");
     }
 }
 
 void forcesAndUnilateral(){
     Fixture f;f.scenario(.003,.001);
     collection(f.doc,"vectorForces",{QJsonObject{{"id",0},{"name","load"},{"loadType","Force"},{"bodyId",0},{"actionPoint",xyz(5,5,5)},{"direction",xyz(1,0,0)},{"magnitude",2.0},{"magnitudeMode","Constant"},{"directionMode","GlobalFixed"}}});
-    auto result=f.solve();near(channel(result,"bodies",0,"Velocity").values[(result.frames.size()-1)*3],3,1e-8,"N to mN acceleration");near(channel(result,"vectorForces",0,"Magnitude").values.front(),2,1e-10,"force output N");
+    auto result=f.solve();expectNear(channel(result,"bodies",0,"Velocity").values[(result.frames.size()-1)*3],3,1e-8,"N to mN acceleration");expectNear(channel(result,"vectorForces",0,"Magnitude").values.front(),2,1e-10,"force output N");
     collection(f.doc,"vectorForces",{});
     QJsonObject cable{{"id",0},{"name","rope"},{"bodyIId",0},{"bodyJId",-1},{"localI",xyz(5,5,5)},{"localJ",xyz(15,5,5)},{"freeLength",8.0},{"stiffness",10.0},{"damping",0.0},{"engagementWidth",.1}};
-    collection(f.doc,"tensionCables",{cable});result=f.solve();near(channel(result,"tensionCables",0,"Magnitude").values.front(),20,1e-8,"taut cable N");near(channel(result,"tensionCables",0,"ElasticEnergy").values.front(),.02,1e-10,"cable J");
-    cable["freeLength"]=12.0;collection(f.doc,"tensionCables",{cable});result=f.solve();for(double x:channel(result,"tensionCables",0,"Magnitude").values)near(x,0,1e-12,"slack cable no force");
+    collection(f.doc,"tensionCables",{cable});result=f.solve();expectNear(channel(result,"tensionCables",0,"Magnitude").values.front(),20,1e-8,"taut cable N");expectNear(channel(result,"tensionCables",0,"ElasticEnergy").values.front(),.02,1e-10,"cable J");
+    cable["freeLength"]=12.0;collection(f.doc,"tensionCables",{cable});result=f.solve();for(double x:channel(result,"tensionCables",0,"Magnitude").values)expectNear(x,0,1e-12,"slack cable no force");
     collection(f.doc,"tensionCables",{});
     QJsonObject stop{{"id",0},{"name","stop"},{"bodyIId",0},{"bodyJId",-1},{"localI",xyz(5,5,5)},{"localJ",xyz(0,5,5)},{"direction",xyz(1,0,0)},{"directionMode",1},{"side",1},{"stopPosition",3.0},{"stiffness",10.0},{"exponent",1.0},{"damping",0.0},{"dampingDepth",.1}};
-    collection(f.doc,"softStops",{stop});result=f.solve();near(channel(result,"softStops",0,"Magnitude").values.front(),20,1e-8,"stop force N");near(channel(result,"softStops",0,"ForceI").values.front(),-20,1e-8,"stop opposes compression");
-    stop["tableX"]=QJsonArray{0,1,2};stop["tableY"]=QJsonArray{0,3,7};stop["hasTable"]=true;collection(f.doc,"softStops",{stop});result=f.solve();near(channel(result,"softStops",0,"Magnitude").values.front(),7,1e-8,"tabular stop conversion");
+    collection(f.doc,"softStops",{stop});result=f.solve();expectNear(channel(result,"softStops",0,"Magnitude").values.front(),20,1e-8,"stop force N");expectNear(channel(result,"softStops",0,"ForceI").values.front(),-20,1e-8,"stop opposes compression");
+    stop["tableX"]=QJsonArray{0,1,2};stop["tableY"]=QJsonArray{0,3,7};stop["hasTable"]=true;collection(f.doc,"softStops",{stop});result=f.solve();expectNear(channel(result,"softStops",0,"Magnitude").values.front(),7,1e-8,"tabular stop conversion");
 }
 
 void forceFamilies(){
@@ -275,7 +275,7 @@ void pidAndTrajectories(){
     Fixture f;f.scenario(.05,.001);collection(f.doc,"joints",{joint("Revolute")});collection(f.doc,"drives",{drive("Velocity","0")});
     collection(f.doc,"controlInputs",{QJsonObject{{"id",0},{"name","trajectory"},{"inputType","CustomCurve"},{"timeStart",0.0},{"timeEnd",.05},{"curvePoints",QJsonArray{QJsonArray{0,0},QJsonArray{.05,.1}}}}});
     collection(f.doc,"controllers",{QJsonObject{{"id",0},{"name","servo"},{"controllerType","PID"},{"enabled",true},{"targetDriveId",0},{"feedbackType","Position"},{"feedbackSource","DriveDof"},{"targetValue",0.0},{"targetInputId",0},{"feedbackSensorId",-1},{"feedbackSign",1.0},{"kp",20.0},{"ki",1.0},{"kd",0.0},{"outputLimit",10.0}}});
-    const auto result=f.solve();near(channel(result,"controllers",0,"PidTarget").values.back(),.1,1e-9,"custom trajectory endpoint");
+    const auto result=f.solve();expectNear(channel(result,"controllers",0,"PidTarget").values.back(),.1,1e-9,"custom trajectory endpoint");
     require(channel(result,"controllers",0,"PidFeedback").values.back()>.05,"PID did not move actual body");
 }
 
@@ -295,7 +295,7 @@ void geometryAndContact(){
     NativeMotionInput boundaryInput;QString boundaryError;require(prepareNativeMotion(f.cad,f.doc,0,boundaryInput,boundaryError),boundaryError);
     require(solveNativeMotion(boundaryInput,result,boundaryError)==SolveStatus::Completed,boundaryError);
     require(result.termination==ResultTermination::GeometryBoundary&&!result.diagnostics.empty(),"real curve-boundary stop lost its explicit reason");
-    near(result.frames.back().seconds,.5,1e-10,"curve boundary result retained an out-of-domain trial frame");
+    expectNear(result.frames.back().seconds,.5,1e-10,"curve boundary result retained an out-of-domain trial frame");
     require(result.frames.size()==51,"curve boundary result lost the last valid endpoint frame");
     for(const auto& frame:result.frames)for(const auto& state:frame.bodies)if(state.bodyId==0)
         require(state.positionMm[0]<=10.0+1e-8,"curve animation includes an already rejected endpoint overshoot");
@@ -306,7 +306,7 @@ void geometryAndContact(){
     require(prepareNativeMotion(f.cad,f.doc,0,boundaryInput,boundaryError),boundaryError);
     require(solveNativeMotion(boundaryInput,result,boundaryError)==SolveStatus::Completed,boundaryError);
     require(result.termination==ResultTermination::GeometryBoundary,"surface endpoint did not terminate normally");
-    near(result.frames.back().seconds,.5,1e-10,"surface boundary result retained an out-of-domain trial frame");
+    expectNear(result.frames.back().seconds,.5,1e-10,"surface boundary result retained an out-of-domain trial frame");
     require(result.frames.size()==51,"surface boundary result lost the last valid endpoint frame");
     for(const auto& frame:result.frames)for(const auto& state:frame.bodies)if(state.bodyId==0)
         require(state.positionMm[0]<=10.0+1e-8,"surface animation includes an already rejected endpoint overshoot");
@@ -345,14 +345,14 @@ void curveOnCurveRollingAndSliding(){
         const auto result=f.solve();channel(result,"joints",0,"ReactionForce");double maxSlip=0,minSlip=1e100;
         for(const auto& frame:result.frames){
             const auto& state=*std::find_if(frame.bodies.begin(),frame.bodies.end(),[](const BodyState& value){return value.bodyId==0;});
-            near(state.positionMm[1],.5,2e-6,"rolling circle height");near(state.positionMm[2],.05,2e-6,"rolling plane placement");
+            expectNear(state.positionMm[1],.5,2e-6,"rolling circle height");expectNear(state.positionMm[2],.05,2e-6,"rolling plane placement");
             const double omega=state.angularVelocityDegS[2]/57.29577951308232;
             const double slip=std::abs(state.velocityMmS[0]+omega*.5);maxSlip=std::max(maxSlip,slip);minSlip=std::min(minSlip,slip);
-            if(sliding)near(omega,.7,2e-5,"sliding contact must not invent rolling torque");
+            if(sliding)expectNear(omega,.7,2e-5,"sliding contact must not invent rolling torque");
         }
         const auto& last=*std::find_if(result.frames.back().bodies.begin(),result.frames.back().bodies.end(),[](const BodyState& value){return value.bodyId==0;});
-        if(sliding){require(minSlip>.5,"allowSliding did not allow physical slip");near(last.velocityMmS[0],.55,.002,"sliding force acceleration");}
-        else{require(maxSlip<1e-4,"rolling curve constraint permits material slip");near(last.velocityMmS[0],.5+.05/1.4,.002,"rolling inertia changes acceleration");}
+        if(sliding){require(minSlip>.5,"allowSliding did not allow physical slip");expectNear(last.velocityMmS[0],.55,.002,"sliding force acceleration");}
+        else{require(maxSlip<1e-4,"rolling curve constraint permits material slip");expectNear(last.velocityMmS[0],.5+.05/1.4,.002,"rolling inertia changes acceleration");}
     }
     j["occCurveJEdges"]=QJsonArray{QJsonObject{{"partId",fixed},{"index",farLine}}};collection(f.doc,"joints",{j});NativeMotionInput input;
     require(!prepareNativeMotion(f.cad,f.doc,0,input,error)&&error.contains("初始贴合"),"separated curve pair was forcibly assembled");
@@ -369,13 +369,13 @@ void limitsDisabledAndSpringAxis(){
     j["limit"]=QJsonObject{{"enabled",true},{"lowerEnabled",false},{"upperEnabled",true},{"upperValue",5.0},{"penaltyOnly",true},{"upperCushion",10.0},{"upperStiffness",2.0},{"upperDamping",0.0}};
     collection(f.doc,"joints",{j});auto result=f.solve();
     const double expected=-10*1000/(100.0/3)*57.29577951308232;
-    near(channel(result,"bodies",0,"AngularAcceleration").values[2],expected,.002,"Nmm/degree soft rotational limit");
+    expectNear(channel(result,"bodies",0,"AngularAcceleration").values[2],expected,.002,"Nmm/degree soft rotational limit");
     auto limit=j.value("limit").toObject();limit["penaltyOnly"]=false;j["limit"]=limit;collection(f.doc,"joints",{j});NativeMotionInput input;QString error;require(prepareNativeMotion(f.cad,f.doc,0,input,error),error);RigidResult previous;require(solveNativeMotion(input,previous,error)==SolveStatus::Failed,"hard boxed limit accepted by incompatible direct solver");
     Fixture disabled;collection(disabled.doc,"tensionCables",{QJsonObject{{"id",0},{"name","disabled"},{"enabled",false},{"bodyIId",0},{"bodyJId",-1},{"localI",xyz(5,5,5)},{"localJ",xyz(20,5,5)},{"freeLength",2.0},{"stiffness",100.0}}});
     collection(disabled.doc,"softStops",{QJsonObject{{"id",0},{"name","disabled"},{"enabled",false},{"bodyIId",0},{"bodyJId",-1},{"localI",xyz(5,5,5)},{"localJ",xyz(0,5,5)},{"direction",xyz(1,0,0)},{"directionMode",1},{"side",1},{"stopPosition",0.0},{"stiffness",100.0},{"exponent",1.0}}});
-    result=disabled.solve();for(const auto& c:result.channels)require(c.sourceType!="tensionCables"&&c.sourceType!="softStops","disabled force was created");near(result.frames.back().bodies[0].positionMm[0],5,1e-12,"disabled loads leave free body stationary");
+    result=disabled.solve();for(const auto& c:result.channels)require(c.sourceType!="tensionCables"&&c.sourceType!="softStops","disabled force was created");expectNear(result.frames.back().bodies[0].positionMm[0],5,1e-12,"disabled loads leave free body stationary");
     Fixture spring;spring.scenario(.001,.0001);j=joint("Translational");j["axis"]=xyz(1,0,0);collection(spring.doc,"joints",{j});collection(spring.doc,"springs",{QJsonObject{{"id",0},{"name","joint axis spring"},{"springType","Translational"},{"jointId",0},{"stiffness",1.0},{"freeValue",9.0},{"installValue",10.0},{"dampingEnabled",false}}});
-    result=spring.solve();const auto& force=channel(result,"springs",0,"ForceI");near(force.values[0],1,1e-10,"linear spring follows global joint X");near(force.values[1],0,1e-10,"no wrong-axis Y spring force");near(force.values[2],0,1e-10,"no wrong-axis Z spring force");
+    result=spring.solve();const auto& force=channel(result,"springs",0,"ForceI");expectNear(force.values[0],1,1e-10,"linear spring follows global joint X");expectNear(force.values[1],0,1e-10,"no wrong-axis Y spring force");expectNear(force.values[2],0,1e-10,"no wrong-axis Z spring force");
 }
 
 void couplingFamilies(){
@@ -390,7 +390,7 @@ void couplingFamilies(){
         if(kind=="Cable")collection(f.doc,"drives",{drive("Velocity","10",0,0,"Translation")});
         const auto result=f.solve();channel(result,"couplings",0,"ReactionForce");
         if(kind=="Cable"){
-            const auto& p=channel(result,"bodies",1,"Position");near(p.values[p.values.size()-3]-25,.06,1e-8,"bilateral cable ratio remains separate from tension law");
+            const auto& p=channel(result,"bodies",1,"Position");expectNear(p.values[p.values.size()-3]-25,.06,1e-8,"bilateral cable ratio remains separate from tension law");
         }
         (void)other;
     }
@@ -399,11 +399,16 @@ void couplingFamilies(){
 void flexReductionAndAutomaticMesh(){
     Fixture f;f.scenario(.0002,.0001);auto j=joint("Fixed");j["origin"]=xyz(0,5,5);collection(f.doc,"joints",{j});
     auto scenario=f.doc.entity("scenarios",0);scenario["gravity"]=xyz(0,-1000,0);collection(f.doc,"scenarios",{scenario});
+    // A braced QJsonArray{QJsonArray{...}} with a single same-type element is a
+    // copy-initialization on MSVC, silently flattening [[0,3,4,7]] to [0,3,4,7]
+    // (GCC's initializer-list constructor keeps the nesting). Build the nested
+    // group list explicitly so the manual patch is identical on every compiler.
+    QJsonArray manualGroups;manualGroups.append(QJsonArray{0,3,4,7});
     QJsonObject flex{{"id",0},{"name","cantilever"},{"targetBodyId",0},{"enabled",true},{"modeCount",2},{"dampingType",1},{"modalDampingRatio",.02},{"connectionRadius",3.0},{"elementSize",4.0},
         {"material",QJsonObject{{"youngModulus",100.0},{"poissonRatio",.3},{"density",.001}}},
         {"mesh",QJsonObject{{"nodes",QJsonArray{QJsonArray{0,0,0},QJsonArray{10,0,0},QJsonArray{10,10,0},QJsonArray{0,10,0},QJsonArray{0,0,10},QJsonArray{10,0,10},QJsonArray{10,10,10},QJsonArray{0,10,10}}},
                            {"tetrahedra",QJsonArray{QJsonArray{0,1,3,4},QJsonArray{1,2,3,6},QJsonArray{1,3,4,6},QJsonArray{1,4,5,6},QJsonArray{3,4,6,7}}}}},
-        {"attachGroups",QJsonArray{QJsonArray{0,3,4,7}}}};
+        {"attachGroups",manualGroups}};
     collection(f.doc,"autoFlexBodies",{flex});
     NativeMotionInput prepared; QString preparationError;
     require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
@@ -420,14 +425,14 @@ void flexReductionAndAutomaticMesh(){
     collection(f.doc,"materials",{QJsonObject{{"id",42},{"name","explicit test material"},{"youngModulus",100.0},{"poissonRatio",.3},{"density",.001}}});
     collection(f.doc,"autoFlexBodies",{referenced});
     require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
-    near(prepared.geometry->flexBodies.front().youngModulus,100000.0,1e-9,"referenced material preserves MPa to internal mN/mm2 conversion");
-    near(prepared.geometry->flexBodies.front().density,.001,1e-15,"referenced density is not silently changed to steel");
+    expectNear(prepared.geometry->flexBodies.front().youngModulus,100000.0,1e-9,"referenced material preserves MPa to internal mN/mm2 conversion");
+    expectNear(prepared.geometry->flexBodies.front().density,.001,1e-15,"referenced density is not silently changed to steel");
     auto stale=referenced; stale["attachmentMeshChanged"]=true; collection(f.doc,"autoFlexBodies",{stale});
     require(!prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError) && preparationError.contains("旧附着节点"),
         "a mesh replacement reused stale attachment IDs without explicit reselection");
     // A single node is a point connection, not the finite rigid patch this
     // CMS path promises. Keep this negative case independent of mesher layout.
-    auto insufficient=flex;insufficient["attachGroups"]=QJsonArray{QJsonArray{0}};
+    auto insufficient=flex;{QJsonArray one;one.append(QJsonArray{0});insufficient["attachGroups"]=one;}
     collection(f.doc,"autoFlexBodies",{insufficient});
     require(prepareNativeMotion(f.cad,f.doc,0,prepared,preparationError),preparationError);
     QString solveError;RigidResult rejected;

@@ -976,14 +976,14 @@ bool CadDocument::encodeProjectPart(const CadPart& part, QByteArray& brep, int m
         SaveBuffer buffer(device, maxBytes);
         std::ostream output(&buffer);
         output.imbue(std::locale::classic());
-        bool written;
         {
             const std::lock_guard<std::mutex> lock(exchangeMutex);
-            // Standalone stream preserves the location and orientation of the part.
-            written = writeShape(part.shape, Format::Brep, output);
+            // Pin the native version for project v1 and omit cached tessellation.
+            // The standalone stream preserves the part's location and orientation.
+            BRepTools::Write(part.shape, output, Standard_False, Standard_False, TopTools_FormatVersion_VERSION_3);
         }
         if (buffer.tooLarge()) fail(QStringLiteral("BREP 超过项目大小上限。"));
-        if (!written || bytes.isEmpty()) fail(QStringLiteral("未能写入完整的 BREP 数据。"));
+        if (!output || bytes.isEmpty()) fail(QStringLiteral("未能写入完整的 BREP 数据。"));
         checkProjectBrep(bytes);
         brep.swap(bytes);
     });
@@ -1002,7 +1002,7 @@ bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std
         int lastId = 0;
         for (const auto* part : sorted) {
             if (part->id <= lastId || std::uint64_t(part->id) >= nextId)
-                fail(QStringLiteral("无效或重复的项目零件编号：%1。" ).arg(part->id));
+                fail(QStringLiteral("无效或重复的项目零件编号：%1。").arg(part->id));
             lastId = part->id;
         }
 

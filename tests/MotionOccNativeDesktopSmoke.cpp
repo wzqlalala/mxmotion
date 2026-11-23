@@ -232,6 +232,13 @@ void saveThroughUi(MotionWindow& window, const QString& path, Command command = 
         auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
         if (!dialog) return;
         dialog->selectFile(path);
+        // QFileDialog::selectFile() leaves the focused name field untouched
+        // once the widget dialog is visible, so on Windows accepting right
+        // away keeps the initial "model.mxmotion" name and saves the wrong
+        // file. Write the absolute target into the field itself and accept
+        // only once the dialog really reports that path as its selection.
+        if (auto* filename = dialog->findChild<QLineEdit*>("fileNameEdit")) filename->setText(path);
+        if (!dialog->selectedFiles().contains(path)) return;
         accepted = true;
         QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
     });
@@ -895,7 +902,17 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
     widget<QPushButton>(*nodeEditor,"nativeFlexAutoAttach")->click();
     require(retainedEditor&&!pickViewport->isPicking()&&attachmentTable->rowCount()==0,
         "Switching to automatic attachment left an old viewport node session active");
+    // This Esc probes the retired picking session itself. With no active
+    // session the viewport ignores the key and the application-level
+    // ClearSelection shortcut (Esc) legitimately closes the whole parameter
+    // editor on an active desktop window. Keep that unrelated window command
+    // from swallowing the key so the probe observes only the stale-session
+    // rollback it is meant to catch.
+    auto* clearSelection=window.command(Command::ClearSelection);
+    const QKeySequence clearSelectionShortcut=clearSelection->shortcut();
+    clearSelection->setShortcut(QKeySequence());
     escapePick(*pickViewport);
+    clearSelection->setShortcut(clearSelectionShortcut);
     require(retainedEditor&&attachmentTable->rowCount()==0,
         "Esc restored stale manual node IDs after switching to automatic attachment");
     widget<QPushButton>(*nodeEditor,"nativeFlexPickNodes")->click();

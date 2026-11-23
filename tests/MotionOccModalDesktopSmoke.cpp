@@ -45,6 +45,9 @@ QJsonObject xyz(double x,double y,double z){return {{"x",x},{"y",y},{"z",z}};}
 
 int runMotionOccModalDesktopSmoke(QApplication& app,const QString& outputDirectory)
 {
+    // The export chooser is automated through the Qt-styled file dialog widgets;
+    // Windows would otherwise open a native dialog the automation cannot drive.
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QDir output(outputDirectory);QDir().mkpath(output.absolutePath());
     QFile report(output.filePath("modal-desktop-smoke.txt"));if(!report.open(QIODevice::WriteOnly|QIODevice::Text))return 2;QTextStream log(&report);
     try{
@@ -57,7 +60,10 @@ int runMotionOccModalDesktopSmoke(QApplication& app,const QString& outputDirecto
             {"tetrahedra",QJsonArray{QJsonArray{0,1,3,4},QJsonArray{1,2,3,6},QJsonArray{1,3,4,6},QJsonArray{1,4,5,6},QJsonArray{3,4,6,7}}}};
         const QJsonObject flex{{"id",0},{"name",QStringLiteral("真实夹持模态")},{"targetBodyId",0},{"enabled",true},{"modeCount",4},
             {"dampingType",0},{"material",QJsonObject{{"youngModulus",100},{"poissonRatio",.3},{"density",.001}}},
-            {"mesh",mesh},{"attachGroups",QJsonArray{QJsonArray{0,3,4,7}}}};
+            {"mesh",mesh},
+            // Explicit QJsonValue keeps [[0,3,4,7]] nested on MSVC as well as GCC
+            // (single same-type braced element otherwise copy-constructs a flat array).
+            {"attachGroups",QJsonArray{QJsonValue(QJsonArray{0,3,4,7})}}};
         QJsonObject data;
         data.insert("bodies",QJsonArray{body});data.insert("autoFlexBodies",QJsonArray{flex});
         data.insert("scenarios",QJsonArray{QJsonObject{{"id",0},{"name",QStringLiteral("未运行的动力学方案")},{"endTime",1},{"stepSize",.01},{"gravity",xyz(0,0,0)}}});

@@ -12,7 +12,7 @@ void require(bool value, const char* message)
 {
     if (!value) throw std::runtime_error(message);
 }
-void near(const QVector3D& actual, const QVector3D& expected, const char* message)
+void expectNear(const QVector3D& actual, const QVector3D& expected, const char* message)
 {
     require((actual - expected).length() < 1e-3f, message);
 }
@@ -49,18 +49,18 @@ int main(int argc, char** argv)
         require(validateRigidPlayback(input, result, error), "Valid physical timeline was rejected");
         require(sampleRigidPlayback(input, result, 0.0, sample, error), "Clamp before first frame failed");
         require(sample.seconds == 2.0 && sample.frameIndex == 0, "Must use the first physical time, not zero");
-        near(sample.partPoses.at(101).map(QVector3D(1005, 2000, 3000)), {1005, 2000, 3000},
+        expectNear(sample.partPoses.at(101).map(QVector3D(1005, 2000, 3000)), {1005, 2000, 3000},
              "Rest CAD transform must be identity at the original global COM");
         require(sampleRigidPlayback(input, result, 2.05, sample, error), "Interpolation failed");
-        near(sample.partPoses.at(101).map(QVector3D(1010, 2000, 3000)),
+        expectNear(sample.partPoses.at(101).map(QVector3D(1010, 2000, 3000)),
              {float(1005 + 10 * half), float(2010 + 10 * half), 3000},
              "COM lerp and quaternion slerp must rotate global CAD about the initial COM");
-        near(sample.partPoses.at(42).map(QVector3D(-20, 40, 10)), {-20, 40, 10},
+        expectNear(sample.partPoses.at(42).map(QVector3D(-20, 40, 10)), {-20, 40, 10},
              "Result state order must not swap the bodies");
         require(sample.frameIndex == 1, "Interpolated physical time must select the upper frame index");
         require(sampleRigidPlayback(input, result, 9.0, sample, error)
                 && sample.seconds == 2.75 && sample.frameIndex == 2, "Clamp after last frame failed");
-        near(sample.partPoses.at(101).map(QVector3D(1010, 2000, 3000)), {1010, 2030, 3000},
+        expectNear(sample.partPoses.at(101).map(QVector3D(1010, 2000, 3000)), {1010, 2030, 3000},
              "Exact last frame must use its full pose");
         const auto valid = sample.partPoses;
         require(!sampleRigidPlayback(input, result, std::numeric_limits<double>::quiet_NaN(), sample, error)
@@ -110,12 +110,12 @@ int main(int argc, char** argv)
         require(sample.partPoses.size()==7 && sample.partPoses.at(700)==sample.partPoses.at(101)
                 && sample.partPoses.at(701)==sample.partPoses.at(101) && sample.partPoses.at(702)==sample.partPoses.at(42),
                 "Standalone point/curve-pair references did not follow their base/action body poses");
-        near(sample.partPoses.at(700).map(QVector3D(1010,2000,3000)),
+        expectNear(sample.partPoses.at(700).map(QVector3D(1010,2000,3000)),
              {float(1005+10*half),float(2010+10*half),3000},
              "A global construction curve did not use the solver's COM-relative rotating frame");
-        near(sample.partPoses.at(42).map(QVector3D(-20,40,10)),{-20,40,10},
+        expectNear(sample.partPoses.at(42).map(QVector3D(-20,40,10)),{-20,40,10},
              "A curve reference overwrote a CAD part's existing physical body ownership");
-        near(sample.partPoses.at(703).map(QVector3D(8,9,10)),{8,9,10},
+        expectNear(sample.partPoses.at(703).map(QVector3D(8,9,10)),{8,9,10},
              "A ground-referenced construction curve must remain in world coordinates");
         const auto acceptedCurvePoses=sample.partPoses;
         curveJoints.append(QJsonObject{{"id",6},{"jointType","PointOnCurve"},{"baseBodyId",7},{"occCurveEdges",edge(700)}});
@@ -140,7 +140,7 @@ int main(int argc, char** argv)
         for(auto& frame:result.frames)frame.bodies.back().positionMm={9,8,7};
         require(sampleRigidPlayback(input,result,1,sample,error) && sample.partPoses.size()==4,
                 "A standalone curve could not follow a virtual reference body");
-        near(sample.partPoses.at(704).map(QVector3D(1,2,3)),{10,10,10},
+        expectNear(sample.partPoses.at(704).map(QVector3D(1,2,3)),{10,10,10},
              "Virtual reference body pose was discarded before updating its independent curve");
         input.nativeInput->document.root = {{"motionData", QJsonObject{{"bodies", QJsonArray{
             QJsonObject{{"id", 55}, {"geoEntityIds", QJsonArray{901}}}}}}}};

@@ -23,7 +23,7 @@
 using namespace MotionOcc;
 namespace {
 void require(bool ok, const QString& message) { if (!ok) throw std::runtime_error(message.toStdString()); }
-void near(double value, double expected, double tolerance, const QString& name)
+void expectNear(double value, double expected, double tolerance, const QString& name)
 {
     require(std::isfinite(value) && std::abs(value - expected) <= tolerance,
         QStringLiteral("%1: got %2, expected %3").arg(name).arg(value, 0, 'g', 17).arg(expected, 0, 'g', 17));
@@ -37,31 +37,31 @@ int main(int argc, char** argv)
     try {
         NativeFunctionSamples samples; QString error;
         require(sampleNativeFunction("10*sin(2*pi*t)", {}, {}, 0, 1, 5, samples, error), error);
-        near(samples.value[1], 10, 1e-10, "sine quarter period");
-        near(samples.value[3], -10, 1e-10, "sine three quarters");
+        expectNear(samples.value[1], 10, 1e-10, "sine quarter period");
+        expectNear(samples.value[3], -10, 1e-10, "sine three quarters");
         const auto before = samples;
         require(!sampleNativeFunction("unknown(t)", {}, {}, 0, 1, 5, samples, error), "invalid expression accepted");
         require(samples.time == before.time && samples.value == before.value, "invalid preview changed existing samples");
         require(!sampleNativeFunction("1/(t-0.5)", {}, {}, 0, 1, 5, samples, error), "nonfinite law accepted");
         require(!sampleNativeFunction("x+t", {}, {}, 0, 1, 5, samples, error), "motor accepted deformation variable");
         require(sampleNativeFunction("2*x+v+t", {}, {}, 0, 1, 5, samples, error, true, 3, 4), error);
-        near(samples.value.back(), 11, 1e-12, "force preview explicit state slice");
+        expectNear(samples.value.back(), 11, 1e-12, "force preview explicit state slice");
         // A very short pulse must retain both knots and its actual peak even
         // when neither knot falls on the regular preview grid.
         const QJsonArray tx{0, .1001, .1002, .1003, 1}, ty{0, 0, 80, 0, 0};
         require(sampleNativeFunction("inactive_invalid(\"", tx, ty, -.1, 1.1, 5, samples, error), error);
         const int peak = samples.time.indexOf(.1002);
         require(peak >= 0, "table peak knot omitted from preview");
-        near(samples.value[peak], 80, 1e-12, "piecewise linear peak");
-        near(samples.value.front(), 0, 1e-12, "table holds first sample");
-        near(samples.value.back(), 0, 1e-12, "table holds last sample");
+        expectNear(samples.value[peak], 80, 1e-12, "piecewise linear peak");
+        expectNear(samples.value.front(), 0, 1e-12, "table holds first sample");
+        expectNear(samples.value.back(), 0, 1e-12, "table holds last sample");
         require(!sampleNativeFunction("0", QJsonArray{0,0}, QJsonArray{1,2}, 0, 1, 5, samples, error), "duplicate table time accepted");
         QJsonArray longX,longY;
         for(int i=0;i<1025;++i){longX.append(i*.001);longY.append(i==513?12.5:0.0);}
         require(sampleNativeFunction("inactive",longX,longY,0,1.024,5,samples,error),error);
         const int narrowPeak=samples.time.indexOf(longX[513].toDouble());
         require(samples.time.size()>=1025&&narrowPeak>=0,"A table beyond the former 1000-row UI limit lost sample knots");
-        near(samples.value[narrowPeak],12.5,1e-12,"1025-knot narrow road input peak");
+        expectNear(samples.value[narrowPeak],12.5,1e-12,"1025-knot narrow road input peak");
         QTemporaryDir files;require(files.isValid(),"table file temporary directory");
         const auto csvPath=files.filePath("road.csv"),txtPath=files.filePath("road.txt"),badPath=files.filePath("invalid.csv");
         QJsonArray importedX,importedY;
@@ -137,7 +137,7 @@ int main(int argc, char** argv)
         });
         require(editNativeFunction(nullptr, expression, tableX, tableY, "mm", 1), "template application failed");
         require(templateUsed && sampleNativeFunction(expression, tableX, tableY, 0, 1, 3, samples, error), error);
-        near(samples.value[1], 6, 1e-12, "template frequency, phase, offset");
+        expectNear(samples.value[1], 6, 1e-12, "template frequency, phase, offset");
         // Force laws have no supported time-table slot. The dialog must not
         // expose a successful edit that the force adapter will silently ignore.
         expression="2*x+v+t";tableX={};tableY={};bool forceModeChecked=false;

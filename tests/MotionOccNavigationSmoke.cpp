@@ -73,20 +73,20 @@ Projection projected(const OccViewport& view, int partId)
             view.projectPoint({17, 26, 15}, partId)};
 }
 
-bool near(const QPointF& a, const QPointF& b, double tolerance = 0.002)
+bool pointsNear(const QPointF& a, const QPointF& b, double tolerance = 0.002)
 {
     return std::hypot(a.x()-b.x(), a.y()-b.y()) < tolerance;
 }
 
 bool sameProjection(const Projection& a, const Projection& b)
 {
-    for (std::size_t i = 0; i < a.size(); ++i) if (!near(a[i], b[i])) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) if (!pointsNear(a[i], b[i])) return false;
     return true;
 }
 
 void translated(const Projection& before, const Projection& after, const QPointF& delta, const QString& reason)
 {
-    for (std::size_t i = 0; i < before.size(); ++i) require(near(after[i], before[i]+delta), reason);
+    for (std::size_t i = 0; i < before.size(); ++i) require(pointsNear(after[i], before[i]+delta), reason);
 }
 }
 
@@ -137,7 +137,7 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         QWheelEvent wheel(anchor, view.mapToGlobal(anchor.toPoint()), {}, {0,120},
                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         QApplication::sendEvent(&view, &wheel);
-        require(near(anchor, view.projectPoint(anchorWorld, partId)) &&
+        require(pointsNear(anchor, view.projectPoint(anchorWorld, partId)) &&
                 !sameProjection(before, projected(view, partId)), "Wheel zoom did not retain its cursor anchor");
         log << "Classic orbit/pan, click isolation and cursor-anchored wheel zoom passed\n";
 
@@ -155,7 +155,7 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         translated(before, projected(view, partId), {52, -31}, "NX Shift-middle pan is incorrect");
         reset(); anchor = view.projectPoint(anchorWorld, partId); before = projected(view, partId);
         drag(view, anchor, anchor+QPointF(0, 65), Qt::MiddleButton, Qt::ControlModifier);
-        require(near(anchor, view.projectPoint(anchorWorld, partId)) &&
+        require(pointsNear(anchor, view.projectPoint(anchorWorld, partId)) &&
                 !sameProjection(before, projected(view, partId)), "NX Ctrl-middle zoom lost its press-point anchor");
         log << "NX left selection, middle orbit, Shift-middle pan and Ctrl-middle zoom passed\n";
 
@@ -226,7 +226,7 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         mouse(view, QEvent::MouseButtonDblClick, anchor, Qt::LeftButton, Qt::LeftButton);
         require(sameProjection(before, projected(view, partId)), "Changing rotation center jumped the scene");
         drag(view, anchor+QPointF(60,0), anchor+QPointF(110,45), Qt::MiddleButton);
-        require(near(anchor, view.projectPoint(anchorWorld, partId)), "Orbit did not use the chosen surface center");
+        require(pointsNear(anchor, view.projectPoint(anchorWorld, partId)), "Orbit did not use the chosen surface center");
         require(!sameProjection(before, projected(view, partId)), "Orbit about the chosen center did not rotate");
         QMatrix4x4 pose; pose.translate(75,-20,10); pose.rotate(25,0,0,1);
         view.setPartPoses({{partId,pose}}); reset();
@@ -234,7 +234,7 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         mouse(view, QEvent::MouseButtonDblClick, anchor, Qt::LeftButton, Qt::LeftButton);
         require(sameProjection(before, projected(view, partId)), "Posed rotation-center selection jumped the scene");
         drag(view, anchor+QPointF(60,0), anchor+QPointF(110,45), Qt::MiddleButton);
-        require(near(anchor, view.projectPoint(anchorWorld, partId)), "Posed rotation center used rest rather than displayed coordinates");
+        require(pointsNear(anchor, view.projectPoint(anchorWorld, partId)), "Posed rotation center used rest rather than displayed coordinates");
         view.clearPartPoses(); reset();
         log << "Surface rotation center preserved screen position and followed displayed rigid poses\n";
 

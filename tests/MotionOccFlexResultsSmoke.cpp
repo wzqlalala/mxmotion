@@ -19,7 +19,7 @@ void require(bool condition,const QString& message)
 {
     if(!condition)throw std::runtime_error(message.toStdString());
 }
-void near(double actual,double expected,double tolerance,const QString& message)
+void expectNear(double actual,double expected,double tolerance,const QString& message)
 {
     require(std::isfinite(actual)&&std::abs(actual-expected)<=tolerance,
         QStringLiteral("%1: %2 != %3").arg(message).arg(actual,0,'g',16).arg(expected,0,'g',16));
@@ -47,21 +47,21 @@ void contourSemantics()
     }
     std::vector<double> values;QString error;
     require(flexNodeScalars(flex,0,FlexContourKind::ElasticDisplacement,values,error),error);
-    for(double value:values)near(value,0,0,"rigid rotation/translation leaked into elastic contour");
+    for(double value:values)expectNear(value,0,0,"rigid rotation/translation leaked into elastic contour");
     require(flexNodeScalars(flex,1,FlexContourKind::ElasticDisplacement,values,error),error);
-    for(int node=0;node<4;++node)near(values[node],node*std::sqrt(.4),1e-14,"modal rows/columns");
+    for(int node=0;node<4;++node)expectNear(values[node],node*std::sqrt(.4),1e-14,"modal rows/columns");
     require(flexNodeScalars(flex,0,FlexContourKind::TotalDisplacement,values,error),error);
-    near(values[0],std::sqrt(509.0),1e-12,"total displacement includes rigid motion");
+    expectNear(values[0],std::sqrt(509.0),1e-12,"total displacement includes rigid motion");
     require(flexNodeScalars(flex,0,FlexContourKind::LegacyFreeModeProjection,values,error),error);
-    for(double value:values)near(value,0,1e-14,"zero elastic mode must give zero legacy projection");
+    for(double value:values)expectNear(value,0,1e-14,"zero elastic mode must give zero legacy projection");
     require(flexNodeScalars(flex,1,FlexContourKind::LegacyFreeModeProjection,values,error),error);
     const auto baseline=values;
     for(double& q:flex.modalCoordinates[1])q*=3;
     require(flexNodeScalars(flex,1,FlexContourKind::LegacyFreeModeProjection,values,error),error);
-    for(int node=0;node<4;++node)near(values[node],3*baseline[node],1e-12,"legacy projection scaling");
+    for(int node=0;node<4;++node)expectNear(values[node],3*baseline[node],1e-12,"legacy projection scaling");
     flex.modalCoordinates[0]={-6,-9};
     require(flexNodeScalarsAt(flex,0,1,.5,FlexContourKind::ElasticDisplacement,values,error),error);
-    for(double value:values)near(value,0,0,"interpolated opposite signed modes must have zero magnitude");
+    for(double value:values)expectNear(value,0,0,"interpolated opposite signed modes must have zero magnitude");
     const auto preserved=values;
     flex.nodePositions[1].pop_back();
     require(!flexNodeScalars(flex,1,FlexContourKind::TotalDisplacement,values,error)&&values==preserved,
@@ -86,7 +86,9 @@ NativeMotionInput preparedCantilever(CadDocument& cad)
         {"material",QJsonObject{{"youngModulus",100.0},{"poissonRatio",.3},{"density",.001}}},
         {"mesh",QJsonObject{{"nodes",QJsonArray{QJsonArray{0,0,0},QJsonArray{10,0,0},QJsonArray{10,10,0},QJsonArray{0,10,0},QJsonArray{0,0,10},QJsonArray{10,0,10},QJsonArray{10,10,10},QJsonArray{0,10,10}}},
             {"tetrahedra",QJsonArray{QJsonArray{0,1,3,4},QJsonArray{1,2,3,6},QJsonArray{1,3,4,6},QJsonArray{1,4,5,6},QJsonArray{3,4,6,7}}}}},
-        {"attachGroups",QJsonArray{QJsonArray{0,3,4,7}}}};
+        // Explicit QJsonValue keeps [[0,3,4,7]] nested on MSVC as well as GCC
+        // (single same-type braced element otherwise copy-constructs a flat array).
+        {"attachGroups",QJsonArray{QJsonValue(QJsonArray{0,3,4,7})}}};
     NativeMotionDocument doc;
     doc.root={{"formatVersion",1},{"motionData",QJsonObject{{"bodies",QJsonArray{body}},
         {"joints",QJsonArray{joint}},{"scenarios",QJsonArray{scenario}},{"autoFlexBodies",QJsonArray{flex}}}}};
@@ -108,13 +110,13 @@ void completePayloadAndPhysicalMotion()
         "unique-interface modal matrix shape");
     require(flex.initialInterfacePoses.size()==7&&flex.initialInterfacePoses==flex.interfacePoses.front(),
         "initial interface pose was captured at the end of the run");
-    near(flex.initialInterfacePoses[0],5,1e-8,"parser body origin must not move away from original COM");
+    expectNear(flex.initialInterfacePoses[0],5,1e-8,"parser body origin must not move away from original COM");
     require(flex.nodePositions.size()==21&&flex.interfacePoses.size()==21&&flex.modalCoordinates.size()==21,
         "incomplete frame payload");
     for(std::size_t frame=0;frame<result.frames.size();++frame){
         require(flex.interfacePoses[frame].size()==7&&flex.modalCoordinates[frame].size()==2,"per-frame pose/modal sizes");
         for(int component=0;component<3;++component)
-            near(flex.interfacePoses[frame][component],5,1e-7,"clamped interface moved");
+            expectNear(flex.interfacePoses[frame][component],5,1e-7,"clamped interface moved");
     }
     std::vector<double> elastic;require(flexNodeScalars(flex,20,FlexContourKind::ElasticDisplacement,elastic,error),error);
     require(*std::max_element(elastic.begin(),elastic.end())>1e-8,"gravity did not produce any elastic response");
@@ -171,7 +173,7 @@ void nativeReactionConvention()
     RigidResult result;QString error;require(solveNativeMotion(input,result,error)==SolveStatus::Completed,error);
     bool found=false;
     for(const auto& channel:result.channels)if(channel.sourceType=="joints"&&channel.variable=="ReactionForce"){
-        near(channel.values[channel.values.size()-1],-9.81,1e-8,"raw reaction is force on J/support, not I");found=true;
+        expectNear(channel.values[channel.values.size()-1],-9.81,1e-8,"raw reaction is force on J/support, not I");found=true;
     }
     require(found,"missing raw joint reaction channel");
 }
@@ -195,8 +197,8 @@ void rotatingOffsetFlexInterface()
     for(std::size_t frame=0;frame<result.frames.size();frame+=20){
         const double angle=result.frames[frame].seconds*3.14159265358979323846/2;
         const auto& pose=flex.interfacePoses[frame];
-        near(pose[0],5*std::cos(angle),1e-5,"offset interface COM circular X path");
-        near(pose[1],5+5*std::sin(angle),1e-5,"offset interface COM circular Y path");
+        expectNear(pose[0],5*std::cos(angle),1e-5,"offset interface COM circular X path");
+        expectNear(pose[1],5+5*std::sin(angle),1e-5,"offset interface COM circular Y path");
         const motion::MotionQuaternion<> rotation(pose[3],pose[4],pose[5],pose[6]);
         const motion::MotionVector<> center(pose[0],pose[1],pose[2]);
         for(int node:{0,3,4,7}){

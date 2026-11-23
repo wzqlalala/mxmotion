@@ -16,7 +16,7 @@
 using namespace MotionOcc;
 namespace {
 void require(bool condition,const QString& message){if(!condition)throw std::runtime_error(message.toStdString());}
-void near(double actual,double expected,double tolerance,const QString& message)
+void expectNear(double actual,double expected,double tolerance,const QString& message)
 {
     require(std::isfinite(actual)&&std::abs(actual-expected)<=tolerance,
         QStringLiteral("%1: %2 != %3").arg(message).arg(actual,0,'g',16).arg(expected,0,'g',16));
@@ -46,10 +46,10 @@ void physicalEquilibriumAndExport()
     std::vector<NativeLoadSample> i,j;
     require(nativeLoadSeries(input,result,{"joints",0},NativeLoadEnd::I,i,error),error);
     require(nativeLoadSeries(input,result,{"joints",0},NativeLoadEnd::J,j,error),error);
-    near(i.back().forceN[2],9.81,1e-8,"I support force must balance 1 kg gravity");
-    near(i.back().torqueNmm[1],-49.05,1e-7,"I support moment must balance 5 mm eccentric gravity");
-    near(j.back().forceN[2],-9.81,1e-8,"J support reaction sign");
-    near(j.back().torqueNmm[1],49.05,1e-7,"J support reaction moment sign and N mm units");
+    expectNear(i.back().forceN[2],9.81,1e-8,"I support force must balance 1 kg gravity");
+    expectNear(i.back().torqueNmm[1],-49.05,1e-7,"I support moment must balance 5 mm eccentric gravity");
+    expectNear(j.back().forceN[2],-9.81,1e-8,"J support reaction sign");
+    expectNear(j.back().torqueNmm[1],49.05,1e-7,"J support reaction moment sign and N mm units");
     QTemporaryDir directory;require(directory.isValid(),"temporary load exports");
     NativeLoadExportOptions options;options.frames=NativeLoadFrames::All;options.name="load, \"case\"";
     const auto csvPath=directory.filePath("loads.csv");
@@ -67,7 +67,7 @@ void physicalEquilibriumAndExport()
     // Transferring the clamp wrench to the COM cancels its eccentric moment.
     const auto momentStart=bdf.indexOf("MOMENT,");const auto moment=bdf.mid(momentStart).split('\n').front().split(',');
     require(moment.size()==8,"BDF moment field count");
-    near(moment[6].toDouble(),0,1e-7,"moment transfer to COM omitted r cross F");
+    expectNear(moment[6].toDouble(),0,1e-7,"moment transfer to COM omitted r cross F");
     options.nodeId=0;
     require(!exportNativeLoads(bdfPath,input,result,{"joints",0},options,error)&&bytes(bdfPath)==bdf,
         "failed BDF validation overwrote prior export");
@@ -112,24 +112,24 @@ void extremaAndBodyInitial()
     require(buildNativeLoadCases(f.input,f.result,options,output,error),error);
     auto cases=output.value("cases").toArray();
     require(cases.size()==2,"per-signal top extrema selection");
-    near(cases[0].toObject().value("timeSeconds").toDouble(),1,0,"first peak time");
-    near(cases[1].toObject().value("timeSeconds").toDouble(),4,0,"second peak time");
+    expectNear(cases[0].toObject().value("timeSeconds").toDouble(),1,0,"first peak time");
+    expectNear(cases[1].toObject().value("timeSeconds").toDouble(),4,0,"second peak time");
     const auto firstLoad=cases[0].toObject().value("loads").toArray().first().toObject();
     require(firstLoad.value("end").toString()=="I","feature I body end");
-    near(firstLoad.value("components").toObject().value("FY").toDouble(),-2,1e-14,"force inverse rotation to initial body");
+    expectNear(firstLoad.value("components").toObject().value("FY").toDouble(),-2,1e-14,"force inverse rotation to initial body");
     auto point=firstLoad.value("actionPoint").toArray();
-    near(point[0].toDouble(),2,1e-14,"point inverse rotation and translation X");
-    near(point[1].toDouble(),2,1e-14,"point inverse rotation and translation Y");
+    expectNear(point[0].toDouble(),2,1e-14,"point inverse rotation and translation X");
+    expectNear(point[1].toDouble(),2,1e-14,"point inverse rotation and translation Y");
     const auto secondLoad=cases[1].toObject().value("loads").toArray().first().toObject();
     require(secondLoad.value("end").toString()=="J","feature J body end");
-    near(secondLoad.value("components").toObject().value("FX").toDouble(),4,1e-14,"J physical reaction rotated to initial body");
+    expectNear(secondLoad.value("components").toObject().value("FX").toDouble(),4,1e-14,"J physical reaction rotated to initial body");
     options.synchronized=true;require(buildNativeLoadCases(f.input,f.result,options,output,error),error);
     cases=output.value("cases").toArray();
     for(const auto& entry:cases)require(entry.toObject().value("loads").toArray().size()==2,"synchronous case omitted non-extremal joint");
     options.mergeTolerance=3;require(buildNativeLoadCases(f.input,f.result,options,output,error),error);
     cases=output.value("cases").toArray();require(cases.size()==1,"time merging");
     const auto loads=cases[0].toObject().value("loads").toArray();
-    near(loads[1].toObject().value("components").toObject().value("FM").toDouble(),0,0,
+    expectNear(loads[1].toObject().value("components").toObject().value("FM").toDouble(),0,0,
         "merged case mixed loads from different original times");
     auto mismatched=f.result;mismatched.channels.front().unit="mN";
     std::vector<NativeLoadSample> values;
@@ -138,7 +138,7 @@ void extremaAndBodyInitial()
     for(auto& channel:separated.channels)if(channel.sourceId==0&&channel.variable=="PositionJ")
         for(std::size_t frame=0;frame<separated.frames.size();++frame)channel.values[3*frame+2]+=1;
     require(nativeLoadSeries(f.input,separated,{"joints",0},NativeLoadEnd::I,values,error),error);
-    near(values[1].torqueNmm[1],2,1e-14,"J to I wrench transfer omitted endpoint lever arm");
+    expectNear(values[1].torqueNmm[1],2,1e-14,"J to I wrench transfer omitted endpoint lever arm");
     auto flat=f.result;for(auto& channel:flat.channels)if(channel.variable.startsWith("Reaction"))
         std::fill(channel.values.begin(),channel.values.end(),0);
     require(!buildNativeLoadCases(f.input,flat,options,output,error),"flat history invented peak cases");

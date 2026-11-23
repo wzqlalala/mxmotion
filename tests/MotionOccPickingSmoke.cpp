@@ -46,7 +46,7 @@ void click(OccViewport& view, const QPointF& at, Qt::MouseButton button = Qt::Le
     mouse(view, QEvent::MouseButtonPress, at, button, button);
     mouse(view, QEvent::MouseButtonRelease, at, button, Qt::NoButton);
 }
-bool near(const std::array<double,3>& a, const std::array<double,3>& b, double tolerance = 1e-7)
+bool pointsNear(const std::array<double,3>& a, const std::array<double,3>& b, double tolerance = 1e-7)
 {
     for (int i = 0; i < 3; ++i) if (std::abs(a[i]-b[i]) > tolerance) return false;
     return true;
@@ -77,17 +77,17 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         click(view, view.projectPoint({0,0,20}, partId));
         require(view.pickSelection().size() == 1 && partSignals == 0, "Vertex pick did not stay in active field session");
         auto picked = view.pickSelection().front();
-        require(near(picked.position, {0,0,20}), "Vertex coordinate is not exact CAD world mm");
+        require(pointsNear(picked.position, {0,0,20}), "Vertex coordinate is not exact CAD world mm");
         TopTools_IndexedMapOfShape vertices; TopExp::MapShapes(cad.part(partId)->shape, TopAbs_VERTEX, vertices);
         require(picked.index > 0 && picked.index <= vertices.Extent(), "Vertex index is not OCC topology numbering");
         const auto vertex = BRep_Tool::Pnt(TopoDS::Vertex(vertices(picked.index)));
-        require(near(picked.position, {vertex.X(),vertex.Y(),vertex.Z()}), "Vertex index does not identify picked geometry");
+        require(pointsNear(picked.position, {vertex.X(),vertex.Y(),vertex.Z()}), "Vertex index does not identify picked geometry");
 
         view.beginPick(PickKind::Edge, false, {partId});
         click(view, view.projectPoint({20,0,20}, partId));
         require(view.pickSelection().size() == 1, "Could not select real top edge");
         picked = view.pickSelection().front();
-        require(near(picked.position, {20,0,20}) && picked.hasDirection && std::abs(picked.direction[0]) > .999, "Line representative midpoint/tangent incorrect");
+        require(pointsNear(picked.position, {20,0,20}) && picked.hasDirection && std::abs(picked.direction[0]) > .999, "Line representative midpoint/tangent incorrect");
         TopTools_IndexedMapOfShape edges; TopExp::MapShapes(cad.part(partId)->shape, TopAbs_EDGE, edges);
         require(picked.index > 0 && picked.index <= edges.Extent() && BRepAdaptor_Curve(TopoDS::Edge(edges(picked.index))).GetType() == GeomAbs_Line, "Edge index does not map to real edge");
 
@@ -95,7 +95,7 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         click(view, view.projectPoint({13,11,20}, partId));
         require(view.pickSelection().size() == 1, "Could not select real top face");
         picked = view.pickSelection().front();
-        require(near(picked.position, {20,15,20}) && near(picked.hitPosition, {13,11,20}, 1e-5), "Face center and actual cursor hit conflated");
+        require(pointsNear(picked.position, {20,15,20}) && pointsNear(picked.hitPosition, {13,11,20}, 1e-5), "Face center and actual cursor hit conflated");
         require(picked.hasDirection && picked.direction[2] > .999, "Face normal did not follow oriented CAD topology");
         TopTools_IndexedMapOfShape faces; TopExp::MapShapes(cad.part(partId)->shape, TopAbs_FACE, faces);
         require(picked.index > 0 && picked.index <= faces.Extent() && BRepAdaptor_Surface(TopoDS::Face(faces(picked.index))).GetType() == GeomAbs_Plane, "Face index is not an OCC face");
@@ -103,7 +103,7 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
 
         view.beginPick(PickKind::Part, true, {partId});
         click(view, view.projectPoint({20,15,20}, partId));
-        require(view.pickSelection().size() == 1 && near(view.pickSelection().front().position, {20,15,10}), "Part pick centroid incorrect");
+        require(view.pickSelection().size() == 1 && pointsNear(view.pickSelection().front().position, {20,15,10}), "Part pick centroid incorrect");
         click(view, view.projectPoint({20,15,20}, partId), Qt::RightButton);
         require(view.pickSelection().isEmpty(), "Right click did not subtract latest selection");
         view.beginPick(PickKind::Face, false, {99999});
@@ -140,7 +140,7 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         view.setPartPoses({{partId,pose}}); view.fitAll();
         view.beginPick(PickKind::Node, false, {partId});
         click(view, view.projectPoint(cloud.nodes[2], partId));
-        require(view.pickSelection().size() == 1 && view.pickSelection().front().nodeId == 500 && near(view.pickSelection().front().position, cloud.nodes[2]), "Posed picking corrupted initial world node coordinates");
+        require(view.pickSelection().size() == 1 && view.pickSelection().front().nodeId == 500 && pointsNear(view.pickSelection().front().position, cloud.nodes[2]), "Posed picking corrupted initial world node coordinates");
         view.endPick(); view.clearPartPoses(); view.fitAll();
         log << "Posed geometry picking retained initial world CAD coordinates passed\n";
 
@@ -153,19 +153,19 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         click(view,view.projectPoint({20,0,20},partId));
         require(view.pickSelection().size()==1,"Real FEM edge was not picked");
         picked=view.pickSelection().front();
-        require(picked.index==1 && picked.nodeIds==QVector<int>{101,205} && near(picked.position,{20,0,20}) && picked.hasDirection && picked.direction[0]>.999,
+        require(picked.index==1 && picked.nodeIds==QVector<int>{101,205} && pointsNear(picked.position,{20,0,20}) && picked.hasDirection && picked.direction[0]>.999,
                 "FEM edge lost actual connectivity, midpoint or tangent");
         view.beginPick(PickKind::MeshFace,false,{partId});
         click(view,view.projectPoint({5,5,20},partId));
         require(view.pickSelection().size()==1,"Real FEM face was not picked");
         picked=view.pickSelection().front();
-        require(picked.index==1 && picked.nodeIds==QVector<int>{101,205,500} && near(picked.position,{40.0/3,10,20}) && picked.hasDirection && picked.direction[2]>.999,
+        require(picked.index==1 && picked.nodeIds==QVector<int>{101,205,500} && pointsNear(picked.position,{40.0/3,10,20}) && picked.hasDirection && picked.direction[2]>.999,
                 "FEM face lost actual connectivity, centroid or oriented normal");
         view.beginPick(PickKind::Element,false,{partId});
         click(view,view.projectPoint({5,5,20},partId));
         require(view.pickSelection().size()==1,"Real tetrahedron was not picked");
         picked=view.pickSelection().front();
-        require(picked.index==1 && picked.nodeIds==QVector<int>{101,500,205,902} && near(picked.position,{10,7.5,15}) && !picked.hasDirection,
+        require(picked.index==1 && picked.nodeIds==QVector<int>{101,500,205,902} && pointsNear(picked.position,{10,7.5,15}) && !picked.hasDirection,
                 "FEM element must retain tetra connectivity and centroid without inventing a direction");
         require(view.grabFramebuffer().save(output.filePath("element-selection.png")),"Failed to save FEM selection evidence");
         view.endPick();
@@ -195,7 +195,7 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         click(view, view.projectPoint({10,0,30}, cylinder));
         require(view.pickSelection().size() == 1, "Circular edge could not be picked");
         picked = view.pickSelection().front();
-        require(near(picked.position, {0,0,30}) && picked.hasDirection && std::abs(picked.direction[2]) > .999, "Circle pick did not provide center and rotation axis");
+        require(pointsNear(picked.position, {0,0,30}) && picked.hasDirection && std::abs(picked.direction[2]) > .999, "Circle pick did not provide center and rotation axis");
         view.viewFront(); view.fitAll(); view.beginPick(PickKind::Face, false, {cylinder});
         click(view, view.projectPoint({0,-10,15}, cylinder));
         require(view.pickSelection().size() == 1, "Cylindrical face could not be picked");

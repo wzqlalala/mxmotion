@@ -16,7 +16,7 @@
 using namespace MotionOcc;
 namespace {
 void require(bool value,const QString& message){if(!value)throw std::runtime_error(message.toStdString());}
-void near(double value,double expected,double tolerance,const QString& message){require(std::isfinite(value)&&std::abs(value-expected)<=tolerance,
+void expectNear(double value,double expected,double tolerance,const QString& message){require(std::isfinite(value)&&std::abs(value-expected)<=tolerance,
     QStringLiteral("%1: %2 vs %3 (tol %4)").arg(message).arg(value,0,'g',15).arg(expected,0,'g',15).arg(tolerance));}
 QJsonObject xyz(double x,double y,double z){return {{"x",x},{"y",y},{"z",z}};}
 void collection(NativeMotionDocument& document,const QString& name,const QJsonArray& values){auto data=document.root.value("motionData").toObject();data[name]=values;document.root["motionData"]=data;}
@@ -58,14 +58,14 @@ void springEquilibriumAndPreload(){
     const auto equilibrium=f.solve();
     require(equilibrium.termination==ResultTermination::StaticEquilibrium&&equilibrium.frames.size()==1,"static must return one converged equilibrium frame");
     const double expected=5-9.81/10;
-    near(equilibrium.frames.front().bodies.front().positionMm[2],expected,1e-7,"kx=mg equilibrium");
-    near(equilibrium.frames.front().bodies.front().velocityMmS[2],0,1e-12,"static zero velocity");
-    near(std::abs(channel(equilibrium,"springs",0,"SignedForce").values[0]),9.81,1e-6,"static spring supports weight");
+    expectNear(equilibrium.frames.front().bodies.front().positionMm[2],expected,1e-7,"kx=mg equilibrium");
+    expectNear(equilibrium.frames.front().bodies.front().velocityMmS[2],0,1e-12,"static zero velocity");
+    expectNear(std::abs(channel(equilibrium,"springs",0,"SignedForce").values[0]),9.81,1e-6,"static spring supports weight");
     f.setting("analysisType","PreloadedDynamics");
     const auto transient=f.solve();
     require(transient.frames.size()>2&&transient.termination==ResultTermination::EndTime,"preload must continue dynamics");
-    for(const auto& frame:transient.frames){near(frame.bodies.front().positionMm[2],expected,2e-6,"preload lost prestress/reference");
-        near(frame.bodies.front().velocityMmS[2],0,1e-5,"preload injected an artificial impulse");}
+    for(const auto& frame:transient.frames){expectNear(frame.bodies.front().positionMm[2],expected,2e-6,"preload lost prestress/reference");
+        expectNear(frame.bodies.front().velocityMmS[2],0,1e-5,"preload injected an artificial impulse");}
     f.setting("analysisType","Static");f.setting("staticMaxIterations",1);f.setting("staticStepDamping",.5);
     NativeMotionInput limited;QString limitedError;require(prepareNativeMotion(f.cad,f.document,0,limited,limitedError),limitedError);
     RigidResult rejected;rejected.scenarioId=912;
@@ -90,15 +90,15 @@ void torsionPreload(){
     collection(f.document,"springs",{QJsonObject{{"id",0},{"springType","Torsional"},{"jointId",0},
         {"stiffness",.01},{"freeValue",0},{"installValue",0},{"damping",0}}});
     const auto result=f.solve();
-    near(channel(result,"drives",0,"Coordinate").values.front(),10,1e-5,"torsional static T/k in public degrees");
-    near(channel(result,"drives",0,"EffortApplied").values.front(),.1,1e-12,"static force actuator load");
+    expectNear(channel(result,"drives",0,"Coordinate").values.front(),10,1e-5,"torsional static T/k in public degrees");
+    expectNear(channel(result,"drives",0,"EffortApplied").values.front(),.1,1e-12,"static force actuator load");
 }
 
 void supportedWeightReaction(){
     Fixture f(true);f.setting("analysisType","Static");f.setting("gravity",xyz(0,0,-9810));
     const auto result=f.solve();
-    near(result.frames.front().bodies.front().positionMm[2],5,1e-12,"joint support displaced in static solve");
-    near(std::abs(channel(result,"joints",0,"ReactionForce").values[2]),9.81,1e-9,"static force residual omitted support reaction");
+    expectNear(result.frames.front().bodies.front().positionMm[2],5,1e-12,"joint support displaced in static solve");
+    expectNear(std::abs(channel(result,"joints",0,"ReactionForce").values[2]),9.81,1e-9,"static force residual omitted support reaction");
 }
 
 void contactPreload(){
@@ -123,11 +123,11 @@ void contactPreload(){
     const auto equilibrium=f.solve();
     const double height=equilibrium.frames.front().bodies.front().positionMm[2];
     require(height<5&&height>4.9,"static contact did not find a compressed supporting contact");
-    near(channel(equilibrium,"joints",0,"ReactionForce").values[2],0,1e-5,"guide incorrectly supported weight instead of contact");
+    expectNear(channel(equilibrium,"joints",0,"ReactionForce").values[2],0,1e-5,"guide incorrectly supported weight instead of contact");
     f.setting("analysisType","PreloadedDynamics");f.setting("endTime",.02);f.setting("stepSize",.0001);
     const auto transient=f.solve();
-    for(const auto& frame:transient.frames){near(frame.bodies.front().positionMm[2],height,1e-5,"contact preload changed during continuation");
-        near(frame.bodies.front().velocityMmS[2],0,.01,"contact preload introduced impulse");}
+    for(const auto& frame:transient.frames){expectNear(frame.bodies.front().positionMm[2],height,1e-5,"contact preload changed during continuation");
+        expectNear(frame.bodies.front().velocityMmS[2],0,.01,"contact preload introduced impulse");}
 }
 
 void effortAccelerationAndLimits(){
@@ -138,12 +138,12 @@ void effortAccelerationAndLimits(){
         const double effort=angular?.05:1;
         const auto& applied=channel(result,"drives",0,"EffortApplied");
         const auto& requested=channel(result,"drives",0,"EffortCommand");
-        for(std::size_t i=0;i<result.frames.size();++i){near(applied.values[i],effort,1e-12,"physical effort saturation");near(requested.values[i],2*effort,1e-12,"effort request retained");}
+        for(std::size_t i=0;i<result.frames.size();++i){expectNear(applied.values[i],effort,1e-12,"physical effort saturation");expectNear(requested.values[i],2*effort,1e-12,"effort request retained");}
         const auto& final=result.frames.back().bodies.front();
-        if(angular)near(final.angularVelocityDegS[2],effort*1000/(100.0/6)*.05*180/3.14159265358979323846,.005,"torque produces T/I acceleration");
-        else near(final.velocityMmS[2],1000*effort*.05,.005,"force produces F/m acceleration");
+        if(angular)expectNear(final.angularVelocityDegS[2],effort*1000/(100.0/6)*.05*180/3.14159265358979323846,.005,"torque produces T/I acceleration");
+        else expectNear(final.velocityMmS[2],1000*effort*.05,.005,"force produces F/m acceleration");
         const auto& actuator=channel(result,"drives",0,angular?"ActuationTorque":"ActuationForce");
-        near(actuator.values.back(),-effort,1e-10,"actuation wrench is the physical J-side load");
+        expectNear(actuator.values.back(),-effort,1e-10,"actuation wrench is the physical J-side load");
     }
     Fixture f;f.effort(false,20,10);
     auto drive=f.document.entity("drives",0);drive["powerLimit"]=.01;drive["noLoadSpeed"]=20;collection(f.document,"drives",{drive});
@@ -163,11 +163,11 @@ void effortServo(){
         const auto result=f.solve();
         const auto& target=channel(result,"controllers",0,"PidTarget");const auto& feedback=channel(result,"controllers",0,"PidFeedback");
         const auto& output=channel(result,"controllers",0,"PidOutput");
-        near(feedback.values.back(),target.values.back(),angular?.03:.003,"effort PID settles with true inertia");
+        expectNear(feedback.values.back(),target.values.back(),angular?.03:.003,"effort PID settles with true inertia");
         for(double value:output.values)require(std::abs(value)<=(angular?.5:1)+1e-12,"effort PID saturation exceeded");
         require(output.unit==(angular?QStringLiteral("N·mm"):QStringLiteral("N")),"effort PID result units");
         require(feedback.unit==(angular?QStringLiteral("°"):QStringLiteral("mm")),"effort feedback result units");
-        near(channel(result,"drives",0,"Coordinate").values.back(),angular?30:10,angular?.03:.003,"feedback sign changed intended physical travel");
+        expectNear(channel(result,"drives",0,"Coordinate").values.back(),angular?30:10,angular?.03:.003,"feedback sign changed intended physical travel");
         // A real force actuator does not teleport to its target at the first
         // step. This catches accidentally reusing a prescribed-speed motor.
         require(std::abs(feedback.values[1])<.01,"force servo prescribed a kinematic coordinate");
