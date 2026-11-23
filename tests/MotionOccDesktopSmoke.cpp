@@ -33,6 +33,8 @@
 #include <QTabBar>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QWheelEvent>
@@ -227,6 +229,41 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("mTreeView"));
         require(tree && tree->currentItem() && tree->currentItem()->parent()
             && tree->currentItem()->parent()->text(0) == QStringLiteral("部件"), QStringLiteral("No imported part selected in tree"));
+
+        auto* toolbar = window.findChild<QToolBar*>(QStringLiteral("viewToolBar"));
+        auto* pickMode = window.findChild<QToolButton*>(QStringLiteral("viewportPickMode"));
+        auto* statusSelection = window.findChild<QLabel*>(QStringLiteral("selectionStatus"));
+        auto* selectionDock = panes.value(QStringLiteral("Select"));
+        require(toolbar && pickMode && pickMode->menu() && statusSelection && selectionDock,
+            QStringLiteral("Viewport picking controls or selection status missing"));
+        auto* pickFace = pickMode->findChild<QAction*>(QStringLiteral("pickFace"));
+        auto* pickPart = pickMode->findChild<QAction*>(QStringLiteral("pickPart"));
+        require(pickFace && pickPart && toolbar->actions().contains(pickFace) && pickPart->isChecked(),
+            QStringLiteral("Picking mode actions are not shared by the toolbar and menu"));
+        pickFace->trigger();
+        window.command(Command::Top)->trigger();
+        const auto facePoint = viewport->rect().center();
+        mouse(*viewport, QEvent::MouseButtonPress, facePoint, Qt::LeftButton, Qt::LeftButton);
+        mouse(*viewport, QEvent::MouseButtonRelease, facePoint, Qt::LeftButton, Qt::NoButton);
+        require(!viewport->isPicking() && viewport->viewportSelection().size() == 1
+            && viewport->viewportSelection().front().kind == PickKind::Face
+            && statusSelection->text().contains(QStringLiteral("1 项")),
+            QStringLiteral("Face mode did not select geometry and update the status bar"));
+        QApplication::processEvents();
+        const auto statusPoint = statusSelection->rect().center();
+        mouse(*statusSelection, QEvent::MouseButtonPress, statusPoint, Qt::LeftButton, Qt::LeftButton);
+        mouse(*statusSelection, QEvent::MouseButtonRelease, statusPoint, Qt::LeftButton, Qt::NoButton);
+        require(!selectionDock->isClosed(), QStringLiteral("Selection status did not open the details dock"));
+        selectionDock->toggleView(false);
+        viewport->beginPick(PickKind::Vertex);
+        require(!pickFace->isEnabled(), QStringLiteral("Toolbar mode can override an editor's pick filter"));
+        viewport->endPick();
+        require(pickFace->isEnabled() && pickFace->isChecked() && viewport->viewportSelection().size() == 1,
+            QStringLiteral("Editor session did not restore viewport pick state"));
+        pickPart->trigger();
+        window.command(Command::Isometric)->trigger();
+        window.command(Command::Fit)->trigger();
+        line(QStringLiteral("Viewport face filter, selection status dock and editor pick isolation passed"));
 
         window.command(Command::ClearSelection)->trigger();
         const auto center = viewport->rect().center();

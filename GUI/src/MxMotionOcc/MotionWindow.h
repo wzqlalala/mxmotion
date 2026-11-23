@@ -54,10 +54,10 @@ struct ModelNode {
 enum class Command {
     New, Open, Save, SaveAs, Import, Export, Remove,
     Box, Cylinder, Sphere,
-    Fit, Front, Top, Right, Isometric,
+    Fit, Front, Back, Top, Bottom, Left, Right, Isometric,
     NavigationClassic, NavigationNx,
     ShadedEdges, Shaded, Wireframe, MeshDisplay,
-    PickPart, ClearSelection, ShowAll, HideSelected, HideOthers, InvertVisibility,
+    ClearSelection, ShowAll, HideSelected, HideOthers, InvertVisibility,
     GenerateMesh, RemoveMesh, ExportMesh,
     AddBody, BatchBodies, AddRevolute, AddPrismatic, AddFixed, AddSpeedDrive, AddPositionDrive,
     NewScenario, Solve, StopSolve, LoadRigidExample,
@@ -101,6 +101,8 @@ private:
     void createCommands();
     void createWorkspace();
     void createStatusBar();
+    void updateSelectionInfo();
+    QString partSummary() const;
     QWidget* createModelBrowser();
     QWidget* createParameterPage();
     QWidget* createViewportFrame();
@@ -244,7 +246,7 @@ private:
     QPushButton* m_meshCancelButton = nullptr;
     QLabel* m_notice = nullptr;
     QLabel* m_selection = nullptr;
-    QLabel* m_selectionDetails = nullptr;
+    QPlainTextEdit* m_selectionDetails = nullptr;
     QPlainTextEdit* m_output = nullptr;
     QProgressBar* m_progress = nullptr;
     QProcess* m_worker = nullptr;

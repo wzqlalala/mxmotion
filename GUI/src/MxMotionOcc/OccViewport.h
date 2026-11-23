@@ -9,6 +9,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -84,6 +85,10 @@ public:
     MouseNavigationMode mouseNavigationMode() const;
     QString mouseNavigationHint() const;
     void setPickEnabled(bool enabled);
+    // An empty filter means smart CAD picking. Editor sessions temporarily take precedence.
+    void setSelectionFilter(std::optional<PickKind> kind);
+    const QVector<PickResult>& viewportSelection() const;
+    void clearViewportSelection();
     void beginPick(PickKind kind, bool multiple = false,
                    const std::set<int>& allowedParts = {}, const QVector<PickResult>& initial = {});
     void endPick();
@@ -113,8 +118,11 @@ public:
     void fitAll();
     void viewIsometric();
     void viewFront();
+    void viewBack();
     void viewTop();
+    void viewBottom();
     void viewRight();
+    void viewLeft();
     // Original display-menu controls use screen axes Sx/Sy/Sz. They never
     // change the document's world coordinates or the active pick collector.
     void rotateView(const QString& screenAxis, double degrees);
@@ -128,6 +136,8 @@ signals:
     void partPicked(int id); // -1 when nothing was hit
     void graphicsError(const QString& message);
     void pickSelectionChanged(const QVector<MotionOcc::PickResult>& selection);
+    void viewportSelectionChanged();
+    void pickSessionChanged(bool active);
     void pickCancelled();
 
 protected:
@@ -154,6 +164,8 @@ private:
     bool uploadScene();
     bool uploadChangedMeshes();
     int pickPart(const QPointF& position) const;
+    PickResult pickAt(const QPointF& position, PickKind kind, const std::set<int>& allowedParts) const;
+    void setViewOrientation(const QVector3D& direction, const QVector3D& up);
     void drawCadPickFeedback();
     void drawPickOverlay();
     void drawScalarLegend();

@@ -2,12 +2,18 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QCursor>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QLocale>
 #include <QMessageBox>
 #include <QResource>
+#include <QScreen>
+#include <QSplashScreen>
 #include <QStyleFactory>
 #include <QSurfaceFormat>
+#include <QTimer>
 #include <QTranslator>
 
 #ifdef MX_OCC_DESKTOP_SMOKE
@@ -104,6 +110,18 @@ int main(int argc, char* argv[])
     if (args.isSet(renderFeedbackSmoke)) return runMotionOccRenderFeedbackSmoke(app,args.value(renderFeedbackSmoke));
 #endif
 
+    auto* screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    const auto size = screen->availableGeometry().size();
+    const QPixmap artwork(QStringLiteral(":/mMainWidgets/Icon/start_Motion.png"));
+    QSplashScreen splash(screen, artwork.scaled(size.width() * 7 / 24, size.height() * 5 / 12,
+        Qt::KeepAspectRatio, Qt::SmoothTransformation), Qt::WindowDoesNotAcceptFocus);
+    splash.setAttribute(Qt::WA_ShowWithoutActivating);
+    QElapsedTimer startup;
+    startup.start();
+    splash.show();
+    app.processEvents(QEventLoop::ExcludeUserInputEvents);
+
     MotionOcc::MotionWindow window;
     if (!args.positionalArguments().isEmpty()) {
         const auto path = args.positionalArguments().first();
@@ -111,6 +129,9 @@ int main(int argc, char* argv[])
         else window.importCad(path);
     }
     if (args.isSet(motion)) window.importMotionJson(args.value(motion));
-    window.showMaximized();
+    QTimer::singleShot(int(qMax<qint64>(0, 750 - startup.elapsed())), &window, [&] {
+        window.showMaximized();
+        splash.finish(&window);
+    });
     return app.exec();
 }

@@ -750,6 +750,8 @@ struct OccViewport::State {
     DisplayMode mode = DisplayMode::ShadedEdges;
     int selected = -1;
     bool pickEnabled = true;
+    std::optional<PickKind> selectionFilter = PickKind::Part;
+    QVector<PickResult> viewportSelection;
     bool pickActive = false, pickMultiple = false, pickFeedbackVisible = true;
     PickKind pickKind = PickKind::Part;
     QColor pickColor{232,130,28};
@@ -981,6 +983,9 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
         return !before || !after || !before->IsEqual(*after);
     };
     s.picks.erase(std::remove_if(s.picks.begin(),s.picks.end(),stale),s.picks.end());
+    const int previousSelectionSize = s.viewportSelection.size();
+    auto& selection = s.viewportSelection;
+    selection.erase(std::remove_if(selection.begin(), selection.end(), stale), selection.end());
     for(auto layer=s.auxiliaryPicks.begin();layer!=s.auxiliaryPicks.end();) {
         auto& picks=layer->second.picks;
         picks.erase(std::remove_if(picks.begin(),picks.end(),stale),picks.end());
@@ -1000,6 +1005,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
     s.updateBounds();
     s.sceneDirty = true;
     update();
+    if (selection.size() != previousSelectionSize) emit viewportSelectionChanged();
 }
 
 void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
@@ -1102,6 +1108,26 @@ void OccViewport::setPickEnabled(bool enabled)
     if (!enabled) interruptPointerOperation();
 }
 
+void OccViewport::setSelectionFilter(std::optional<PickKind> kind)
+{
+    if (m_state->selectionFilter == kind) return;
+    m_state->selectionFilter = kind;
+    m_state->hover = {};
+    interruptPointerOperation();
+    clearViewportSelection();
+    update();
+}
+
+const QVector<PickResult>& OccViewport::viewportSelection() const { return m_state->viewportSelection; }
+
+void OccViewport::clearViewportSelection()
+{
+    if (m_state->viewportSelection.isEmpty()) return;
+    m_state->viewportSelection.clear();
+    emit viewportSelectionChanged();
+    update();
+}
+
 void OccViewport::beginPick(PickKind kind, bool multiple, const std::set<int>& allowedParts,
                             const QVector<PickResult>& initial)
 {
@@ -1113,16 +1139,19 @@ void OccViewport::beginPick(PickKind kind, bool multiple, const std::set<int>& a
     setFocus(Qt::OtherFocusReason);
     setCursor(Qt::CrossCursor);
     update();
+    emit pickSessionChanged(true);
 }
 
 void OccViewport::endPick()
 {
     auto& s = *m_state;
+    const bool wasPicking = s.pickActive;
     s.pickActive = false; s.picks.clear(); s.hover = {}; s.pickParts.clear();
     s.pickFeedbackVisible = true;
     interruptPointerOperation();
     unsetCursor();
     update();
+    if (wasPicking) emit pickSessionChanged(false);
 }
 
 bool OccViewport::isPicking() const { return m_state->pickActive; }
@@ -1300,6 +1329,18 @@ QPointF OccViewport::projectPoint(const Vec& position, int partId) const
 PickResult OccViewport::pickAt(const QPointF& position) const
 {
     const auto& s = *m_state;
+    if (s.pickActive) return pickAt(position, s.pickKind, s.pickParts);
+    if (s.selectionFilter) return pickAt(position, *s.selectionFilter, {});
+    for (const auto kind : {PickKind::Vertex, PickKind::Edge, PickKind::Face}) {
+        const auto hit = pickAt(position, kind, {});
+        if (hit.isValid()) return hit;
+    }
+    return {};
+}
+
+PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std::set<int>& allowedParts) const
+{
+    const auto& s = *m_state;
     PickResult best;
     if (!s.pickEnabled || !s.bounds.valid || !QRectF(rect()).contains(position)) return best;
     const auto frame = s.camera.frame(size(), s.bounds);
@@ -1342,24 +1383,24 @@ PickResult OccViewport::pickAt(const QPointF& position) const
         best = candidate; bestOffset = offset2; bestDepth = depth;
     };
     for (const auto& [partId, geometry] : s.pickGeometry) {
-        if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
+        if (!allowedParts.empty() && !allowedParts.count(partId)) continue;
         const auto part = std::find_if(s.parts.cbegin(), s.parts.cend(), [partId](const auto& p) { return p.id == partId; });
         if (part == s.parts.cend() || part->suppressed || part->deformed) continue;
-        if (s.pickKind < PickKind::Node && !intersectsBounds(restRay(world, s.poseFor(partId)),
+        if (kind < PickKind::Node && !intersectsBounds(restRay(world, s.poseFor(partId)),
                 part->cad.bounds, visibleDepth + 8 * unit, 8 * unit)) continue;
-        PickResult candidate; candidate.kind = s.pickKind; candidate.partId = partId;
+        PickResult candidate; candidate.kind = kind; candidate.partId = partId;
         try {
-            if (s.pickKind == PickKind::Vertex) {
+            if (kind == PickKind::Vertex) {
                 for (int index = 1; index <= geometry.vertices.Extent(); ++index) {
                     candidate.index = index;
                     pointHit(vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(index)))), candidate);
                 }
-            } else if (s.pickKind == PickKind::Node) {
+            } else if (kind == PickKind::Node) {
                 for (int index = 0; index < int(geometry.nodes.size()); ++index) {
                     candidate.index = index; candidate.nodeId = geometry.nodeIds.value(index, index + 1);
                     pointHit(geometry.nodes[index], candidate);
                 }
-            } else if (s.pickKind == PickKind::MeshEdge) {
+            } else if (kind == PickKind::MeshEdge) {
                 for (std::size_t index = 0; index < geometry.meshEdges.size(); ++index) {
                     const auto& edge = geometry.meshEdges[index];
                     const auto& pa = geometry.nodes[edge[0]]; const auto& pb = geometry.nodes[edge[1]];
@@ -1378,9 +1419,9 @@ PickResult OccViewport::pickAt(const QPointF& position) const
                     candidate.nodeIds = {geometry.nodeIds.value(edge[0],int(edge[0]+1)),geometry.nodeIds.value(edge[1],int(edge[1]+1))};
                     best = candidate; bestOffset = offset2; bestDepth = depth;
                 }
-            } else if (s.pickKind == PickKind::MeshFace || s.pickKind == PickKind::Element) {
+            } else if (kind == PickKind::MeshFace || kind == PickKind::Element) {
                 const auto ray = restRay(world,s.poseFor(partId));
-                const bool volume = s.pickKind == PickKind::Element && !geometry.elements.empty();
+                const bool volume = kind == PickKind::Element && !geometry.elements.empty();
                 const std::size_t count = volume ? geometry.elements.size() : geometry.meshFaces.size();
                 constexpr int tetFaces[4][3] = {{0,2,1},{0,1,3},{0,3,2},{1,2,3}};
                 for (std::size_t index = 0; index < count; ++index) {
@@ -1408,10 +1449,10 @@ PickResult OccViewport::pickAt(const QPointF& position) const
                     }
                     for (int k = 0; k < 3; ++k) candidate.hitPosition[k] = ray.origin[k]+ray.direction[k]*depth;
                     candidate.direction = normal;
-                    candidate.hasDirection = s.pickKind == PickKind::MeshFace && normalise(candidate.direction);
+                    candidate.hasDirection = kind == PickKind::MeshFace && normalise(candidate.direction);
                     best = candidate; bestDepth = depth;
                 }
-            } else if (s.pickKind == PickKind::Edge) {
+            } else if (kind == PickKind::Edge) {
                 for (std::size_t index = 0; index < geometry.curves.size(); ++index) {
                     const auto& curve = geometry.curves[index];
                     for (std::size_t j = 1; j < curve.points.size(); ++j) {
@@ -1455,22 +1496,22 @@ PickResult OccViewport::pickAt(const QPointF& position) const
                     const double depth = intersector.WParameter(hit);
                     if (depth < 0 || depth >= bestDepth || depth > visibleDepth + 8 * unit) continue;
                     const auto face = intersector.Face(hit);
-                    candidate.index = s.pickKind == PickKind::Face ? geometry.faces.FindIndex(face) : -1;
-                    if (s.pickKind == PickKind::Face && candidate.index < 1) continue;
-                    if (s.pickKind == PickKind::Solid) {
+                    candidate.index = kind == PickKind::Face ? geometry.faces.FindIndex(face) : -1;
+                    if (kind == PickKind::Face && candidate.index < 1) continue;
+                    if (kind == PickKind::Solid) {
                         const int faceId=geometry.faces.FindIndex(face);
                         candidate.index=faceId>0 ? geometry.faceSolids[std::size_t(faceId)] : -1;
                         if (candidate.index<1) continue; // shared/ambiguous solid boundary
                     }
                     candidate.hitPosition = vec(intersector.Pnt(hit));
                     GProp_GProps props;
-                    if (s.pickKind == PickKind::Part) {
+                    if (kind == PickKind::Part) {
                         BRepGProp::VolumeProperties(geometry.shape, props);
                         if (std::abs(props.Mass()) < 1e-14) BRepGProp::SurfaceProperties(geometry.shape, props);
-                    } else if (s.pickKind==PickKind::Solid) BRepGProp::VolumeProperties(geometry.solids(candidate.index),props);
+                    } else if (kind==PickKind::Solid) BRepGProp::VolumeProperties(geometry.solids(candidate.index),props);
                     else BRepGProp::SurfaceProperties(face, props);
                     candidate.position = std::abs(props.Mass()) > 1e-14 ? vec(props.CentreOfMass()) : candidate.hitPosition;
-                    if (s.pickKind == PickKind::Face) {
+                    if (kind == PickKind::Face) {
                         BRepAdaptor_Surface surface(face);
                         gp_Pnt point; gp_Vec du, dv;
                         surface.D1(intersector.UParameter(hit), intersector.VParameter(hit), point, du, dv);
@@ -1497,10 +1538,10 @@ PickResult OccViewport::pickAt(const QPointF& position) const
             }
         } catch (const Standard_Failure&) { /* Ignore an unevaluable entity, never invent a hit. */ }
     }
-    if (s.pickKind == PickKind::Part && !best.isValid()) {
+    if (kind == PickKind::Part && !best.isValid()) {
         // Wire/edge-only imported construction geometry has no face intersector.
         const int partId = pickPart(position);
-        if (partId > 0 && (s.pickParts.empty() || s.pickParts.count(partId))) {
+        if (partId > 0 && (allowedParts.empty() || allowedParts.count(partId))) {
             const auto found = s.pickGeometry.find(partId);
             if (found != s.pickGeometry.end()) {
                 GProp_GProps props; BRepGProp::LinearProperties(found->second.shape, props);
@@ -1531,32 +1572,21 @@ void OccViewport::viewIsometric()
     update();
 }
 
-void OccViewport::viewFront()
+void OccViewport::setViewOrientation(const QVector3D& direction, const QVector3D& up)
 {
     interruptPointerOperation();
     m_state->rememberCamera();
-    m_state->camera.rotation = viewRotation({0, -1, 0}, {0, 0, 1});
+    m_state->camera.rotation = viewRotation(direction, up);
     m_state->rememberCamera();
     update();
 }
 
-void OccViewport::viewTop()
-{
-    interruptPointerOperation();
-    m_state->rememberCamera();
-    m_state->camera.rotation = viewRotation({0, 0, 1}, {0, 1, 0});
-    m_state->rememberCamera();
-    update();
-}
-
-void OccViewport::viewRight()
-{
-    interruptPointerOperation();
-    m_state->rememberCamera();
-    m_state->camera.rotation = viewRotation({1, 0, 0}, {0, 0, 1});
-    m_state->rememberCamera();
-    update();
-}
+void OccViewport::viewFront() { setViewOrientation({0, -1, 0}, {0, 0, 1}); }
+void OccViewport::viewBack() { setViewOrientation({0, 1, 0}, {0, 0, 1}); }
+void OccViewport::viewTop() { setViewOrientation({0, 0, 1}, {0, 1, 0}); }
+void OccViewport::viewBottom() { setViewOrientation({0, 0, -1}, {0, 1, 0}); }
+void OccViewport::viewRight() { setViewOrientation({1, 0, 0}, {0, 0, 1}); }
+void OccViewport::viewLeft() { setViewOrientation({-1, 0, 0}, {0, 0, 1}); }
 
 namespace {
 QVector3D screenRotationAxis(const QString& axis)
@@ -1908,7 +1938,8 @@ void OccViewport::paintGL()
             const bool meshed = part.usesMesh(s.mode);
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
             if (!gpu.triangleCount) continue;
-            const bool hovered = !s.pickActive && s.pickEnabled && s.hover.partId == part.id;
+            const bool hovered = !s.pickActive && s.selectionFilter == PickKind::Part &&
+                                 s.pickEnabled && s.hover.partId == part.id;
             const auto color = part.id == s.selected ? rgb(63, 137, 216) :
                                hovered ? rgb(156, 115, 166) :
                                meshed ? rgb(138, 166, 189) : rgb(110, 129, 151);
@@ -1999,8 +2030,9 @@ void OccViewport::drawCadPickFeedback() try
         if (!needed.insert(key).second) return; // selected styling wins over hover
         entries.push_back({pick, &*part, std::size_t(part - s.parts.begin()), color});
     };
-    if (s.pickActive && s.pickFeedbackVisible) {
-        for (const auto& pick : s.picks) append(pick, QVector3D(s.pickColor.redF(),s.pickColor.greenF(),s.pickColor.blueF()));
+    if (s.pickFeedbackVisible && (s.pickActive || s.selectionFilter != PickKind::Part)) {
+        const auto& selection = s.pickActive ? s.picks : s.viewportSelection;
+        for (const auto& pick : selection) append(pick, QVector3D(s.pickColor.redF(),s.pickColor.greenF(),s.pickColor.blueF()));
         append(s.hover, rgb(199, 46, 153));
     }
     for (const auto& layer : s.auxiliaryPicks)
@@ -2280,11 +2312,12 @@ void OccViewport::drawScalarLegend()
 void OccViewport::drawPickOverlay()
 {
     const auto& s = *m_state;
-    const bool showActive=s.pickActive && s.pickFeedbackVisible;
+    const bool showActive = s.pickFeedbackVisible && (s.pickActive || s.selectionFilter != PickKind::Part);
+    const auto kind = s.pickActive ? s.pickKind : s.selectionFilter.value_or(PickKind::Part);
     if (!showActive && s.auxiliaryPicks.empty()) return;
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    if (showActive && s.pickKind == PickKind::Node) {
+    if (showActive && kind == PickKind::Node) {
         painter.setPen(QPen(QColor(37, 116, 174, 190), 1));
         painter.setBrush(QColor(226, 245, 255, 220));
         for (const auto& [partId, geometry] : s.pickGeometry) {
@@ -2294,7 +2327,7 @@ void OccViewport::drawPickOverlay()
                 if (QRectF(rect()).contains(screen)) painter.drawEllipse(screen, 2.5, 2.5);
             }
         }
-    } else if (showActive && (s.pickKind == PickKind::MeshEdge || s.pickKind == PickKind::MeshFace || s.pickKind == PickKind::Element)) {
+    } else if (showActive && (kind == PickKind::MeshEdge || kind == PickKind::MeshFace || kind == PickKind::Element)) {
         painter.setPen(QPen(QColor(35,108,151,150),1));
         for (const auto& [partId, geometry] : s.pickGeometry) {
             if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
@@ -2335,12 +2368,14 @@ void OccViewport::drawPickOverlay()
     for (const auto& layer : s.auxiliaryPicks)
         for (const auto& pick : layer.second.picks) highlight(pick, layer.second.color);
     if (!showActive) return;
-    for (const auto& pick : s.picks) highlight(pick, s.pickColor);
+    const auto& selection = s.pickActive ? s.picks : s.viewportSelection;
+    for (const auto& pick : selection) highlight(pick, s.pickColor);
     if (s.hover.isValid()) highlight(s.hover, QColor(199, 46, 153));
     if (s.boxSelecting) {
         painter.setPen(QPen(QColor(25, 114, 195), 1, Qt::DashLine));
         painter.setBrush(QColor(60, 160, 230, 35)); painter.drawRect(s.pickRectangle);
     }
+    if (!s.pickActive) return;
     const QStringList names{tr("部件"), tr("顶点"), tr("边"), tr("面"), tr("节点"), tr("网格边"), tr("网格面"), tr("单元"), tr("实体")};
     const QString label = tr("拾取%1 · 已选 %2 · 右键撤回 · Esc 结束%3")
         .arg(names.value(int(s.pickKind))).arg(s.picks.size())
@@ -2458,7 +2493,9 @@ void OccViewport::mousePressEvent(QMouseEvent* event)
         s.navigation = s.button == Qt::LeftButton ? State::Navigation::Orbit : State::Navigation::Pan;
     }
     if (s.navigation == State::Navigation::Orbit) s.beginOrbit(s.press, size());
-    s.boxSelecting = s.pickEnabled && s.pickActive && s.pickMultiple && s.pickKind == PickKind::Node &&
+    const bool selectingNodes = s.pickActive ? s.pickMultiple && s.pickKind == PickKind::Node
+                                            : s.selectionFilter == PickKind::Node;
+    s.boxSelecting = s.pickEnabled && selectingNodes &&
                      s.button == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier);
     s.pickRectangle = QRectF(s.press, s.press);
     event->accept();
@@ -2469,7 +2506,7 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event)
     auto& s = *m_state;
     if (s.button == Qt::NoButton || !(event->buttons() & s.button)) {
         if (s.button != Qt::NoButton) interruptPointerOperation();
-        if (s.pickActive) {
+        if (s.pickActive || s.selectionFilter != PickKind::Part) {
             s.hover = pickAt(event->localPos());
             update(); event->accept(); return;
         }
@@ -2481,7 +2518,8 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event)
     }
     if (s.boxSelecting) {
         s.pickRectangle = QRectF(s.press, event->localPos()).normalized();
-        s.dragging = true; update(); event->accept(); return;
+        s.dragging = s.pickRectangle.width() + s.pickRectangle.height() >= QApplication::startDragDistance();
+        update(); event->accept(); return;
     }
     if (s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
         s.updateNxNavigation(event->modifiers(), event->localPos(), size())) {
@@ -2500,39 +2538,49 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
         QOpenGLWidget::mouseReleaseEvent(event);
         return;
     }
-    if (s.boxSelecting) {
-        s.pickRectangle = QRectF(s.press, event->localPos()).normalized();
+    const auto rectangle = QRectF(s.press, event->localPos()).normalized();
+    if (s.boxSelecting && rectangle.width() + rectangle.height() >= QApplication::startDragDistance()) {
+        auto& selection = s.pickActive ? s.picks : s.viewportSelection;
         for (const auto& [partId, geometry] : s.pickGeometry) {
             if (!s.pickParts.empty() && !s.pickParts.count(partId)) continue;
             for (int index = 0; index < int(geometry.nodes.size()); ++index) {
-                if (!s.pickRectangle.contains(projectPoint(geometry.nodes[index], partId))) continue;
+                if (!rectangle.contains(projectPoint(geometry.nodes[index], partId))) continue;
                 PickResult pick; pick.kind = PickKind::Node; pick.partId = partId;
                 pick.index = index; pick.nodeId = geometry.nodeIds.value(index, index + 1);
                 pick.position = pick.hitPosition = geometry.nodes[index];
-                if (std::none_of(s.picks.cbegin(), s.picks.cend(), [&](const auto& p) { return samePick(p, pick); })) s.picks.append(pick);
+                if (std::none_of(selection.cbegin(), selection.cend(), [&](const auto& p) { return samePick(p, pick); }))
+                    selection.append(pick);
             }
         }
         interruptPointerOperation();
-        emit pickSelectionChanged(s.picks); update(); event->accept(); return;
+        if (s.pickActive) emit pickSelectionChanged(selection);
+        else emit viewportSelectionChanged();
+        update(); event->accept(); return;
     }
     const bool changedMode = s.navigationMode == MouseNavigationMode::Nx && s.button == Qt::MiddleButton &&
                             s.updateNxNavigation(event->modifiers(), event->localPos(), size());
     if (!changedMode) s.dragTo(event->localPos(), size());
     const bool click = s.button == Qt::LeftButton && !s.dragging && s.pickEnabled;
-    const bool subtract = s.button == Qt::RightButton && !s.dragging && s.pickEnabled && s.pickActive;
+    const bool typedSelection = s.pickActive || s.selectionFilter != PickKind::Part;
+    const bool subtract = s.button == Qt::RightButton && !s.dragging && s.pickEnabled && typedSelection;
     s.rememberCamera();
     interruptPointerOperation();
     event->accept();
     if (click) {
-        if (s.pickActive) {
+        if (typedSelection) {
             const auto hit = pickAt(event->localPos());
+            auto& selection = s.pickActive ? s.picks : s.viewportSelection;
+            const bool multiple = s.pickActive ? s.pickMultiple : event->modifiers().testFlag(Qt::ControlModifier);
             if (hit.isValid()) {
-                if (!s.pickMultiple) s.picks.clear();
-                const auto found = std::find_if(s.picks.begin(), s.picks.end(), [&](const auto& p) { return samePick(p, hit); });
-                if (found == s.picks.end()) s.picks.append(hit);
-                else s.picks.erase(found);
+                if (!multiple) selection.clear();
+                const auto found = std::find_if(selection.begin(), selection.end(), [&](const auto& p) { return samePick(p, hit); });
+                if (found == selection.end()) selection.append(hit);
+                else selection.erase(found);
                 s.hover = hit;
-                emit pickSelectionChanged(s.picks);
+                if (s.pickActive) emit pickSelectionChanged(selection);
+                else emit viewportSelectionChanged();
+            } else if (!s.pickActive && !multiple) {
+                clearViewportSelection();
             }
             update(); return;
         }
@@ -2540,7 +2588,12 @@ void OccViewport::mouseReleaseEvent(QMouseEvent* event)
         selectPart(id);
         emit partPicked(id);
     } else if (subtract) {
-        if (!s.picks.isEmpty()) { s.picks.removeLast(); emit pickSelectionChanged(s.picks); }
+        auto& selection = s.pickActive ? s.picks : s.viewportSelection;
+        if (!selection.isEmpty()) {
+            selection.removeLast();
+            if (s.pickActive) emit pickSelectionChanged(selection);
+            else emit viewportSelectionChanged();
+        }
         update();
     }
 }

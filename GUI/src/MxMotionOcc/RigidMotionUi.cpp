@@ -418,6 +418,7 @@ void MotionWindow::appendRigidNodes(QTreeWidgetItem* root, const std::map<QStrin
 
 void MotionWindow::selectRigidNode(ModelNode node)
 {
+    m_viewport->clearViewportSelection();
     m_selectionNode = node;
     m_partId = -1;
     m_viewport->selectPart(-1);
@@ -482,12 +483,14 @@ void MotionWindow::showEditor(QWidget* editor)
     m_parameterTitle->hide();
     m_parameterDetails->hide();
     m_editor = editor;
+    const bool originalPanel = editor->property("mxOriginalMotionPanel").toBool();
+    if (originalPanel) m_parameterLayout->setContentsMargins(0, 0, 0, 0);
     const bool scrollable = qobject_cast<QScrollArea*>(editor) != nullptr;
     m_parameterLayout->insertWidget(m_parameterLayout->count() - 1, m_editor, scrollable ? 1 : 0);
     m_parameterLayout->setStretch(m_parameterLayout->count() - 1, scrollable ? 0 : 1);
     openDock(m_parameterDock);
     m_editor->show();
-    if (editor->property("mxOriginalMotionPanel").toBool()) {
+    if (originalPanel) {
         QPointer<QWidget> guard(editor);
         QTimer::singleShot(0, this, [this, guard] {
             if (!guard || guard != m_editor)return;
@@ -528,6 +531,7 @@ void MotionWindow::closeEditor()
     m_parameterLayout->removeWidget(m_editor);
     m_editor->deleteLater();
     m_editor = nullptr;
+    m_parameterLayout->setContentsMargins(8, 7, 8, 7);
     const int suggested = 12 * MxFunctions::UiMetrics::baseH()
         + 8 * qMax(0, 6 - MxFunctions::UiMetrics::baseG()) + 8;
     m_parameterDock->setMinimumWidth(suggested - 40);

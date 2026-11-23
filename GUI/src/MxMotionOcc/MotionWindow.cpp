@@ -47,6 +47,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -247,7 +248,10 @@ void MotionWindow::createCommands()
     add(Command::Sphere, tr("球体"), geo + "球体_大@3x.png", [this] { addPrimitive(Primitive::Sphere); });
     add(Command::Fit, tr("自适应视图"), view + "zishiyingshitu.png", [this] { m_viewport->fitAll(); }, QKeySequence(Qt::Key_F));
     add(Command::Front, tr("前视图"), view + "qianshitu.png", [this] { m_viewport->viewFront(); });
+    add(Command::Back, tr("后视图"), view + "houshitu.png", [this] { m_viewport->viewBack(); });
     add(Command::Top, tr("俯视图"), view + "xiashitu.png", [this] { m_viewport->viewTop(); });
+    add(Command::Bottom, tr("仰视图"), view + "shangshitu.png", [this] { m_viewport->viewBottom(); });
+    add(Command::Left, tr("左视图"), view + "zuoshitu.png", [this] { m_viewport->viewLeft(); });
     add(Command::Right, tr("右视图"), view + "youshitu.png", [this] { m_viewport->viewRight(); });
     add(Command::Isometric, tr("轴侧视图"), view + "zhouceshitu.png", [this] { m_viewport->viewIsometric(); });
 
@@ -280,10 +284,6 @@ void MotionWindow::createCommands()
     mode(Command::Wireframe, tr("线框模型"), "xiankuangmoxing.png", OccViewport::DisplayMode::Wireframe);
     mode(Command::MeshDisplay, tr("网格显示"), "wanggexianshi3x.png", OccViewport::DisplayMode::Mesh);
     command(Command::ShadedEdges)->setChecked(true);
-    auto* pick = add(Command::PickPart, tr("部件选择"), "choice/weizhi3x.png",
-        [this](bool checked) { m_viewport->setPickEnabled(checked); });
-    pick->setCheckable(true);
-    pick->setChecked(true);
     add(Command::ClearSelection, tr("清除选择"), "display/yincangquanbu.png", [this] {
         if (m_viewport->isPicking()) { m_viewport->endPick(); emit m_viewport->pickCancelled(); }
         else selectPart(-1);
@@ -385,9 +385,9 @@ void MotionWindow::createWorkspace()
     m_parameterDock->toggleView(true);
     m_treeArea->setCurrentDockWidget(m_modelDock);
 
-    m_selectionDetails = new QLabel(tr("当前没有选中的部件。"));
-    m_selectionDetails->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    m_selectionDetails->setContentsMargins(8, 8, 8, 8);
+    m_selectionDetails = new QPlainTextEdit;
+    m_selectionDetails->setReadOnly(true);
+    m_selectionDetails->setFrameShape(QFrame::NoFrame);
     m_selectionDock = addPane("Select", tr("选择信息"), m_selectionDetails);
     auto* bottom = m_docks->addDockWidget(ads::BottomDockWidgetArea, m_selectionDock);
     m_output = new QPlainTextEdit;
@@ -406,11 +406,10 @@ ads::CDockWidget* MotionWindow::addPane(const QString& key, const QString& title
     auto* dock = new ads::CDockWidget(m_docks, title);
     dock->setObjectName(key);
     dock->setMinimumSizeHintMode(ads::CDockWidget::MinimumSizeHintFromDockWidgetMinimumSize);
-    if (key == QStringLiteral("Curve")) {
-        // A plot canvas must resize with its dock. ADS's default scroll wrapper
-        // can otherwise leave most of the axes outside a short bottom pane.
+    if (key == QStringLiteral("Curve") || key == QStringLiteral("Select")) {
+        // The plot and the scrolling selection details both resize with the dock.
         dock->setWidget(content, ads::CDockWidget::ForceNoScrollArea);
-        dock->setMinimumSize(300, 240);
+        if (key == QStringLiteral("Curve")) dock->setMinimumSize(300, 240);
     } else {
         dock->setWidget(content);
     }
@@ -445,6 +444,9 @@ void MotionWindow::applyDockTheme()
         "ads--CDockWidgetTab QLabel { color:%4; font-size:%5px; background:transparent; font-weight:400; }"
         "ads--CDockWidgetTab[activeTab=\"true\"] { background:%6; }"
         "ads--CDockWidgetTab:hover { background:%7; }"
+        "QWidget[mxSurface=\"true\"], QToolBar#viewToolBar, QToolBar#viewDisplayBar { background:%6; }"
+        "QToolBar#viewToolBar, QToolBar#viewDisplayBar { border:none; spacing:1px; }"
+        "QToolButton#viewportPickMode { min-width:90px; }"
         "ads--CDockSplitter::handle { background:#a8b3c2; }"
         "ads--CDockSplitter::handle:horizontal { width:1px; }"
         "ads--CDockSplitter::handle:vertical { height:1px; }")
@@ -452,11 +454,20 @@ void MotionWindow::applyDockTheme()
         .arg(UiPalette::textHex()).arg(UiMetrics::bodyFontSize())
         .arg(UiPalette::surfaceHex(), UiPalette::hoverHex());
     m_docks->setStyleSheet(css);
+    statusBar()->setStyleSheet(QStringLiteral(
+        "QStatusBar { background:%1; color:%2; border-top:1px solid %3; }"
+        "QStatusBar::item { border:none; }"
+        "QLabel#selectionStatus { background:transparent; color:%2; border:none; padding:0 5px; }"
+        "QLabel#selectionStatus:hover { background:%4; }")
+        .arg(UiPalette::surfaceHex(), UiPalette::textHex(), UiPalette::borderHex(), UiPalette::hoverHex()));
+    updateSelectionInfo();
 }
 
 QWidget* MotionWindow::createViewportFrame()
 {
     auto* frame = new QWidget;
+    frame->setProperty("mxSurface", true);
+    frame->setAttribute(Qt::WA_StyledBackground);
     auto* layout = new QVBoxLayout(frame);
     layout->setSpacing(0);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -467,18 +478,69 @@ QWidget* MotionWindow::createViewportFrame()
     auto* viewTools = new QToolBar(tr("视图工具栏"), frame);
     viewTools->setObjectName(QStringLiteral("viewToolBar"));
     viewTools->setIconSize(QSize(20, 20));
+    viewTools->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     viewTools->addAction(command(Command::Fit));
+    const auto addViewTool = [this, viewTools](const QString& image, const QString& text, auto operation) {
+        connect(viewTools->addAction(icon(QStringLiteral("CenterMainWindow/") + image), text),
+            &QAction::triggered, this, operation);
+    };
+    addViewTool("suoxiaoyibei.png", tr("缩小一倍"), [this] { m_viewport->zoomView(false, 2); });
+    addViewTool("fangdayibei.png", tr("放大一倍"), [this] { m_viewport->zoomView(true, 2); });
+    addViewTool("nishizhenxuanzhuan.png", tr("逆时针旋转 30°"), [this] { m_viewport->rotateView("Sz", 30); });
+    addViewTool("shunshizhenxuanzhuan.png", tr("顺时针旋转 30°"), [this] { m_viewport->rotateView("Sz", -30); });
     viewTools->addSeparator();
-    for (const auto id : { Command::Front, Command::Top, Command::Right, Command::Isometric })
+    for (const auto id : { Command::Front, Command::Back, Command::Bottom, Command::Top, Command::Left, Command::Right, Command::Isometric })
         viewTools->addAction(command(id));
     viewTools->addSeparator();
     for (const auto id : { Command::ShadedEdges, Command::Wireframe, Command::Shaded, Command::MeshDisplay })
         viewTools->addAction(command(id));
     viewTools->addSeparator();
-    viewTools->addAction(command(Command::PickPart));
+    auto* pickButton = new QToolButton(frame);
+    pickButton->setObjectName(QStringLiteral("viewportPickMode"));
+    pickButton->setPopupMode(QToolButton::InstantPopup);
+    pickButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    pickButton->setToolTip(tr("切换视口拾取模式"));
+    auto* pickMenu = new mUiMenu(pickButton);
+    ThemeManager::applyMenuStyle(pickMenu);
+    pickButton->setMenu(pickMenu);
+    auto* pickModes = new QActionGroup(pickButton);
+    struct PickMode { std::optional<PickKind> kind; const char* image; QString label; const char* name; };
+    const PickMode modes[] = {
+        {std::nullopt, "zhinengxuanze3x.png", tr("智能选择"), "pickSmart"},
+        {PickKind::Vertex, "shiqudingdian3x.png", tr("拾取顶点"), "pickVertex"},
+        {PickKind::Edge, "shiqubian3x.png", tr("拾取边"), "pickEdge"},
+        {PickKind::Face, "shiqumian3x.png", tr("拾取面"), "pickFace"},
+        {PickKind::Solid, "shiquti3x.png", tr("拾取体"), "pickSolid"},
+        {PickKind::Node, "shiqujiedian3x.png", tr("拾取节点"), "pickNode"},
+        {PickKind::MeshEdge, "shiqudanyuanxian3x.png", tr("拾取单元线"), "pickMeshEdge"},
+        {PickKind::MeshFace, "shiqudanyuanmian3x.png", tr("拾取单元面"), "pickMeshFace"},
+        {PickKind::Element, "shiqudanyuan3x.png", tr("拾取单元"), "pickElement"},
+        {PickKind::Part, "shiqubujian3x.png", tr("拾取部件"), "pickPart"}
+    };
+    for (const auto& mode : modes) {
+        auto* action = pickMenu->addAction(icon(QStringLiteral("CenterMainWindow/") + mode.image), mode.label);
+        action->setObjectName(QString::fromLatin1(mode.name));
+        action->setCheckable(true);
+        pickModes->addAction(action);
+        viewTools->addAction(action);
+        const auto updateButton = [pickButton, action] {
+            pickButton->setIcon(action->icon());
+            pickButton->setText(action->text());
+        };
+        connect(action, &QAction::triggered, this, [this, kind = mode.kind, updateButton] {
+            m_viewport->setSelectionFilter(kind);
+            updateButton();
+        });
+        if (mode.kind == PickKind::Part) {
+            action->setChecked(true);
+            updateButton();
+        }
+    }
     viewTools->addAction(command(Command::ClearSelection));
-    toolRow->addWidget(viewTools);
-    toolRow->addStretch(1);
+    pickMenu->addSeparator();
+    pickMenu->addAction(command(Command::ClearSelection));
+    toolRow->addWidget(viewTools, 1);
+    toolRow->addWidget(pickButton);
 
     auto* viewDisplay = new QToolBar(tr("视图显示栏"), frame);
     viewDisplay->setObjectName(QStringLiteral("viewDisplayBar"));
@@ -504,6 +566,13 @@ QWidget* MotionWindow::createViewportFrame()
     layout->addWidget(viewportFrame, 1);
 
     connect(m_viewport, &OccViewport::partPicked, this, &MotionWindow::selectPart);
+    connect(m_viewport, &OccViewport::viewportSelectionChanged, this, &MotionWindow::updateSelectionInfo);
+    connect(m_viewport, &OccViewport::pickSelectionChanged, this, &MotionWindow::updateSelectionInfo);
+    connect(m_viewport, &OccViewport::pickSessionChanged, this, [this, pickModes, pickButton](bool active) {
+        pickModes->setEnabled(!active);
+        pickButton->setToolTip(active ? tr("参数面板正在拾取，结束后可切换视口拾取模式。") : tr("切换视口拾取模式"));
+        updateSelectionInfo();
+    });
     connect(m_viewport, &OccViewport::graphicsError, this, [this](const QString& error) {
         setNotice(tr("OpenGL：%1").arg(error), true);
     });
@@ -517,6 +586,8 @@ QWidget* MotionWindow::createModelBrowser()
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
     auto* bar = new QWidget(panel);
+    bar->setProperty("mxSurface", true);
+    bar->setAttribute(Qt::WA_StyledBackground);
     auto* form = new QGridLayout(bar);
     form->setContentsMargins(6, 5, 6, 5);
     form->setHorizontalSpacing(4);
@@ -589,6 +660,8 @@ QWidget* MotionWindow::createModelBrowser()
 QWidget* MotionWindow::createParameterPage()
 {
     auto* panel = new QWidget;
+    panel->setProperty("mxSurface", true);
+    panel->setAttribute(Qt::WA_StyledBackground);
     auto* layout = new QVBoxLayout(panel);
     m_parameterLayout = layout;
     layout->setContentsMargins(8, 7, 8, 7);
@@ -642,7 +715,15 @@ void MotionWindow::createStatusBar()
     m_notice->setTextFormat(Qt::PlainText);
     m_notice->setMargin(3);
     m_selection = new QLabel(bar);
-    m_selection->setTextFormat(Qt::PlainText);
+    m_selection->setObjectName(QStringLiteral("selectionStatus"));
+    m_selection->setTextFormat(Qt::RichText);
+    m_selection->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+    m_selection->setToolTip(tr("打开选择信息"));
+    m_selection->setCursor(Qt::PointingHandCursor);
+    connect(m_selection, &QLabel::linkActivated, this, [this] {
+        m_selectionDock->toggleView(true);
+        if (auto* area = m_selectionDock->dockAreaWidget()) area->setCurrentDockWidget(m_selectionDock);
+    });
     auto* unit = new QLabel(tr("mm"), bar);
     unit->setMinimumWidth(58);
     unit->setAlignment(Qt::AlignCenter);
@@ -748,9 +829,8 @@ void MotionWindow::filterTree()
     for (int i = 0; i < m_tree->topLevelItemCount(); ++i) filter(m_tree->topLevelItem(i), false);
 }
 
-void MotionWindow::updateParameters()
+QString MotionWindow::partSummary() const
 {
-    if (m_editor) return;
     const auto* part = m_document.part(m_partId);
     QString summary = part ? tr("部件编号：%1\n几何状态：%2").arg(part->id).arg(m_hidden.count(m_partId) ? tr("隐藏") : tr("显示"))
                            : tr("尚未选择部件。");
@@ -762,10 +842,43 @@ void MotionWindow::updateParameters()
     } else if (part) {
         summary += tr("\n有限元网格：无");
     }
+    return summary;
+}
+
+void MotionWindow::updateParameters()
+{
+    updateSelectionInfo();
+    if (m_editor) return;
+    const auto* part = m_document.part(m_partId);
     m_parameterTitle->setText(!m_meshForm->isHidden() ? tr("生成网格") : part ? part->name : tr("参数设置"));
-    m_parameterDetails->setText(summary);
-    m_selectionDetails->setText(summary);
-    m_selection->setText(part ? tr("选择：%1").arg(part->name) : tr("选择：无"));
+    m_parameterDetails->setText(partSummary());
+}
+
+void MotionWindow::updateSelectionInfo()
+{
+    if (!m_selection || !m_selectionDetails) return;
+    const auto picks = m_viewport->isPicking() ? m_viewport->pickSelection() : m_viewport->viewportSelection();
+    const auto* part = m_viewport->isPicking() ? nullptr : m_document.part(m_partId);
+    const auto status = !picks.isEmpty() ? tr("选择：%1 项").arg(picks.size())
+        : part ? tr("选择：%1").arg(part->name) : tr("选择：无");
+    const auto label = m_selection->fontMetrics().elidedText(status, Qt::ElideRight, qMax(120, width() / 4));
+    m_selection->setText(QStringLiteral("<a href='selection' style='color:%2;text-decoration:none'>%1</a>")
+        .arg(label.toHtmlEscaped(), UiPalette::textHex()));
+    if (picks.isEmpty()) {
+        m_selectionDetails->setPlainText(part ? part->name + QLatin1Char('\n') + partSummary() : tr("当前没有选择。"));
+        return;
+    }
+
+    const QStringList names{tr("部件"), tr("顶点"), tr("边"), tr("面"), tr("节点"),
+        tr("单元线"), tr("单元面"), tr("单元"), tr("体")};
+    QStringList details{tr("已选择 %1 项").arg(picks.size())};
+    for (const auto& pick : picks) {
+        const auto* part = m_document.part(pick.partId);
+        const int id = pick.kind == PickKind::Part ? pick.partId : pick.kind == PickKind::Node ? pick.nodeId : pick.index;
+        details << tr("%1 %2 · %3").arg(names.at(int(pick.kind))).arg(id)
+            .arg(part ? part->name : tr("部件 %1").arg(pick.partId));
+    }
+    m_selectionDetails->setPlainText(details.join(QLatin1Char('\n')));
 }
 
 void MotionWindow::updateActions()
@@ -806,6 +919,7 @@ void MotionWindow::syncViewport(bool fit)
 void MotionWindow::selectPart(int id)
 {
     leaveRigidAnimation();
+    m_viewport->clearViewportSelection();
     const int previous = m_partId;
     m_partId = m_document.part(id) ? id : -1;
     m_selectionNode = m_partId > 0 ? ModelNode{ModelNode::Part, m_partId} : ModelNode{};
