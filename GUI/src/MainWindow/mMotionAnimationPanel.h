@@ -66,6 +66,7 @@ namespace MechMainWindow
 		* 取消编辑方案
 		*/
 		void uneditAnimationPanel();
+        void setCurrentTime(double time);
 
         /*
         * 方案（及其结果对象）即将被删除：置空结果指针防悬垂；
@@ -89,7 +90,6 @@ namespace MechMainWindow
         void renderFlexBodies();  //【刚柔耦合】柔体变形网格每帧驱动
 
         // --- 曲线联动（曲线窗显示与标记） ---
-        void setCurrentTime(double time);
         void updateCurveMarker(double time);
         void removeCurveMarker();
         void connectCurvePlotSignal();

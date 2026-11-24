@@ -24,6 +24,7 @@ inline QIcon item(const QString& type)
         {"joints", "BrowserTree/motion_connectorParentItem.png"},
         {"couplings", "BrowserTree/motion_couplingParentItem.png"},
         {"drives", "BrowserTree/motion_driveParentItem.png"},
+        {"bodyDrives", "BrowserTree/motion_driveParentItem.png"},
         {"springs", "Motion/force_spring.png"},
         {"forceElements", "BrowserTree/motion_liYuanParentItem.png"},
         {"sensors", "Motion/sensor.png"},
@@ -81,7 +82,7 @@ inline QIcon entity(const QString& collection, const QJsonObject& row)
 {
     if (collection == "bodies") return body(row.value("isFixed").toBool());
     if (collection == "joints") return joint(row.value("jointType").toString());
-    if (collection == "drives") return resource("Motion/drive.png");
+    if (collection == "drives" || collection == "bodyDrives") return resource("Motion/drive.png");
     if (collection == "couplings") {
         static const QMap<QString, const char*> paths{
             {"Gear", "Motion/coupling_gear.png"}, {"GearRack", "Motion/coupling_gearRack.png"},

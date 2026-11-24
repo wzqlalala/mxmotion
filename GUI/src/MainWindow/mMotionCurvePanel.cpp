@@ -422,6 +422,7 @@ namespace MechMainWindow
         m_comboSourceType->addItem("控制器", static_cast<int>(MechMotionData::CurveSourceType::Controller));
 #ifdef MX_MOTION_OCC_COMPAT
         const std::pair<const char*,CurveSourceType> extended[]{
+            {"运动体驱动",CurveSourceType::BodyDrive},
             {"弹簧",CurveSourceType::Spring},{"止挡",CurveSourceType::SoftStop},{"只拉绳索",CurveSourceType::TensionCable},
             {"矢量载荷",CurveSourceType::VectorForce},{"标量力",CurveSourceType::ScalarForce},{"标量力矩",CurveSourceType::ScalarTorque},
             {"三点力",CurveSourceType::ThreePointForce},{"三点力矩",CurveSourceType::ThreePointTorque},{"自动柔性体",CurveSourceType::AutoFlexBody}};

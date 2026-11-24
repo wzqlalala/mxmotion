@@ -3,6 +3,7 @@
 #include "RigidPlot.h"
 #include "RigidProject.h"
 #include "NativeMotionGeometry.h"
+#include "mFoldSection.h"
 
 #include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
@@ -14,6 +15,8 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <DockManager.h>
+#include <DockWidget.h>
 
 #include <QAction>
 #include <QApplication>
@@ -55,6 +58,7 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <qwt_plot.h>
@@ -1164,6 +1168,198 @@ void autoFlexWorkflow(const QDir& output, const std::function<void(const QString
         .arg(nodes).arg(tets).arg(maximum,0,'g',8));
 }
 }
+
+#ifdef MX_HAS_BODY_DRIVES
+int runMotionOccBodyDriveDesktopSmoke(const QString& outputDirectory)
+{
+    using namespace MotionOcc;
+    try {
+        QDir output(outputDirectory);
+        require(output.mkpath("."), "Cannot create body drive smoke directory");
+        QString cadPath, motionPath;
+        makeFixture(output.absolutePath(), cadPath, motionPath);
+        MotionWindow window;
+        show(window);
+        require(window.importCad(cadPath) && window.importMotionJson(motionPath, false), "Cannot import body drive editor fixture");
+        auto* tree = widget<QTreeWidget>(window, "mTreeView");
+        auto* dock = widget<ads::CDockWidget>(window, "Info");
+        auto* manager = dock->dockManager();
+        const auto checkMode = [](QWidget& panel, const QString& mode) {
+            auto* target = widget<MechMainWindow::FoldSection>(panel, "bodyDriveTargetSection");
+            auto* field = widget<QComboBox>(*target, "native_bodyDriveMode");
+            require(target->isExpanded() && !field->isEnabled() && field->currentData().toString() == mode,
+                "Body drive type is not shown and locked in the target section");
+            require(widget<MechMainWindow::FoldSection>(panel, "bodyDriveCoordinateSection")->isExpanded(),
+                "Body drive coordinates are not grouped in an expanded section");
+        };
+        const auto checkChannel = [](QWidget& section, const QString& axis, const QString& label) {
+            auto* input = widget<QLineEdit>(section, "native_bodyDriveChannel" + axis);
+            auto* button = widget<QToolButton>(section, "native_bodyDriveFunction" + axis);
+            const auto labels = section.findChildren<QLabel*>();
+            require(std::any_of(labels.cbegin(), labels.cend(), [&](QLabel* row) { return row->text() == label; }) &&
+                    button->isEnabled() && !button->toolTip().isEmpty(),
+                "Missing body drive unit label or function tool: " + label);
+            return input;
+        };
+        const auto captureNarrow = [&](QWidget& panel, const QString& file) {
+            QApplication::processEvents();
+            const auto area = dock->dockAreaWidget();
+            auto sizes = manager->splitterSizes(area);
+            require(sizes.size() == 3, "Cannot find the dock splitter for the compact parameter layout");
+            const int width = 12 * MxFunctions::UiMetrics::baseH() + 8 * qMax(0, 6 - MxFunctions::UiMetrics::baseG()) + 8;
+            sizes[2] += sizes[1] - width;
+            sizes[1] = width;
+            manager->setSplitterSizes(area, sizes);
+            auto* ancestor = panel.parentWidget();
+            while (ancestor && !qobject_cast<QScrollArea*>(ancestor)) ancestor = ancestor->parentWidget();
+            auto* scroll = qobject_cast<QScrollArea*>(ancestor);
+            require(scroll, "Body drive editor is missing its scroll area");
+            const bool fits = waitFor([&] {
+                return dock->width() <= width + 10 && scroll->horizontalScrollBar()->maximum() == 0 &&
+                    panel.width() <= scroll->viewport()->width();
+            });
+            require(panel.grab().save(output.filePath(file)), "Cannot capture body drive editor: " + file);
+            const auto actualSizes = manager->splitterSizes(area);
+            QStringList splitterWidths;
+            for (const int size : actualSizes) splitterWidths.append(QString::number(size));
+            require(fits, QStringLiteral("Body drive editor does not fit the compact dock width (%1 px requested, "
+                "dock %2 px, dock minimum %3 px, viewport %4 px, panel %5 px, panel minimum hint %6 px, "
+                "horizontal scroll maximum %7 px, splitter widths [%8])")
+                .arg(width).arg(dock->width()).arg(dock->minimumWidth()).arg(scroll->viewport()->width())
+                .arg(panel.width()).arg(panel.minimumSizeHint().width()).arg(scroll->horizontalScrollBar()->maximum())
+                .arg(splitterWidths.join(", ")));
+        };
+        QAction* axisCommand = nullptr;
+        for (auto* action : window.findChildren<QAction*>()) {
+            if (action->property("mxOriginalAction").toString() == "createBodyDrive" &&
+                action->property("mxOriginalArgument").toString() == "LinearPosition") {
+                axisCommand = action;
+                break;
+            }
+        }
+        require(axisCommand && axisCommand->isEnabled(), "Linear body drive command missing");
+        axisCommand->trigger();
+        auto* editor = widget<QWidget>(window, "nativeEditor_bodyDrives");
+        checkMode(*editor, "LinearPosition");
+        auto* excitation = widget<MechMainWindow::FoldSection>(*editor, "bodyDriveExcitationSection");
+        require(excitation->isExpanded(), "Single-axis excitation section is collapsed");
+        auto* input = checkChannel(*excitation, "X", QStringLiteral("平移位移 (mm)"));
+        require(!editor->findChild<QLineEdit*>("native_bodyDriveChannelY"), "Single-axis editor shows extra excitation channels");
+        choose(*editor, "targetBodyId", 0);
+        choose(*editor, "referenceBodyId", 37);
+        input->setText("12*t*t");
+        widget<QCheckBox>(*editor, "native_guide")->setChecked(false);
+        captureNarrow(*editor, "single-axis-editor.png");
+        widget<QPushButton>(*editor, "motionApplyButton")->click();
+        auto* axisNode = node(*tree, ModelNode::Native, -1, "bodyDrives");
+        auto* jointDriveNode = node(*tree, ModelNode::Native, 9, "drives");
+        require(axisNode && jointDriveNode && axisNode->parent() && jointDriveNode->parent() &&
+                axisNode->parent()->text(0) == QStringLiteral("运动体驱动") &&
+                jointDriveNode->parent()->text(0) == QStringLiteral("驱动") &&
+                axisNode->parent()->parent() == jointDriveNode->parent()->parent(),
+            "Body drive and joint drive must appear in separate sibling model-tree groups");
+
+        QToolButton* poseCommand = nullptr;
+        for (auto* button : window.findChildren<QToolButton*>()) {
+            if (button->property("mxOriginalAction").toString() == "createBodyDrive" &&
+                button->property("mxOriginalArgument").toString() == "Pose") {
+                poseCommand = button;
+                break;
+            }
+        }
+        require(poseCommand && poseCommand->isEnabled(), "Pose body drive ribbon button missing");
+        poseCommand->click();
+        editor = nullptr;
+        require(waitFor([&] {
+            for (auto* panel : window.findChildren<QWidget*>("nativeEditor_bodyDrives")) {
+                if (panel->findChild<QLineEdit*>("native_bodyDriveChannelY")) {
+                    editor = panel;
+                    return true;
+                }
+            }
+            return false;
+        }), "Pose editor did not open after closing axis editor");
+        checkMode(*editor, "Pose");
+        auto* translation = widget<MechMainWindow::FoldSection>(*editor, "bodyDriveTranslationSection");
+        auto* rotation = widget<MechMainWindow::FoldSection>(*editor, "bodyDriveRotationSection");
+        require(translation->isExpanded() && rotation->isExpanded(), "Pose excitation sections are collapsed");
+        for (const auto axis : QStringLiteral("XYZ"))
+            checkChannel(*translation, QString(axis), QString(axis) + " (mm)");
+        for (const auto axis : QStringLiteral("ABC"))
+            checkChannel(*rotation, QString(axis), QStringLiteral("%1 (°)").arg(axis));
+        choose(*editor, "targetBodyId", 0);
+        choose(*editor, "referenceBodyId", -1);
+        widget<QLineEdit>(*editor, "native_bodyDriveChannelY")->setText("2*t*t");
+        widget<QLineEdit>(*editor, "native_bodyDriveChannelC")->setText("5*t*t");
+
+        bool tableApplied = false;
+        QTimer functionDialog;
+        functionDialog.setSingleShot(true);
+        QObject::connect(&functionDialog, &QTimer::timeout, &window, [&] {
+            auto* dialog = window.findChild<QDialog*>("nativeFunctionEditor");
+            if (!dialog) {
+                if (auto* active = qobject_cast<QDialog*>(QApplication::activeModalWidget())) active->reject();
+                return;
+            }
+            auto* mode = dialog->findChild<QComboBox*>("nativeFunctionMode");
+            auto* table = dialog->findChild<QTableWidget*>("nativeFunctionTable");
+            auto* buttons = dialog->findChild<QDialogButtonBox*>("nativeFunctionButtons");
+            auto* apply = buttons ? buttons->button(QDialogButtonBox::Ok) : nullptr;
+            if (mode && mode->count() > 3 && table && apply && table->horizontalHeaderItem(1) &&
+                table->horizontalHeaderItem(1)->text() == "mm") {
+                mode->setCurrentIndex(3);
+                table->setRowCount(2);
+                table->setItem(0, 0, new QTableWidgetItem("0"));
+                table->setItem(0, 1, new QTableWidgetItem("0"));
+                table->setItem(1, 0, new QTableWidgetItem("1"));
+                table->setItem(1, 1, new QTableWidgetItem("4"));
+                apply->click();
+                tableApplied = dialog->result() == QDialog::Accepted;
+            }
+            if (!tableApplied) dialog->reject();
+        });
+        functionDialog.start(20);
+        widget<QToolButton>(*translation, "native_bodyDriveFunctionZ")->click();
+        functionDialog.stop();
+        require(tableApplied && widget<QLineEdit>(*translation, "native_bodyDriveChannelZ")->isReadOnly(),
+            "Pose translation function editor did not apply the time table in mm");
+        captureNarrow(*editor, "pose-editor.png");
+        widget<QPushButton>(*editor, "motionApplyButton")->click();
+        axisNode = node(*tree, ModelNode::Native, -1, "bodyDrives");
+        require(axisNode && axisNode->parent() && axisNode->parent()->childCount() == 2,
+            "The model-tree body drive group must contain both modes");
+        tree->scrollToItem(axisNode->parent());
+        require(tree->grab().save(output.filePath("body-drive-tree.png")), "Cannot capture body drive model tree");
+
+        QString error;
+        const auto path = output.filePath("body-drive.mxmotion");
+        saveThroughUi(window, path);
+        CadDocument cad;
+        RigidModel model;
+        require(loadRigidProject(path, cad, model, error) && model.nativeDocument, "Cannot reopen body drive project: " + error);
+        const auto saved = model.nativeDocument->collection("bodyDrives");
+        require(saved.size() == 2, "Both body drives must survive reopening");
+        const auto axis = saved.at(0).toObject();
+        const auto pose = saved.at(1).toObject();
+        require(!axis.value("guide").toBool() && axis.value("referenceBodyId").toInt() == 37 &&
+                axis.value("channels").toObject().value("X").toObject().value("expression").toString() == "12*t*t",
+                "Reopening lost axis settings");
+        const auto poseChannels = pose.value("channels").toObject();
+        const auto table = poseChannels.value("Z").toObject();
+        require(pose.value("bodyDriveMode").toString() == "Pose" &&
+                poseChannels.value("Y").toObject().value("expression").toString() == "2*t*t" &&
+                poseChannels.value("C").toObject().value("expression").toString() == "5*t*t" &&
+                table.value("driveTableX").toArray() == QJsonArray{0, 1} &&
+                table.value("driveTableY").toArray() == QJsonArray{0, 4},
+                "Reopening lost pose expressions or the time table");
+        qInfo() << "已验证运动体驱动分组、窄栏布局、单位、时间表及保存重开";
+        return 0;
+    } catch (const std::exception& error) {
+        qCritical().noquote() << QString::fromUtf8(error.what());
+        return 1;
+    }
+}
+#endif
 
 int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory)
 {

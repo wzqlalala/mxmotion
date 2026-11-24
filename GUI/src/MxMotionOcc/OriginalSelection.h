@@ -4,6 +4,8 @@
 #include <QStringList>
 #include <QVariant>
 #include <QVector>
+#include <TopoDS_Shape.hxx>
+#include <array>
 #include <map>
 #include <set>
 
@@ -20,9 +22,18 @@ struct SelectionInfo {
     QVector<QStringList> rows;
 };
 
+struct SelectedPartGeometry {
+    QString name;
+    TopoDS_Shape shape;
+    std::array<double, 3> position{};
+    QStringList meshCounts;
+    double millimetresPerUnit = 1.0;
+};
+
 SelectionInfo describeSelection(const CadDocument& document,
                                 const std::map<int, FemMesh>& meshes,
                                 const QVector<PickResult>& picks);
+SelectionInfo describePartSelection(const QVector<SelectedPartGeometry>& parts);
 
 // Original selection-menu semantics, operating on actual OCC topology and
 // real FEM connectivity. Results are committed through the original picker

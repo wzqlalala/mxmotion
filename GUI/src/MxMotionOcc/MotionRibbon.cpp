@@ -403,8 +403,17 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     originalButton(jointDrives, window, {"位置驱动", "Motion/drive.png", "createMotionDrive", "Position"});
     originalButton(jointDrives, window, {"速度驱动", "Motion/drive.png", "createMotionDrive", "Velocity"});
     originalButton(jointDrives, window, {"加速度驱动", "Motion/drive.png", "", {}, false});
-    for (const char* title : {"位置驱动", "速度驱动", "加速度驱动"})
-        originalButton(bodyDrives, window, {title, "Motion/drive.png", "", {}, false});
+#if defined(MX_HAS_BODY_DRIVES)
+    originalSplit(bodyDrives, window, {
+        {"平移位移", "Motion/drive.png", "createBodyDrive", "LinearPosition"},
+        {"线速度", "Motion/drive.png", "createBodyDrive", "LinearSpeed"},
+        {"转角", "Motion/drive.png", "createBodyDrive", "RotationAngle"},
+        {"角速度", "Motion/drive.png", "createBodyDrive", "RotationSpeed"}});
+    originalButton(bodyDrives, window, {"六自由度位姿", "Motion/drive.png", "createBodyDrive", "Pose"});
+#else
+    originalButton(bodyDrives, window, {"单轴驱动", "Motion/drive.png", "", {}, false});
+    originalButton(bodyDrives, window, {"六自由度位姿", "Motion/drive.png", "", {}, false});
+#endif
 
     const OriginalEntry commonJoints[] = {
         {"旋转副", "Motion/joint_revolute.png", "createMotionJoint", "Revolute"},

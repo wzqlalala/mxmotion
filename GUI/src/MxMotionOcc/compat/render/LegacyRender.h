@@ -100,8 +100,8 @@ struct UniversalSymbolFont {
 };
 class mSymbolController {
 public:
-    explicit mSymbolController(MotionOcc::OccViewport* viewport):viewport_(viewport) {}
-    ~mSymbolController() { if(viewport_)viewport_->clearAuxiliaryMotionSymbols(QStringLiteral("original:%1").arg(quintptr(this))); }
+    explicit mSymbolController(MotionOcc::LegacyPickContext* context):context_(context) {}
+    ~mSymbolController() { if(context_ && context_->viewport())context_->viewport()->clearAuxiliaryMotionSymbols(QStringLiteral("original:%1").arg(quintptr(this))); }
     template<class T> std::shared_ptr<T> getOrCreateSymbolData(const QString& name) {
         static_assert(std::is_same_v<T,UniversalSymbolFont>);
         auto& value=symbols_[name];if(!value) { value=std::make_shared<T>();value->key=name; } return value;
@@ -116,7 +116,7 @@ public:
     void setSelectedSymbols(const QSet<QString>& selected) { selected_=selected;UpdateAllSymbol(); }
     void clear() { symbols_.clear();UpdateAllSymbol(); }
 private:
-    QPointer<MotionOcc::OccViewport> viewport_;
+    QPointer<MotionOcc::LegacyPickContext> context_;
     QMap<QString,std::shared_ptr<UniversalSymbolFont>> symbols_;
     QSet<QString> selected_;
 };
@@ -185,9 +185,9 @@ struct CameraState {
 class LegacyCameraController {
 public:
     using State=CameraState;
-    explicit LegacyCameraController(MotionOcc::OccViewport* view):view_(view) {}
+    explicit LegacyCameraController(MotionOcc::LegacyPickContext* context):context_(context) {}
     State getCameraState() const;
-private: QPointer<MotionOcc::OccViewport> view_;
+private: QPointer<MotionOcc::LegacyPickContext> context_;
 };
 class CCSMRendWidget : public QObject {
     Q_OBJECT

@@ -3,6 +3,8 @@
 namespace MechMotionData {
 
     CurveSourceType mMotionCurveRequest::sourceTypeFromName(const QString& name) {
+        if (name == QLatin1String("BodyDrive") || name == QLatin1String("bodyDrives"))
+            return CurveSourceType::BodyDrive;
         static const char* aliases[]{"Marker","Body","Joint","Drive","Coupling","Sensor","Controller",
             "Spring","SoftStop","TensionCable","VectorForce","ScalarForce","ScalarTorque",
             "ThreePointForce","ThreePointTorque","AutoFlexBody"};
@@ -12,6 +14,7 @@ namespace MechMotionData {
     }
 
     QString mMotionCurveRequest::collectionForSource(CurveSourceType type) {
+        if (type == CurveSourceType::BodyDrive) return QStringLiteral("bodyDrives");
         static const char* collections[]{"markers","bodies","joints","drives","couplings","sensors","controllers",
             "springs","softStops","tensionCables","vectorForces","scalarForces","scalarTorques",
             "threePointForces","threePointTorques","autoFlexBodies"};

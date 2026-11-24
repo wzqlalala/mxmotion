@@ -73,6 +73,7 @@
 #include <exception>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <istream>
 #include <iterator>
 #include <limits>
@@ -97,6 +98,7 @@ constexpr std::size_t kMaxTriangles = 1000000;
 constexpr std::size_t kMaxSegments = 2000000;
 constexpr int kMaxEdgeSamples = 65536;
 constexpr double kMillimetre = 1.0; // OCCT exchange unit factors are measured in mm.
+constexpr double kMetre = 1000.0;
 
 // OCCT exchange uses shared registries and the IGES parser has global state.
 // This serializes exchange calls from this module, not from unrelated OCCT users.
@@ -190,14 +192,14 @@ TopoDS_Shape transferRoots(XSControl_Reader& reader)
     return reader.OneShape();
 }
 
-TopoDS_Shape readStep(std::istream& input)
+TopoDS_Shape readStep(std::istream& input, double lengthUnit = kMillimetre)
 {
     STEPControl_Reader reader;
     StepData_ConfParameters parameters;
     parameters.ReadTessellated = StepData_ConfParameters::RWMode_Tessellated_Off;
     if (reader.ReadStream("model.step", parameters, input) != IFSelect_RetDone || reader.StepModel().IsNull())
         fail(QStringLiteral("无法读取有效的 STEP 文件。"));
-    reader.SetSystemLengthUnit(kMillimetre);
+    reader.SetSystemLengthUnit(lengthUnit);
     return transferRoots(reader);
 }
 
@@ -259,6 +261,7 @@ struct NamedShape {
     TopoDS_Shape shape;
     QString sourceName;
     QString instancePath;
+    TopoDS_Shape metreDisplaySource;
 };
 
 QString labelName(const TDF_Label& label)
@@ -274,12 +277,17 @@ QString labelName(const TDF_Label& label)
 
 // XCAF retains product names and repeated assembly instances. Every leaf shape
 // is placed in world coordinates exactly once, matching the original JSON COMs.
-std::vector<NamedShape> readStepParts(const QFileInfo& file, std::size_t available)
+std::vector<NamedShape> readStepParts(const QFileInfo& file, std::size_t available, double lengthUnit)
 {
     STEPCAFControl_Reader reader;
     reader.SetNameMode(true);
     reader.SetColorMode(false);
     reader.SetLayerMode(false);
+    // 文档只读取几何、层级和零件名。属性、材料、标注和视图不参与装配转换。
+    reader.SetPropsMode(false);
+    reader.SetMatMode(false);
+    reader.SetGDTMode(false);
+    reader.SetViewMode(false);
     std::ifstream input;
     const auto path = file.absoluteFilePath().toUtf8();
     OSD_OpenStream(input, path.constData(), std::ios::in | std::ios::binary);
@@ -287,8 +295,10 @@ std::vector<NamedShape> readStepParts(const QFileInfo& file, std::size_t availab
     parameters.ReadTessellated = StepData_ConfParameters::RWMode_Tessellated_Off;
     if (!input || reader.ChangeReader().ReadStream("model.step", parameters, input) != IFSelect_RetDone)
         fail(QStringLiteral("无法读取有效的 STEP 装配文件。"));
-    reader.ChangeReader().SetSystemLengthUnit(kMillimetre);
+    reader.ChangeReader().SetSystemLengthUnit(lengthUnit);
     Handle(TDocStd_Document) document = new TDocStd_Document("BinXCAF");
+    if (lengthUnit != kMillimetre)
+        XCAFDoc_DocumentTool::SetLengthUnit(document, lengthUnit / kMetre);
     if (!reader.Transfer(document) ||
         !reader.Reader().WS()->TransferReader()->LastCheckList().IsEmpty(Standard_True))
         fail(QStringLiteral("STEP 装配转换失败，未导入部分结果。"));
@@ -339,10 +349,26 @@ struct DisplayBudget {
     std::size_t segments = 0;
 };
 
+bool isSubstantialStepShape(const TopoDS_Shape& shape)
+{
+    constexpr int parallelFaceThreshold = 16;
+    int faces = 0;
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+        if (++faces == parallelFaceThreshold) return true;
+    }
+    return false;
+}
+
+bool isValidStepShape(const TopoDS_Shape& shape)
+{
+    return BRepCheck_Analyzer(shape, Standard_True, isSubstantialStepShape(shape)).IsValid();
+}
+
 TopoDS_Shape repairImportedShape(const TopoDS_Shape& shape, bool& repaired)
 {
     repaired = false;
-    if (BRepCheck_Analyzer(shape).IsValid()) return shape;
+    const bool parallel = isSubstantialStepShape(shape);
+    if (BRepCheck_Analyzer(shape, Standard_True, parallel).IsValid()) return shape;
     // Heal interchange topology on a private copy. Accept it only if the
     // actual surface/solid measures and exact geometric bounds are unchanged.
     // This repairs STEP sewing/tolerance defects without changing dimensions.
@@ -365,16 +391,23 @@ TopoDS_Shape repairImportedShape(const TopoDS_Shape& shape, bool& repaired)
         for (double number : out) if (!std::isfinite(number)) fail(QStringLiteral("STEP 修复的几何验证出现非有限数值。"));
         return out;
     };
-    const auto before = signature(shape);
+    std::array<double, 16> before{};
+    if (!parallel) before = signature(shape);
     BRepBuilderAPI_Copy copy(shape, Standard_True, Standard_False);
+    std::future<std::array<double, 16>> originalSignature;
+    if (parallel) {
+        // OCCT 完成几何深拷贝后，再并行核对原件与修复件的边界和质量积分。
+        originalSignature = std::async(std::launch::async, [shape, signature] { return signature(shape); });
+    }
     ShapeFix_Shape fix(copy.Shape());
     fix.SetPrecision(Precision::Confusion());
     fix.SetMaxTolerance(0.001); // mm; never turn a real gap into a large-tolerance seam.
     fix.Perform();
     const auto fixed = fix.Shape();
-    if (fixed.IsNull() || !BRepCheck_Analyzer(fixed).IsValid())
+    if (fixed.IsNull() || !isValidStepShape(fixed))
         fail(QStringLiteral("STEP 拓扑无法在保持几何尺寸的条件下修复。"));
     const auto after = signature(fixed);
+    if (originalSignature.valid()) before = originalSignature.get();
     const double span = std::hypot(before[3] - before[0], before[4] - before[1], before[5] - before[2]);
     for (std::size_t i = 0; i < before.size(); ++i) {
         const double tolerance = i < 6 || (i >= 7 && i < 10)
@@ -384,6 +417,74 @@ TopoDS_Shape repairImportedShape(const TopoDS_Shape& shape, bool& repaired)
     }
     repaired = true;
     return fixed;
+}
+
+TopoDS_Shape scaleMetreStepToMillimetres(const TopoDS_Shape& shape, TopoDS_Shape* metreDisplaySource = nullptr)
+{
+    if (!isValidStepShape(shape)) fail(QStringLiteral("STEP 按米读取时拓扑未通过验证。"));
+    gp_Trsf scale;
+    scale.SetScale(gp_Pnt(), kMetre / kMillimetre);
+    const auto converted = BRepBuilderAPI_Transform(shape, scale, Standard_True, Standard_False).Shape();
+    if (converted.IsNull()) fail(QStringLiteral("STEP 转回毫米后几何为空。"));
+    if (!isValidStepShape(converted)) {
+        if (!metreDisplaySource) fail(QStringLiteral("STEP 转回毫米后的拓扑未通过验证。"));
+        *metreDisplaySource = shape;
+    }
+    return converted;
+}
+
+std::vector<NamedShape> readValidatedStepParts(const QFileInfo& file, std::size_t available, QStringList& notes)
+{
+    const std::lock_guard<std::mutex> lock(exchangeMutex);
+    auto parts = readStepParts(file, available, kMillimetre);
+    std::vector<TopoDS_Shape> checked(parts.size());
+    std::vector<QString> partNotes(parts.size());
+    std::vector<std::size_t> failed;
+    QString firstFailure;
+    std::future<std::vector<NamedShape>> metreParts;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const auto& part = parts[i];
+        try {
+            bool repaired = false;
+            checked[i] = repairImportedShape(part.shape, repaired);
+            if (repaired) partNotes[i] = QStringLiteral("已修复“%1”的 STEP 拓扑；几何边界、质量积分和惯量验证保持一致。")
+                .arg(part.sourceName);
+        } catch (const CadError& failure) {
+            if (!metreParts.valid()) {
+                // 毫米转换已结束。备用转换和既有形状的校验并行，转换仍受外层交换锁保护。
+                firstFailure = failure.message;
+                metreParts = std::async(std::launch::async | std::launch::deferred, [file, available] {
+                    return readStepParts(file, available, kMetre);
+                });
+            }
+            failed.push_back(i);
+        }
+    }
+    if (metreParts.valid()) {
+        const auto retried = metreParts.get();
+        if (retried.size() != parts.size()) fail(firstFailure);
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            const auto& next = retried[i];
+            const auto& part = parts[i];
+            if (next.instancePath != part.instancePath || next.sourceName != part.sourceName ||
+                next.shape.ShapeType() != part.shape.ShapeType())
+                fail(QStringLiteral("零件“%1”：STEP 单位转换备选路径无法验证装配拓扑。%2").arg(next.sourceName, firstFailure));
+        }
+        for (const auto i : failed) {
+            auto& part = parts[i];
+            try { checked[i] = scaleMetreStepToMillimetres(retried[i].shape, &part.metreDisplaySource); }
+            catch (const CadError& fallback) { fail(QStringLiteral("零件“%1”：%2").arg(part.sourceName, fallback.message)); }
+            partNotes[i] = part.metreDisplaySource.IsNull()
+                ? QStringLiteral("零件“%1”按米读取并转换为毫米后通过拓扑校验。").arg(part.sourceName)
+                : QStringLiteral("零件“%1”的毫米表示未通过拓扑校验，已用通过校验的米制几何生成显示网格，并保留在原装配位置。")
+                    .arg(part.sourceName);
+        }
+    }
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        parts[i].shape = std::move(checked[i]);
+        if (!partNotes[i].isEmpty()) notes.append(partNotes[i]);
+    }
+    return parts;
 }
 
 void charge(std::size_t& used, std::size_t count, std::size_t limit, const QString& message)
@@ -404,13 +505,16 @@ TopTools_IndexedMapOfShape displayTopology(const TopoDS_Shape& shape, TopAbs_Sha
     return result;
 }
 
-QVector3D displayPoint(const gp_Pnt& point)
+QVector3D displayPoint(const gp_Pnt& point, double millimetresPerUnit)
 {
     constexpr double maxFloat = (std::numeric_limits<float>::max)();
-    for (double coordinate : {point.X(), point.Y(), point.Z()})
+    const double x = point.X() * millimetresPerUnit;
+    const double y = point.Y() * millimetresPerUnit;
+    const double z = point.Z() * millimetresPerUnit;
+    for (double coordinate : {x, y, z})
         if (!std::isfinite(coordinate) || std::abs(coordinate) > maxFloat)
             fail(QStringLiteral("几何坐标不是可显示的有限数值。"));
-    return QVector3D(float(point.X()), float(point.Y()), float(point.Z()));
+    return QVector3D(float(x), float(y), float(z));
 }
 
 bool hasArea(const QVector3D& a, const QVector3D& b, const QVector3D& c)
@@ -431,7 +535,7 @@ QVector3D unitDisplayNormal(const std::array<double, 3>& value)
     return QVector3D(float(value[0] / length), float(value[1] / length), float(value[2] / length));
 }
 
-void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& budget)
+void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& budget, double millimetresPerUnit)
 {
     TopLoc_Location location;
     const auto& mesh = BRep_Tool::Triangulation(face, location);
@@ -443,7 +547,7 @@ void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& bu
     const gp_Trsf& transform = location.Transformation();
     const bool reverse = (face.Orientation() == TopAbs_REVERSED) != transform.IsNegative();
     for (int i = 1; i <= mesh->NbNodes(); ++i)
-        display.vertices.push_back(displayPoint(mesh->Node(i).Transformed(transform)));
+        display.vertices.push_back(displayPoint(mesh->Node(i).Transformed(transform), millimetresPerUnit));
     display.normals.resize(display.vertices.size());
 
     // Adapted from wzqlalala/Motion b636535a45895b193aa581afd4df10a9004c9b6e,
@@ -516,7 +620,8 @@ void appendFace(const TopoDS_Face& face, DisplayMesh& display, DisplayBudget& bu
 }
 
 template <class PointAt>
-bool appendPolyline(int count, const PointAt& pointAt, DisplayMesh& display, DisplayBudget& budget)
+bool appendPolyline(int count, const PointAt& pointAt, DisplayMesh& display, DisplayBudget& budget,
+                    double millimetresPerUnit)
 {
     if (count < 2) return false;
     if (count > kMaxEdgeSamples)
@@ -524,9 +629,9 @@ bool appendPolyline(int count, const PointAt& pointAt, DisplayMesh& display, Dis
     charge(budget.vertices, std::size_t(count), kMaxVertices, QStringLiteral("显示顶点超过 300 万个。"));
     charge(budget.segments, std::size_t(count - 1), kMaxSegments, QStringLiteral("显示边线段超过 200 万个。"));
     const auto before = display.vertices.size();
-    display.vertices.push_back(displayPoint(pointAt(1)));
+    display.vertices.push_back(displayPoint(pointAt(1), millimetresPerUnit));
     for (int i = 2; i <= count; ++i) {
-        const QVector3D point = displayPoint(pointAt(i));
+        const QVector3D point = displayPoint(pointAt(i), millimetresPerUnit);
         if (point == display.vertices.back()) continue;
         const auto index = std::uint32_t(display.vertices.size());
         display.vertices.push_back(point);
@@ -537,7 +642,8 @@ bool appendPolyline(int count, const PointAt& pointAt, DisplayMesh& display, Dis
     return false;
 }
 
-void appendEdge(const TopoDS_Edge& edge, double deflection, DisplayMesh& display, DisplayBudget& budget)
+void appendEdge(const TopoDS_Edge& edge, double deflection, DisplayMesh& display, DisplayBudget& budget,
+                double millimetresPerUnit)
 {
     if (BRep_Tool::Degenerated(edge)) return; // e.g. a sphere pole, not a line.
     if (!BRep_Tool::IsGeometric(edge))
@@ -555,7 +661,7 @@ void appendEdge(const TopoDS_Edge& edge, double deflection, DisplayMesh& display
                 const int node = polygon->Node(i);
                 if (node < 1 || node > mesh->NbNodes()) fail(QStringLiteral("边界多段线索引无效。"));
                 return mesh->Node(node).Transformed(transform);
-            }, display, budget)) return;
+            }, display, budget, millimetresPerUnit)) return;
     }
 
     const auto& polygon3d = BRep_Tool::Polygon3D(edge, location);
@@ -564,7 +670,7 @@ void appendEdge(const TopoDS_Edge& edge, double deflection, DisplayMesh& display
         const gp_Trsf& transform = location.Transformation();
         if (appendPolyline(polygon3d->NbNodes(), [&](int i) {
                 return nodes(nodes.Lower() + i - 1).Transformed(transform);
-            }, display, budget)) return;
+            }, display, budget, millimetresPerUnit)) return;
     }
 
     // Standalone wires usually have no cached polygon. BRepAdaptor_Curve
@@ -585,22 +691,23 @@ void appendEdge(const TopoDS_Edge& edge, double deflection, DisplayMesh& display
         }
         if (samples.IsDone() && appendPolyline(samples.NbPoints(), [&](int i) {
                 return samples.Value(i);
-            }, display, budget)) return;
+            }, display, budget, millimetresPerUnit)) return;
     }
     const int count = linear ? 2 : 65;
     if (!appendPolyline(count, [&](int i) {
             return curve.Value(i == count ? last : first + (last - first) * double(i - 1) / (count - 1));
-        }, display, budget))
+        }, display, budget, millimetresPerUnit))
         fail(QStringLiteral("拓扑边在显示精度下没有非零长度的线段。"));
 }
 
-DisplayMesh makeDisplay(const TopoDS_Shape& shape, DisplayBudget& budget, double displayScale = 1.0)
+DisplayMesh makeDisplay(const TopoDS_Shape& shape, DisplayBudget& budget, double displayScale = 1.0,
+                        double millimetresPerUnit = 1.0, bool topologyVerified = false)
 {
     const auto faces = displayTopology(shape, TopAbs_FACE, budget);
     const auto edges = displayTopology(shape, TopAbs_EDGE, budget);
     if (faces.IsEmpty() && edges.IsEmpty())
         fail(QStringLiteral("几何不包含可显示的实体、曲面或线框；不支持孤立点或空拓扑。"));
-    if (!BRepCheck_Analyzer(shape).IsValid())
+    if (!topologyVerified && !BRepCheck_Analyzer(shape).IsValid())
         fail(QStringLiteral("BREP 拓扑或几何无效，请先修复源模型。"));
     for (int i = 1; i <= faces.Extent(); ++i)
         if (!BRep_Tool::IsGeometric(TopoDS::Face(faces(i))))
@@ -618,43 +725,52 @@ DisplayMesh makeDisplay(const TopoDS_Shape& shape, DisplayBudget& budget, double
     DisplayMesh display;
     if (!faces.IsEmpty()) {
         const double angle = (std::min)(0.8, 0.25 * std::sqrt(displayScale));
-        BRepMesh_IncrementalMesh mesher(shape, deflection, Standard_False, angle, Standard_False);
+        // 由 OCCT 在单件内部并行，避免多个实例同时修改共享定义的离散数据。
+        const bool parallel = topologyVerified && faces.Extent() >= 128;
+        BRepMesh_IncrementalMesh mesher(shape, deflection, Standard_False, angle, parallel);
         for (int i = 1; i <= faces.Extent(); ++i) {
             const auto face = TopoDS::Face(faces(i));
             QString meshError;
             if (!ensureOccFaceTriangulation(face, deflection, meshError))
                 fail(QStringLiteral("第 %1 个曲面离散失败：%2").arg(i).arg(meshError));
-            appendFace(face, display, budget);
+            appendFace(face, display, budget, millimetresPerUnit);
         }
     }
     for (int i = 1; i <= edges.Extent(); ++i)
-        appendEdge(TopoDS::Edge(edges(i)), deflection, display, budget);
+        appendEdge(TopoDS::Edge(edges(i)), deflection, display, budget, millimetresPerUnit);
     display.normals.resize(display.vertices.size()); // Standalone edge vertices are unlit.
     if (display.triangles.empty() && display.edges.empty())
         fail(QStringLiteral("几何没有可显示的曲面或非退化线框。"));
     return display;
 }
 
-void makeAssemblyDisplays(std::vector<CadPart>& parts, QStringList& notes)
+void makeAssemblyDisplays(std::vector<CadPart>& parts, QStringList& notes, qint64 verifiedStepBytes = 0)
 {
-    // Keep the complete exact assembly while bounding the viewport's mesh.
-    // Only a display budget overflow retries at a coarser tessellation; invalid
-    // geometry, missing faces and excessive topology remain explicit errors.
-    for (int attempt = 0; attempt <= 6; ++attempt) {
+    // 大型 STEP 装配先用较粗的显示离散公差，避免从高精度开始反复生成大网格。
+    // STEP 的精确拓扑已在读取或修复阶段验证。这里仍检查显示几何及预算。
+    constexpr qint64 largeStepBytes = 128ll * 1024 * 1024;
+    constexpr std::size_t largeStepParts = 256;
+    const bool topologyVerified = verifiedStepBytes > 0;
+    const int initialAttempt = verifiedStepBytes >= largeStepBytes && parts.size() >= largeStepParts ? 1 : 0;
+    for (int attempt = initialAttempt; attempt <= 6; ++attempt) {
         const double scale = double(std::uint64_t(1) << attempt);
         DisplayBudget budget;
         for (auto& part : parts) part.display = {};
-        if (attempt) for (auto& part : parts) BRepTools::Clean(part.shape);
+        if (attempt > initialAttempt) for (auto& part : parts)
+            BRepTools::Clean(part.metreDisplaySource.IsNull() ? part.shape : part.metreDisplaySource);
         try {
             for (auto& part : parts) {
-                try { part.display = makeDisplay(part.shape, budget, scale); }
+                try {
+                    if (part.metreDisplaySource.IsNull()) part.display = makeDisplay(part.shape, budget, scale, 1, topologyVerified);
+                    else part.display = makeDisplay(part.metreDisplaySource, budget, scale, kMetre / kMillimetre, topologyVerified);
+                }
                 catch (const DisplayBudgetError& failure) {
                     throw DisplayBudgetError{QStringLiteral("零件“%1”：%2").arg(part.name, failure.message)};
                 } catch (const CadError& failure) {
                     fail(QStringLiteral("零件“%1”：%2").arg(part.name, failure.message));
                 }
             }
-            if (attempt) notes.append(QStringLiteral("大型装配采用 %1 倍显示离散公差，共 %2 个显示三角形；全部 %3 个零件及精确 CAD 曲面、边界和质量属性保留。")
+            if (attempt) notes.append(QStringLiteral("大型装配采用 %1 倍显示离散公差，共 %2 个显示三角形；保留全部 %3 个零件。")
                 .arg(scale, 0, 'g', 3).arg(qulonglong(budget.triangles)).arg(qulonglong(parts.size())));
             return;
         } catch (const DisplayBudgetError& failure) {
@@ -666,7 +782,7 @@ void makeAssemblyDisplays(std::vector<CadPart>& parts, QStringList& notes)
 // Stream into an atomic file or an in-memory BREP payload with a byte cap.
 class SaveBuffer final : public std::streambuf {
 public:
-    explicit SaveBuffer(QIODevice& device, qint64 limit = kMaxFileBytes) : m_device(device), m_limit(limit) {}
+    SaveBuffer(QIODevice& device, qint64 limit) : m_device(device), m_limit(limit) {}
     bool tooLarge() const { return m_tooLarge; }
     qint64 written() const { return m_written; }
 
@@ -794,12 +910,25 @@ TopLoc_Location projectLocation(const std::array<double, 12>& pose)
     return TopLoc_Location(transform);
 }
 
-TopoDS_Shape readProjectStep(std::istream& input, const TopLoc_Location& placement)
+TopoDS_Shape readProjectStep(const QByteArray& geometry, const TopLoc_Location& placement)
 {
-    auto shape = readStep(input);
-    if (shape.IsNull()) fail(QStringLiteral("STEP 零件没有可恢复的精确几何。"));
-    bool repaired = false;
-    shape = repairImportedShape(shape, repaired);
+    const auto transfer = [&](double lengthUnit) {
+        ProjectInputBuffer buffer(geometry);
+        std::istream input(&buffer);
+        input.imbue(std::locale::classic());
+        auto shape = readStep(input, lengthUnit);
+        if (shape.IsNull()) fail(QStringLiteral("STEP 零件没有可恢复的精确几何。"));
+        return shape;
+    };
+    auto shape = transfer(kMillimetre);
+    try {
+        bool repaired = false;
+        shape = repairImportedShape(shape, repaired);
+    } catch (const CadError& failure) {
+        const auto retried = transfer(kMetre);
+        if (retried.ShapeType() != shape.ShapeType()) fail(failure.message);
+        shape = scaleMetreStepToMillimetres(retried);
+    }
     const auto transferLocation = shape.Location();
     if (!transferLocation.IsIdentity()) {
         // Keep a placement introduced by STEP translation inside the part's
@@ -857,12 +986,14 @@ TopoDS_Shape copyForExport(const TopoDS_Shape& shape)
 }
 
 template<class Writer>
-void writeCadFile(const QString& path, const Writer& write)
+void writeCadFile(const QString& path, Format format, const Writer& write)
 {
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
-    SaveBuffer buffer(file);
+    // 外置 STEP 分段写入临时文件，以文件系统和磁盘空间为限。
+    const qint64 limit = format == Format::Step ? (std::numeric_limits<qint64>::max)() : kMaxFileBytes;
+    SaveBuffer buffer(file, limit);
     std::ostream output(&buffer);
     bool written;
     {
@@ -905,13 +1036,40 @@ const CadPart* CadDocument::part(int id) const
     return it != m_parts.end() && it->id == id ? &*it : nullptr;
 }
 
-void CadDocument::clear() { m_parts.clear(); m_importNotes.clear(); }
+double CadDocument::displayBoundsDiagonal() const
+{
+    if (m_displayBoundsDiagonal) return *m_displayBoundsDiagonal;
+
+    // 只遍历已有显示顶点，隐藏部件也计入，切换视图不会改变标记大小。
+    const double infinity = std::numeric_limits<double>::infinity();
+    std::array<double, 3> lower{infinity, infinity, infinity};
+    std::array<double, 3> upper{-infinity, -infinity, -infinity};
+    for (const auto& part : m_parts) {
+        for (const auto& vertex : part.display.vertices) {
+            for (int axis = 0; axis < 3; ++axis) {
+                lower[axis] = (std::min)(lower[axis], double(vertex[axis]));
+                upper[axis] = (std::max)(upper[axis], double(vertex[axis]));
+            }
+        }
+    }
+    const double diagonal = std::hypot(upper[0] - lower[0], upper[1] - lower[1], upper[2] - lower[2]);
+    m_displayBoundsDiagonal = std::isfinite(diagonal) ? diagonal : 0.0;
+    return *m_displayBoundsDiagonal;
+}
+
+void CadDocument::clear()
+{
+    m_parts.clear();
+    m_importNotes.clear();
+    m_displayBoundsDiagonal.reset();
+}
 
 bool CadDocument::remove(int id)
 {
     const auto it = findPart(m_parts, id);
     if (it == m_parts.end() || it->id != id) return false;
     m_parts.erase(it);
+    m_displayBoundsDiagonal.reset();
     return true;
 }
 
@@ -922,67 +1080,67 @@ bool CadDocument::importFile(const QString& path, std::vector<int>& newIds, QStr
         const QFileInfo file(path);
         if (!file.isFile() || file.size() <= 0)
             fail(QStringLiteral("文件不存在、不是普通文件或为空。"));
-        if (file.size() > kMaxFileBytes)
+        if (format != Format::Step && file.size() > kMaxFileBytes)
             fail(QStringLiteral("文件超过 128 MiB 导入上限。"));
 
         std::vector<NamedShape> named;
-        {
-            const std::lock_guard<std::mutex> lock(exchangeMutex);
-            if (format == Format::Step) named = readStepParts(file, kMaxParts - m_parts.size());
-            else {
-                const auto root = readShape(file, format);
-                std::vector<TopoDS_Shape> shapes;
-                std::size_t visited = 0;
-                collectParts(root, kMaxParts - m_parts.size(), visited, shapes);
-                for (const auto& shape : shapes) named.push_back({shape, {}, {}});
-            }
-        }
-        std::vector<TopoDS_Shape> shapes;
-        for (const auto& item : named) shapes.push_back(item.shape);
-        checkedId(m_nextId + shapes.size() - 1);
-
-        QString name = file.completeBaseName();
-        if (name.trimmed().isEmpty()) name = QStringLiteral("导入零件");
-        std::vector<CadPart> staged;
         QStringList notes;
-        std::vector<int> ids;
-        staged.reserve(shapes.size());
-        ids.reserve(shapes.size());
-        std::set<QString> usedNames;
-        for (const auto& existing : m_parts) usedNames.insert(existing.name);
-        for (std::size_t i = 0; i < shapes.size(); ++i) {
-            const int id = checkedId(m_nextId + i);
-            const QString baseName = named[i].sourceName.isEmpty() ? name : named[i].sourceName;
-            QString partName = baseName;
-            for (int n = 2; usedNames.count(partName); ++n) partName = QStringLiteral("%1 (%2)").arg(baseName).arg(n);
-            usedNames.insert(partName);
-            try {
-                if (format == Format::Step) {
-                    bool repaired = false;
-                    shapes[i] = repairImportedShape(shapes[i], repaired);
-                    if (repaired) notes.append(QStringLiteral("已修复“%1”的 STEP 拓扑；几何边界、质量积分和惯量验证保持一致。").arg(partName));
-                }
-                staged.push_back({id, partName, shapes[i], {}, named[i].sourceName, named[i].instancePath});
-            } catch (const CadError& failure) {
-                fail(QStringLiteral("零件“%1”：%2").arg(partName, failure.message));
-            }
-            ids.push_back(id);
+        if (format == Format::Step) named = readValidatedStepParts(file, kMaxParts - m_parts.size(), notes);
+        else {
+            const std::lock_guard<std::mutex> lock(exchangeMutex);
+            const auto root = readShape(file, format);
+            std::vector<TopoDS_Shape> shapes;
+            std::size_t visited = 0;
+            collectParts(root, kMaxParts - m_parts.size(), visited, shapes);
+            for (const auto& shape : shapes) named.push_back({shape, {}, {}});
         }
-        makeAssemblyDisplays(staged, notes);
-
-        const std::size_t oldSize = m_parts.size();
-        // Append with vector's geometric growth rather than reserve(size+1)
-        // on repeated small imports. Roll back appends if committing throws.
-        try {
-            for (auto& item : staged) m_parts.push_back(std::move(item));
-        } catch (...) {
-            while (m_parts.size() > oldSize) m_parts.pop_back();
-            throw;
-        }
-        m_nextId += ids.size();
-        m_importNotes = std::move(notes);
-        newIds.swap(ids);
+        std::vector<CadPart> staged;
+        staged.reserve(named.size());
+        for (auto& item : named)
+            staged.push_back({0, {}, std::move(item.shape), {}, std::move(item.sourceName), std::move(item.instancePath), std::move(item.metreDisplaySource)});
+        insertImportedParts(staged, file.completeBaseName(), notes, newIds, true, format == Format::Step ? file.size() : 0);
     });
+}
+
+bool CadDocument::appendImported(CadDocument&& imported, const QString& path, std::vector<int>& newIds, QString& error)
+{
+    return runCad(QStringLiteral("CAD 导入失败"), error, [&] {
+        insertImportedParts(imported.m_parts, QFileInfo(path).completeBaseName(), imported.m_importNotes, newIds, false);
+    });
+}
+
+void CadDocument::insertImportedParts(std::vector<CadPart>& staged, const QString& name, QStringList& notes,
+                                      std::vector<int>& newIds, bool buildDisplay, qint64 verifiedStepBytes)
+{
+    if (staged.empty()) fail(QStringLiteral("文件不含可导入的零件。"));
+    if (staged.size() > kMaxParts - m_parts.size()) fail(QStringLiteral("文档零件数量超过 20000。"));
+    checkedId(m_nextId + staged.size() - 1);
+    const QString fallback = name.trimmed().isEmpty() ? QStringLiteral("导入零件") : name;
+    std::set<QString> usedNames;
+    for (const auto& existing : m_parts) usedNames.insert(existing.name);
+    std::vector<int> ids;
+    ids.reserve(staged.size());
+    for (auto& item : staged) {
+        item.id = checkedId(m_nextId + ids.size());
+        const QString baseName = item.sourceName.isEmpty() ? fallback : item.sourceName;
+        item.name = baseName;
+        for (int n = 2; usedNames.count(item.name); ++n) item.name = QStringLiteral("%1 (%2)").arg(baseName).arg(n);
+        usedNames.insert(item.name);
+        ids.push_back(item.id);
+    }
+    if (buildDisplay) makeAssemblyDisplays(staged, notes, verifiedStepBytes);
+
+    const auto oldSize = m_parts.size();
+    try {
+        for (auto& part : staged) m_parts.push_back(std::move(part));
+    } catch (...) {
+        while (m_parts.size() > oldSize) m_parts.pop_back();
+        throw;
+    }
+    m_nextId += ids.size();
+    m_importNotes = std::move(notes);
+    newIds.swap(ids);
+    m_displayBoundsDiagonal.reset();
 }
 
 bool CadDocument::addPrimitive(Primitive primitive, double x, double y, double z, int& id, QString& error)
@@ -1018,6 +1176,7 @@ bool CadDocument::addPrimitive(Primitive primitive, double x, double y, double z
         m_parts.push_back({next, QStringLiteral("%1 %2").arg(name).arg(next), shape, makeDisplay(shape, budget)});
         ++m_nextId;
         id = next;
+        m_displayBoundsDiagonal.reset();
     });
 }
 
@@ -1039,7 +1198,7 @@ bool CadDocument::exportFile(const QString& path, int partId, QString& error) co
             shape = copyForExport(item->shape);
         }
 
-        writeCadFile(path, [&](std::ostream& output) { return writeShape(shape, format, output); });
+        writeCadFile(path, format, [&](std::ostream& output) { return writeShape(shape, format, output); });
     });
 }
 
@@ -1048,7 +1207,7 @@ bool CadDocument::exportNamedStep(const QString& path, const QMap<int, QString>&
     return runCad(QStringLiteral("带零件标识的 STEP 导出失败"), error, [&] {
         if (formatFor(path) != Format::Step || m_parts.empty() || m_parts.size() != std::size_t(partNames.size()))
             fail(QStringLiteral("每个 STEP 零件都需要一个标识。"));
-        writeCadFile(path, [&](std::ostream& output) {
+        writeCadFile(path, Format::Step, [&](std::ostream& output) {
             Handle(TDocStd_Document) document = new TDocStd_Document("BinXCAF");
             const auto shapes = XCAFDoc_DocumentTool::ShapeTool(document->Main());
             BRep_Builder builder;
@@ -1098,7 +1257,11 @@ bool CadDocument::restoreNamedStepParts(const QMap<QString, std::pair<int, QStri
         std::vector<std::pair<int, QString>> restored;
         restored.reserve(m_parts.size());
         for (const auto& part : m_parts) {
-            const auto found = parts.constFind(part.sourceName);
+            const auto occurrence = parts.constFind(part.instancePath);
+            const auto named = parts.constFind(part.sourceName);
+            if (occurrence != parts.cend() && named != parts.cend() && occurrence != named)
+                fail(QStringLiteral("STEP 装配路径与名称对应不同的零件标识：%1。").arg(part.instancePath));
+            const auto found = occurrence != parts.cend() ? occurrence : named;
             if (found == parts.cend() || found->first <= 0 || !ids.insert(found->first).second)
                 fail(QStringLiteral("未找到唯一的 STEP 零件标识 %1。").arg(part.sourceName));
             restored.push_back(*found);
@@ -1109,6 +1272,7 @@ bool CadDocument::restoreNamedStepParts(const QMap<QString, std::pair<int, QStri
         }
         std::sort(m_parts.begin(), m_parts.end(), [](const CadPart& left, const CadPart& right) { return left.id < right.id; });
         if (!m_parts.empty()) m_nextId = (std::max)(m_nextId, std::uint64_t(m_parts.back().id) + 1);
+        m_displayBoundsDiagonal.reset();
     });
 }
 
@@ -1117,6 +1281,8 @@ bool CadDocument::encodeProjectStep(const CadPart& part, QByteArray& geometry,
 {
     return runCad(QStringLiteral("编码 CAD 零件 %1 失败").arg(part.id), error, [&] {
         if (part.shape.IsNull()) fail(QStringLiteral("零件没有精确几何。"));
+        if (!part.metreDisplaySource.IsNull())
+            fail(QStringLiteral("零件“%1”的毫米拓扑未通过校验。请保留原始 STEP 和配套运动 JSON 以重新打开模型。").arg(part.name));
         if (maxBytes <= 0) fail(QStringLiteral("项目已达到 STEP 大小上限。"));
         const auto transform = part.shape.Location().Transformation();
         std::array<double, 12> pose;
@@ -1168,17 +1334,17 @@ bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std
         staged.reserve(parts.size());
         for (const auto* part : sorted) {
             try {
-                ProjectInputBuffer buffer(part->geometry);
-                std::istream input(&buffer);
-                input.imbue(std::locale::classic());
                 TopoDS_Shape shape;
                 if (part->encoding == ProjectPartEncoding::Step) {
                     checkProjectStep(part->geometry);
                     const auto placement = projectLocation(part->placement);
                     const std::lock_guard<std::mutex> lock(exchangeMutex);
-                    shape = readProjectStep(input, placement);
+                    shape = readProjectStep(part->geometry, placement);
                 } else {
                     checkProjectBrep(part->geometry);
+                    ProjectInputBuffer buffer(part->geometry);
+                    std::istream input(&buffer);
+                    input.imbue(std::locale::classic());
                     input.exceptions(std::ios::failbit | std::ios::badbit);
                     const std::lock_guard<std::mutex> lock(exchangeMutex);
                     BRepTools::Read(shape, input, BRep_Builder());
@@ -1194,6 +1360,7 @@ bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std
         m_parts.swap(staged);
         m_importNotes = std::move(notes);
         m_nextId = nextId;
+        m_displayBoundsDiagonal.reset();
     });
 }
 

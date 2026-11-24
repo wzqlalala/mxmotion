@@ -138,7 +138,13 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
             require(!group->icon(0).pixmap(16,16).isNull(),"Original tree group icon missing");
             const auto actions=menu(tree,group);require(actions.size()>=2 && actions.last().startsWith("删除所有"),"Original group creation/delete menu missing");
         }
-        const auto rootActions=menu(tree,node(tree,"__motionRoot",-1,true));
+        auto rootActions=menu(tree,node(tree,"__motionRoot",-1,true));
+#if defined(MX_HAS_BODY_DRIVES)
+        const int bodyDriveAction = rootActions.indexOf(QStringLiteral("新建运动体驱动"));
+        require(bodyDriveAction > 0 && rootActions.at(bodyDriveAction - 1) == QStringLiteral("新建驱动"),
+            "Body drive creation submenu is missing from the root context menu");
+        rootActions.removeAt(bodyDriveAction);
+#endif
         require(rootActions.size()==11&&rootActions.first()=="新建运动体"&&rootActions.last()=="删除运动数据","Original root context menu changed");
         require(menu(tree,node(tree,"markers",11))==QStringList{"删除","重命名","复制"},"Original child context menu changed");
         require(menu(tree,node(tree,"scenarios",1))==QStringList{"删除","重命名","求解"},"Original scenario context menu changed");

@@ -1,4 +1,5 @@
 #include "NativeMotionStatics.h"
+#include "motion/physics/LinkMotionImposed.h"
 #include "NativeMotionRuntime.h"
 
 #include "motion/functions/Function_Const.h"
@@ -212,6 +213,26 @@ NativeStaticReport equilibrateNativeMotion(NativeMotionSystem& system,const QJso
         const auto function=entry.second->GetMotorFunction();
         const double speed=definition.value("controlMode").toString()=="Velocity"?function->Get_y(0):function->Get_y_dx(0);
         if(std::abs(speed)>1e-8)fail(QStringLiteral("驱动 %1 在 t=0 指定非零速度，不能作为静止平衡；请让初始速度为零或使用纯动力学方案。").arg(entry.first));
+    }
+    for (const auto& link : system.Get_linklist()) {
+        const auto name = QString::fromStdString(link->GetNameString());
+        if (!name.startsWith("BD_")) continue;
+        bool idValid = false;
+        const int id = name.mid(3).toInt(&idValid);
+        if (!idValid) continue;
+        const auto row = system.sourceInput->document.entity("bodyDrives", id);
+        if (row.isEmpty()) continue;
+        bool moving = false;
+        if (const auto pose = std::dynamic_pointer_cast<motion::MotionLinkMotionImposed>(link)) {
+            moving = pose->GetPositionFunction()->Get_p_ds(0).Length() > 1e-8 ||
+                     pose->GetRotationFunction()->Get_w_loc(0).Length() > 1e-8;
+        } else if (const auto motor = std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)) {
+            const auto function = motor->GetMotorFunction();
+            const auto mode = row.value("bodyDriveMode").toString();
+            moving = std::abs(mode.endsWith("Speed") ? function->Get_y(0) : function->Get_y_dx(0)) > 1e-8;
+        }
+        if (moving)
+            fail(QStringLiteral("运动体驱动 %1 在 t=0 指定非零速度，不能作为静止平衡。").arg(id));
     }
     for(const auto& link:system.Get_linklist())if(const auto spring=std::dynamic_pointer_cast<motion::MotionLinkTSDA>(link))spring->IsStiff(true);
     const auto savedSolver=system.GetSolver();

@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MotionWorkspace.h"
 #include "OccViewport.h"
 #include "OriginalSelection.h"
 #include "NativeMotionSymbols.h"
@@ -85,9 +86,13 @@ bool MotionWindow::dispatchOriginalWorkspaceAction(const QString& action,const Q
         const QString file=argument.toString();
         if(!QFileInfo::exists(file)){setNotice(tr("文件不存在：%1").arg(file),true);return true;}
         bool opened=false;
-        if(file.endsWith(QLatin1String(".mxmotion"),Qt::CaseInsensitive))opened=openRigidProject(file);
-        else if(file.endsWith(QLatin1String(".json"),Qt::CaseInsensitive))opened=importMotionJson(file);
-        else opened=importCad(file); // Original recent-geometry entries import into the current model.
+        if(file.endsWith(QLatin1String(".mxmotion"),Qt::CaseInsensitive))
+            opened=m_workspace?m_workspace->openProject(file):openRigidProject(file);
+        else {
+            const auto remember = [file](bool success) { if (success) rememberFile(file); };
+            if (file.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) startMotionJsonImport(file, remember);
+            else startCadImport(file, false, remember);
+        }
         if(opened)rememberFile(file);
         return true;
     }

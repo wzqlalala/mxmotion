@@ -9,7 +9,10 @@
 #include "motion/physics/Link.h"
 #include "motion/physics/LinkPointOnSurface.h"
 #include "motion/physics/LinkPointSpline.h"
+#include "motion/solver/DirectSolverLS.h"
 #include "motion/timestepper/TimestepperHHT.h"
+
+#include <Eigen/SparseQR>
 
 #include <QJsonArray>
 #include <QQuaternion>
@@ -61,6 +64,62 @@ std::string formula(const QString& expression,double scale=1)
 }
 bool active(const QJsonObject& o) { return o.value("enabled").toBool(true); }
 
+#if defined(MX_HAS_BODY_DRIVES)
+std::vector<motion::utils::BodyDrive> bodyDriveDefinitions(const NativeMotionDocument& document)
+{
+    using motion::utils::BodyDrive;
+    using motion::utils::BodyDriveMode;
+    std::vector<BodyDrive> definitions;
+    for (const auto& entry : document.collection("bodyDrives")) {
+        const auto row = entry.toObject();
+        if (!active(row)) continue;
+        BodyDrive drive;
+        drive.id = "BD_" + key(row.value("id").toInt());
+        drive.body_id = key(row.value("targetBodyId").toInt(-1));
+        const int reference = row.value("referenceBodyId").toInt(-1);
+        if (reference >= 0) drive.reference_body_id = key(reference);
+        const auto mode = row.value("bodyDriveMode").toString();
+        const bool pose = mode == "Pose";
+        const bool rotation = mode == "RotationAngle" || mode == "RotationSpeed";
+        if (pose) drive.mode = BodyDriveMode::POSE;
+        else if (mode == "RotationAngle") drive.mode = BodyDriveMode::ROTATION_ANGLE;
+        else if (mode == "RotationSpeed") drive.mode = BodyDriveMode::ROTATION_SPEED;
+        else if (mode == "LinearPosition") drive.mode = BodyDriveMode::LINEAR_POSITION;
+        else if (mode == "LinearSpeed") drive.mode = BodyDriveMode::LINEAR_SPEED;
+        else fail(QStringLiteral("未知运动体驱动类型：%1").arg(mode));
+        drive.guide = row.value("guide").toBool(true);
+        drive.frame_abs.SetPos(vector(row.value("origin")));
+        if (pose) {
+            const auto a = vector(row.value("frameAngles")) * d2r;
+            drive.frame_abs.SetRot(motion::Q_from_AngX(a.x()) * motion::Q_from_AngY(a.y()) * motion::Q_from_AngZ(a.z()));
+        } else {
+            Vec x, y, z;
+            const auto axis = unit(row.value("axis"), rotation ? motion::VECT_Z : motion::VECT_X);
+            if (rotation) axis.DirToDxDyDz(z, x, y, motion::VECT_X);
+            else axis.DirToDxDyDz(x, y, z, motion::VECT_Y);
+            drive.frame_abs.SetRot(motion::MotionMatrix33<>(x, y, z));
+        }
+        const auto channels = row.value("channels").toObject();
+        const QString axes = pose ? QStringLiteral("XYZABC") : QStringLiteral("X");
+        for (int i = 0; i < axes.size(); ++i) {
+            auto& definition = drive.channels[i];
+            const auto channel = channels.value(QString(axes[i])).toObject();
+            const double scale = rotation || (pose && i >= 3) ? d2r : 1;
+            definition.x_table = array(channel.value("driveTableX"));
+            definition.f_table = array(channel.value("driveTableY"), scale);
+            definition.has_table = !definition.x_table.empty() || !definition.f_table.empty();
+            const auto expression = channel.value("expression").toString("0");
+            bool constant = false;
+            const double value = expression.toDouble(&constant);
+            if (constant) definition.func_value = value * scale;
+            else definition.function_expr = formula(expression, scale);
+        }
+        definitions.push_back(std::move(drive));
+    }
+    return definitions;
+}
+#endif
+
 motion::SimulationConfig configuration(const QJsonObject& o)
 {
     motion::SimulationConfig c;
@@ -102,6 +161,80 @@ motion::SimulationConfig configuration(const QJsonObject& o)
     c.solver.tolerance=o.value("solverTolerance").toDouble(1e-8);
     c.solver.verbose=o.value("solverVerbose").toBool();
     return c;
+}
+
+class EquilibratedMotionQr final : public motion::MotionSolverSparseQR {
+protected:
+    bool FactorizeMatrix() override
+    {
+        if (A().rows() == 0 || A().rows() != A().cols()) return false;
+        motion::MotionSparseMatrix scaled = A();
+        m_scale = Eigen::VectorXd::Ones(A().rows());
+        // Solve (D A D)y = Db and recover x = Dy. The rigid solver uses mm,
+        // so large inertias can otherwise hide small constraint pivots.
+        for (int pass = 0; pass < 12; ++pass) {
+            Eigen::VectorXd factors(A().rows());
+            for (int row = 0; row < scaled.outerSize(); ++row) {
+                double largest = 0;
+                for (motion::MotionSparseMatrix::InnerIterator entry(scaled, row); entry; ++entry) {
+                    if (!std::isfinite(entry.value())) return false;
+                    largest = std::max(largest, std::abs(entry.value()));
+                }
+                factors[row] = largest > 0 ? 1 / std::sqrt(largest) : 1;
+            }
+            for (int row = 0; row < scaled.outerSize(); ++row)
+                for (motion::MotionSparseMatrix::InnerIterator entry(scaled, row); entry; ++entry) {
+                    entry.valueRef() *= factors[entry.row()];
+                    entry.valueRef() *= factors[entry.col()];
+                }
+            m_scale.array() *= factors.array();
+            if (!m_scale.allFinite() || (m_scale.array() <= 0).any()) return false;
+        }
+        m_qr.compute(Eigen::SparseMatrix<double>(scaled));
+        return m_qr.info() == Eigen::Success;
+    }
+
+    bool SolveSystem() override
+    {
+        if (b().size() != m_scale.size()) fail(QStringLiteral("平衡缩放稀疏 QR 的方程尺寸不匹配。"));
+        const Eigen::VectorXd rhs = m_scale.array() * b().array();
+        if (!rhs.allFinite()) fail(QStringLiteral("平衡缩放稀疏 QR 的右端项包含非有限数值。"));
+        const Eigen::VectorXd solution = m_qr.solve(rhs);
+        x() = m_scale.array() * solution.array();
+        if (m_qr.info() != Eigen::Success || !x().allFinite())
+            fail(QStringLiteral("平衡缩放稀疏 QR 未得到有限解。"));
+        return true;
+    }
+
+private:
+    Eigen::VectorXd m_scale;
+    Eigen::SparseQR<Eigen::SparseMatrix<double>, Eigen::COLAMDOrdering<int>> m_qr;
+};
+
+bool isRigidPositionDriven(const NativeMotionInput& input, const NativeMotionSystem& system)
+{
+    if (system.motions_map.empty() || !system.effortMotors.empty() ||
+        std::hypot(input.scenario.gravityMS2[0], input.scenario.gravityMS2[1], input.scenario.gravityMS2[2]) != 0)
+        return false;
+    for (const auto* category : {"autoFlexBodies", "springs", "contacts", "controllers", "couplings",
+                                 "scalarForces", "scalarTorques", "threePointForces", "threePointTorques",
+                                 "vectorForces", "tensionCables", "softStops"})
+        if (!input.document.collection(QLatin1String(category)).isEmpty()) return false;
+    return std::all_of(system.motions_map.begin(), system.motions_map.end(), [](const auto& drive) {
+        return drive.second.is_position;
+    }) && std::all_of(system.joints_map.begin(), system.joints_map.end(), [](const auto& item) {
+        const auto& joint = *item.second;
+        return !joint.has_friction && !joint.has_limit &&
+            (joint.type == "FIXED" || joint.type == "REVOLUTE" || joint.type == "CYLINDRICAL" || joint.type == "TRANSLATIONAL");
+    });
+}
+
+bool useEquilibratedMotionQr(const NativeMotionInput& input, const NativeMotionSystem& system,
+                             const motion::SimulationConfig& config)
+{
+    return !config.use_preset && config.solver.type == motion::MotionSolver::Type::SPARSE_QR &&
+        config.integrator.type == motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED &&
+        isRigidPositionDriven(input, system);
 }
 
 class ImportedMnfTimestepper final : public motion::MotionTimestepperHHT {
@@ -594,6 +727,11 @@ void assembleInitialState(NativeMotionSystem& system)
 
 } // namespace
 
+std::shared_ptr<motion::MotionSolver> makeNativeEquilibratedQr()
+{
+    return std::make_shared<EquilibratedMotionQr>();
+}
+
 void rejectNativeGeometryBoundary(const NativeMotionSystem& system)
 {
     for(const auto& item:system.nativeJoints){
@@ -622,7 +760,15 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         const auto analysisType=scenario.value("analysisType").toString("Dynamic");
         if (hasMnf && analysisType!="Dynamic")
             fail("导入的 MNF 柔性体当前支持动力学方案。");
-        motion::utils::MotionParserAdams parser;parser.SetVisualizationType(motion::utils::MotionParserAdams::NONE);parser.Parse(system);
+        motion::utils::MotionParserAdams parser;parser.SetVisualizationType(motion::utils::MotionParserAdams::NONE);
+#if defined(MX_HAS_BODY_DRIVES)
+        parser.Parse(system, bodyDriveDefinitions(input.document));
+#else
+        for (const auto& value : input.document.collection("bodyDrives")) {
+            if (active(value.toObject())) fail(QStringLiteral("当前 MotionEngine 版本不支持运动体驱动。"));
+        }
+        parser.Parse(system);
+#endif
         createNativeEffortMotors(system,input);
         for(const auto& joint:system.joints_map){
             bool created=false;for(const auto& link:system.Get_linklist())if(!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)&&link->GetNameString()==joint.first){created=true;system.nativeJoints.emplace(joint.first,link);break;}
@@ -663,6 +809,12 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         system.InitSolver(config);
         if(system.GetSolver()->GetType()!=system.config.solver.type||system.GetTimestepper()->GetType()!=system.config.integrator.type)
             fail("底层引擎没有安装方案指定的求解器或积分器，已中止；不能用默认类型代替所请求的算法。");
+        const bool equilibratedQr = analysisType == "Dynamic" && !hasMnf && useEquilibratedMotionQr(input, system, config);
+        if (equilibratedQr) {
+            auto solver = makeNativeEquilibratedQr();
+            solver->SetVerbose(config.solver.verbose);
+            system.SetSolver(solver);
+        }
         if (hasMnf) {
             const auto hht = std::dynamic_pointer_cast<motion::MotionTimestepperHHT>(system.GetTimestepper());
             if (!hht) fail("MNF 动力学需要 HHT 积分器。");
@@ -695,6 +847,9 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         // correction before PID/recording, stopping early on actual residuals.
         system.SetPositionAssemblyPerStep(false);
         system.projectPositions=projectPositions;
+        system.allowFullRankPositionProjection = projectPositions && analysisType == "Dynamic" &&
+            flex.empty() && config.use_preset && config.preset == motion::SimulationConfig::Preset::FAST &&
+            input.document.collection(QStringLiteral("bodyDrives")).isEmpty() && isRigidPositionDriven(input, system);
         if (!hasMnf) {
             for (const auto& body : flex) {
                 if (body.reducedDynamics && body.result.assembly && body.result.interface_bodies.size() == 1)
@@ -732,6 +887,11 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         if(stopped||(callbacks.stopRequested&&callbacks.stopRequested())){error.clear();return SolveStatus::Stopped;}
         RigidResult next;extractNativeResults(input,system,flex,next);
         next.diagnostics=input.geometry->diagnostics;
+        if (equilibratedQr) next.diagnostics.append(QStringLiteral("双边位置驱动使用平衡缩放稀疏 QR。"));
+        if (system.usedFullRankPositionProjection)
+            next.diagnostics.append(QStringLiteral("全约束刚体使用稀疏雅可比位置投影，按全部原约束验收。"));
+        if(system.usedBilateralProjectionSolver)
+            next.diagnostics.append(QStringLiteral("双边约束的位置投影使用平衡缩放稀疏 QR，动力学沿用方案指定算法。"));
         if (hasMnf) next.diagnostics.append(QStringLiteral("MNF 动力学使用 HHT 自适应积分（内部步长上限 %1 ms）和稀疏 QR 求解。")
             .arg(1000 * ImportedMnfTimestepper::maxStepSeconds));
         if(staticReport)next.diagnostics.append(staticReport->description());

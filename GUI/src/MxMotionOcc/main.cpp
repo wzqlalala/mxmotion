@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MotionWorkspace.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -13,8 +14,10 @@
 #include <QResource>
 #include <QScreen>
 #include <QSplashScreen>
+#include <QStandardPaths>
 #include <QStyleFactory>
 #include <QSurfaceFormat>
+#include <QStringList>
 #include <QTimer>
 #include <QTranslator>
 #include <QWidget>
@@ -23,6 +26,13 @@
 #ifdef MX_OCC_DESKTOP_SMOKE
 int runMotionOccDesktopSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccNativeDesktopSmoke(QApplication& app, const QString& outputDirectory);
+#ifdef MX_HAS_BODY_DRIVES
+int runMotionOccBodyDriveDesktopSmoke(const QString& outputDirectory);
+#endif
+int runMotionOccPortableCaseDesktopSmoke(const QString& outputDirectory, const QString& motionPath);
+int runMotionOccTreeSelectionSmoke(const QString& outputDirectory, const QString& motionPath);
+int runMotionOccCadImportSmoke(const QString& outputDirectory, const QString& cadPath,
+                              const QStringList& expectedParts, const QString& focus, const QString& motionPath);
 int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccOriginalPickerSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccOriginalBackendSmoke();
@@ -32,6 +42,9 @@ int runMotionOccOriginalLoadExportSmoke(QApplication& app, const QString& output
 int runMotionOccModalDesktopSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccRenderFeedbackSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccWorkspaceSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccViewPagesSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccMixedViewSmoke(QApplication& app, const QString& outputDirectory);
 
 namespace {
 class HiddenSmokeWindows final : public QObject
@@ -86,6 +99,24 @@ int main(int argc, char* argv[])
     args.addOption(smoke);
     const QCommandLineOption nativeSmoke(QStringLiteral("native-desktop-smoke"), QStringLiteral("Run the native motion desktop regression."), QStringLiteral("directory"));
     args.addOption(nativeSmoke);
+#ifdef MX_HAS_BODY_DRIVES
+    const QCommandLineOption bodyDriveSmoke(QStringLiteral("body-drive-desktop-smoke"),
+        QStringLiteral("验证运动体驱动的入口、编辑器和工程保存。"), QStringLiteral("directory"));
+    args.addOption(bodyDriveSmoke);
+#endif
+    const QCommandLineOption portableCaseSmoke(QStringLiteral("portable-case-smoke"), QStringLiteral("Verify import, project relocation, solve and playback for the relative-STEP JSON passed to --motion."), QStringLiteral("directory"));
+    args.addOption(portableCaseSmoke);
+    const QCommandLineOption treeSelectionSmoke(QStringLiteral("tree-selection-smoke"), QStringLiteral("Verify model-tree selection and measure synchronous selection time."), QStringLiteral("directory"));
+    args.addOption(treeSelectionSmoke);
+    const QCommandLineOption cadImportSmoke(QStringLiteral("cad-import-smoke"),
+        QStringLiteral("后台导入位置参数指定的 CAD 文件并保存 OpenGL 截图。"), QStringLiteral("directory"));
+    const QCommandLineOption expectPart(QStringLiteral("expect-part"),
+        QStringLiteral("校验 CAD 模型树包含指定名称的部件，可重复指定。"), QStringLiteral("name"));
+    const QCommandLineOption cadFocus(QStringLiteral("cad-focus"),
+        QStringLiteral("另存一张按世界坐标聚焦的 CAD 截图，坐标和垂直范围均用毫米。"), QStringLiteral("x,y,z,span"));
+    args.addOption(cadImportSmoke);
+    args.addOption(expectPart);
+    args.addOption(cadFocus);
     const QCommandLineOption pickingSmoke(QStringLiteral("picking-smoke"), QStringLiteral("Run CAD and mesh picking regression."), QStringLiteral("directory"));
     args.addOption(pickingSmoke);
     const QCommandLineOption originalPickerSmoke(QStringLiteral("original-picker-smoke"), QStringLiteral("Run the uploaded original picker controls against real geometry and meshes."), QStringLiteral("directory"));
@@ -104,6 +135,12 @@ int main(int argc, char* argv[])
     const QCommandLineOption renderFeedbackSmoke(QStringLiteral("render-feedback-smoke"),QStringLiteral("Run CAD selection depth regression."),QStringLiteral("directory"));
     args.addOption(navigationSmoke);
     args.addOption(renderFeedbackSmoke);
+    const QCommandLineOption workspaceSmoke(QStringLiteral("workspace-smoke"), QStringLiteral("Verify independent project tabs."), QStringLiteral("directory"));
+    args.addOption(workspaceSmoke);
+    const QCommandLineOption viewPagesSmoke(QStringLiteral("view-pages-smoke"), QStringLiteral("Verify view pages and OpenGL viewports."), QStringLiteral("directory"));
+    args.addOption(viewPagesSmoke);
+    const QCommandLineOption mixedViewSmoke(QStringLiteral("mixed-view-smoke"), QStringLiteral("Verify side-by-side viewports for multiple projects."), QStringLiteral("directory"));
+    args.addOption(mixedViewSmoke);
 #endif
     args.process(app);
     bool smokeMode = false;
@@ -114,6 +151,7 @@ int main(int argc, char* argv[])
         return name.endsWith(QStringLiteral("-smoke"));
     });
     if (smokeMode) {
+        QStandardPaths::setTestModeEnabled(true);
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
         app.installEventFilter(&hiddenWindows);
     }
@@ -133,6 +171,13 @@ int main(int argc, char* argv[])
 #ifdef MX_OCC_DESKTOP_SMOKE
     if (args.isSet(smoke)) return runMotionOccDesktopSmoke(app, args.value(smoke));
     if (args.isSet(nativeSmoke)) return runMotionOccNativeDesktopSmoke(app, args.value(nativeSmoke));
+#ifdef MX_HAS_BODY_DRIVES
+    if (args.isSet(bodyDriveSmoke)) return runMotionOccBodyDriveDesktopSmoke(args.value(bodyDriveSmoke));
+#endif
+    if (args.isSet(portableCaseSmoke)) return runMotionOccPortableCaseDesktopSmoke(args.value(portableCaseSmoke), args.value(motion));
+    if (args.isSet(treeSelectionSmoke)) return runMotionOccTreeSelectionSmoke(args.value(treeSelectionSmoke), args.value(motion));
+    if (args.isSet(cadImportSmoke)) return runMotionOccCadImportSmoke(args.value(cadImportSmoke),
+        args.positionalArguments().value(0), args.values(expectPart), args.value(cadFocus), args.value(motion));
     if (args.isSet(pickingSmoke)) return runMotionOccPickingSmoke(app, args.value(pickingSmoke));
     if (args.isSet(originalPickerSmoke)) return runMotionOccOriginalPickerSmoke(app,args.value(originalPickerSmoke));
     if (args.isSet(originalBackendSmoke)) return runMotionOccOriginalBackendSmoke();
@@ -142,6 +187,9 @@ int main(int argc, char* argv[])
     if (args.isSet(modalSmoke)) return runMotionOccModalDesktopSmoke(app,args.value(modalSmoke));
     if (args.isSet(navigationSmoke)) return runMotionOccNavigationSmoke(app,args.value(navigationSmoke));
     if (args.isSet(renderFeedbackSmoke)) return runMotionOccRenderFeedbackSmoke(app,args.value(renderFeedbackSmoke));
+    if (args.isSet(workspaceSmoke)) return runMotionOccWorkspaceSmoke(app, args.value(workspaceSmoke));
+    if (args.isSet(viewPagesSmoke)) return runMotionOccViewPagesSmoke(app, args.value(viewPagesSmoke));
+    if (args.isSet(mixedViewSmoke)) return runMotionOccMixedViewSmoke(app, args.value(mixedViewSmoke));
 #endif
 
     auto* screen = QGuiApplication::screenAt(QCursor::pos());
@@ -156,13 +204,19 @@ int main(int argc, char* argv[])
     splash.show();
     app.processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    MotionOcc::MotionWindow window;
-    if (!args.positionalArguments().isEmpty()) {
-        const auto path = args.positionalArguments().first();
-        if (path.endsWith(QStringLiteral(".mxmotion"), Qt::CaseInsensitive)) window.openRigidProject(path);
-        else window.importCad(path);
+    MotionOcc::MotionWorkspace window(args.positionalArguments().value(0));
+    if (args.isSet(motion)) {
+        auto* project = window.activeProject();
+        const auto path = args.value(motion);
+        if (project->geometryImportInProgress()) {
+            QObject::connect(project, &MotionOcc::MotionWindow::geometryImportFinished, project,
+                [project, path, pending = true](bool success) mutable {
+                    if (!pending) return;
+                    pending = false;
+                    if (success) project->startMotionJsonImport(path);
+                });
+        } else project->startMotionJsonImport(path);
     }
-    if (args.isSet(motion)) window.importMotionJson(args.value(motion));
     QTimer::singleShot(int(qMax<qint64>(0, 750 - startup.elapsed())), &window, [&] {
         window.showMaximized();
         splash.finish(&window);

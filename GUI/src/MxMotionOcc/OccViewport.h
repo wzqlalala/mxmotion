@@ -3,6 +3,8 @@
 #include <QMatrix4x4>
 #include <QColor>
 #include <QOpenGLWidget>
+#include <QPointer>
+#include <QScopedValueRollback>
 #include <QString>
 #include <QVector>
 #include <QMetaType>
@@ -25,6 +27,7 @@ class QFocusEvent;
 namespace MotionOcc {
 
 class CadDocument;
+class PreparedCadScene;
 struct FemMesh;
 struct MotionSymbol;
 
@@ -65,11 +68,17 @@ public:
     };
     ViewCameraState queryCameraState() const;
     bool queryVisibleBounds(QVector3D& minimum,QVector3D& maximum) const;
+    void copyCameraFrom(const OccViewport& source);
+    void copyPresentationFrom(const OccViewport& source);
+    void setPresentationPeers(const QList<OccViewport*>& viewports);
 
     // Snapshot of visible geometry; does not fit, recenter or reset the view.
     // Retains poses for IDs still in the document, including hidden parts.
+    // 纯 CPU 快照可在后台构建。追加时按源文档部件顺序传入最终编号。
+    static std::shared_ptr<const PreparedCadScene> prepareCadScene(const CadDocument& document);
     void setScene(const CadDocument& document, const std::map<int, FemMesh>& meshes,
-                  const std::set<int>& hidden = {});
+                  const std::set<int>& hidden = {}, const std::shared_ptr<const PreparedCadScene>& prepared = {},
+                  const std::vector<int>& preparedPartIds = {});
     // Replaces the transient poses for the current document. Rigid matrices map
     // rest CAD world to animated world in mm. Missing or invalid poses mean
     // identity; unknown part IDs are ignored. Does not refit or modify geometry.
@@ -91,12 +100,15 @@ public:
     std::optional<PickKind> selectionFilter() const;
     const QVector<PickResult>& viewportSelection() const;
     void clearViewportSelection();
+    enum class PartPickResolution { ExactCenter, IdOnly };
     void beginPick(PickKind kind, bool multiple = false,
-                   const std::set<int>& allowedParts = {}, const QVector<PickResult>& initial = {});
+                   const std::set<int>& allowedParts = {}, const QVector<PickResult>& initial = {},
+                   PartPickResolution partResolution = PartPickResolution::ExactCenter);
     void endPick();
     bool isPicking() const;
     QVector<PickResult> pickSelection() const;
-    void setPickSelection(const QVector<PickResult>& selection);
+    void setPickSelection(const QVector<PickResult>& selection,
+                          PartPickResolution partResolution = PartPickResolution::ExactCenter);
     void setPickHighlightColor(const QColor& color);
     // Presentation only: cloud plots retain their live typed selection while
     // suppressing active selection, hover and selectable-node feedback.
@@ -137,6 +149,7 @@ public:
     bool glReady() const;
 
 signals:
+    void cameraChanged();
     void partPicked(int id);
     void graphicsError(const QString& message);
     void pickSelectionChanged(const QVector<MotionOcc::PickResult>& selection);
@@ -160,8 +173,21 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
+    void applyPreparedScene(const std::shared_ptr<const PreparedCadScene>& scene,
+                            const std::map<int, FemMesh>& meshes, const std::set<int>& hidden);
     struct State;
     std::unique_ptr<State> m_state;
+    QList<QPointer<OccViewport>> m_peers;
+    bool m_applyingPeerUpdate = false;
+    template<class Operation> void updatePeers(const Operation& apply)
+    {
+        if (m_applyingPeerUpdate) return;
+        for (const auto& peer : m_peers) {
+            if (!peer) continue;
+            const QScopedValueRollback<bool> updating(peer->m_applyingPeerUpdate, true);
+            apply(*peer);
+        }
+    }
 
     void cleanupGL();
     void releaseSceneBuffers();
@@ -170,6 +196,7 @@ private:
     int pickPart(const QPointF& position) const;
     PickResult pickAt(const QPointF& position, PickKind kind, const std::set<int>& allowedParts) const;
     void setViewOrientation(const QVector3D& direction, const QVector3D& up);
+    void updateCamera();
     void drawCadPickFeedback();
     void drawPickOverlay();
     void drawScalarLegend();

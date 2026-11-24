@@ -144,6 +144,7 @@ namespace MechMainWindow
         // 幅值演化，跨帧可比）；勾选=逐帧自适应（每帧归一化，小变形帧也满彩，
         // 但单模态主导的响应色分布会恒定——只有图例数字在变）
         m_chkFlexAdaptiveScale = new QCheckBox(QString::fromUtf8("云图色标逐帧自适应"));
+        m_chkFlexAdaptiveScale->setObjectName(QStringLiteral("originalMotionFlexAdaptiveScale"));
         m_chkFlexAdaptiveScale->setChecked(false);
 #ifdef MX_MOTION_OCC_COMPAT
         m_chkFlexAdaptiveScale->setToolTip(tr(

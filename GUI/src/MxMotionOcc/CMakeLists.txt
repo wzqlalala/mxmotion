@@ -6,7 +6,9 @@ include(OriginalGui.cmake)
 
 add_executable(MxMotion WIN32
     main.cpp
+    MotionWorkspace.cpp MotionWorkspace.h
     MotionWindow.cpp MotionWindow.h
+    MotionViewPages.cpp MotionViewPages.h MotionViewPageControls.cpp
     MotionRibbon.cpp
     OriginalMotionUi.cpp OriginalMotionResults.cpp OriginalResultUi.cpp OriginalUiActions.cpp OriginalSelection.cpp OriginalSelection.h
     OriginalEngineExtensions.cpp OriginalEngineExtensions.h
@@ -33,6 +35,7 @@ add_executable(MxMotion WIN32
     "${common_dir}/ThemeManager.cpp"
     "${foundation_dir}/mFloatingDockFrameless.cpp"
     "${window_dir}/ViewportWidget.cpp"
+    "${window_dir}/ViewportContainer.cpp" "${window_dir}/ViewportLayoutEngine.cpp"
     "${gui_root}/src/CommonWidgets/mFoldSection.cpp")
 if(WIN32)
     target_sources(MxMotion PRIVATE "${gui_root}/src/MxMech/icon.rc")
@@ -80,8 +83,22 @@ if(WIN32 AND MX_DEPLOY_QT)
 endif()
 
 if(BUILD_TESTING AND MX_TEST_DESKTOP)
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccWorkspaceSmoke.cpp")
+    add_test(NAME MotionOcc.Workspace COMMAND MxMotion --workspace-smoke "${PROJECT_BINARY_DIR}/workspace-smoke")
+    set_tests_properties(MotionOcc.Workspace PROPERTIES TIMEOUT 90 LABELS desktop)
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccViewPagesSmoke.cpp")
+    add_test(NAME MotionOcc.ViewPages COMMAND MxMotion --view-pages-smoke "${PROJECT_BINARY_DIR}/view-pages-smoke")
+    set_tests_properties(MotionOcc.ViewPages PROPERTIES TIMEOUT 120 LABELS desktop)
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccMixedViewSmoke.cpp")
+    add_test(NAME MotionOcc.MixedViews COMMAND MxMotion --mixed-view-smoke "${PROJECT_BINARY_DIR}/mixed-view-smoke")
+    set_tests_properties(MotionOcc.MixedViews PROPERTIES TIMEOUT 120 LABELS desktop)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNativeDesktopSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccPortableCaseDesktopSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccCadImportSmoke.cpp")
+    target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccTreeSelectionSmoke.cpp")
+    add_test(NAME MotionOcc.TreeSelection COMMAND MxMotion --tree-selection-smoke "${PROJECT_BINARY_DIR}/tree-selection-smoke")
+    set_tests_properties(MotionOcc.TreeSelection PROPERTIES TIMEOUT 90 LABELS desktop)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalGuiSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalAutoFlexSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalTreeSmoke.cpp")
@@ -94,7 +111,10 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccModalDesktopSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccNavigationSmoke.cpp")
     target_sources(MxMotion PRIVATE "${PROJECT_SOURCE_DIR}/tests/MotionOccRenderFeedbackSmoke.cpp")
-    target_compile_definitions(MxMotion PRIVATE MX_OCC_DESKTOP_SMOKE)
+    set_property(SOURCE main.cpp
+        "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalBackendSmoke.cpp"
+        "${PROJECT_SOURCE_DIR}/tests/MotionOccOriginalPlotSmoke.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS MX_OCC_DESKTOP_SMOKE)
     set(desktop_output "${PROJECT_BINARY_DIR}/desktop-smoke")
     file(MAKE_DIRECTORY "${desktop_output}")
     add_test(NAME MotionOcc.Desktop COMMAND MxMotion --desktop-smoke "${desktop_output}")
@@ -103,6 +123,11 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     file(MAKE_DIRECTORY "${native_desktop_output}")
     add_test(NAME MotionOcc.NativeDesktop COMMAND MxMotion --native-desktop-smoke "${native_desktop_output}")
     set_tests_properties(MotionOcc.NativeDesktop PROPERTIES TIMEOUT 180 LABELS desktop)
+    get_target_property(engine_features MotionEngine::Core INTERFACE_COMPILE_DEFINITIONS)
+    if("MX_HAS_BODY_DRIVES=1" IN_LIST engine_features)
+        add_test(NAME MotionOcc.BodyDriveDesktop COMMAND MxMotion --body-drive-desktop-smoke "${PROJECT_BINARY_DIR}/body-drive-desktop-smoke")
+        set_tests_properties(MotionOcc.BodyDriveDesktop PROPERTIES TIMEOUT 90 LABELS desktop)
+    endif()
     add_test(NAME MotionOcc.OriginalNativeCurves COMMAND MxMotion --original-native-curves-smoke "${PROJECT_BINARY_DIR}/original-native-curves-smoke")
     set_tests_properties(MotionOcc.OriginalNativeCurves PROPERTIES TIMEOUT 120 LABELS desktop)
     add_test(NAME MotionOcc.OriginalLoadExport COMMAND MxMotion --original-load-export-smoke "${PROJECT_BINARY_DIR}/original-load-export-smoke")

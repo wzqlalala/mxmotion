@@ -11,6 +11,7 @@
 #include "mPlotEnum.h"
 #include "guifoundation_global.h"
 #include <QTimer>
+#include <QPointer>
 #include "mPlotStructs.h"
 
 namespace PlotView
@@ -31,6 +32,8 @@ namespace MechMainWindow
         Q_OBJECT
     public:
         static mCurveWindow* getInstance();
+        static mCurveWindow* createForProject(QWidget* owner);
+        static void setActiveProjectWindow(mCurveWindow* window);
         ~mCurveWindow();
 
         //窗口与图表画布底色按当前主题重设（切档/切主题时由 ThemeManager
@@ -107,6 +110,7 @@ namespace MechMainWindow
         Q_DISABLE_COPY(mCurveWindow)
 
         static mCurveWindow* _instance;
+        static QPointer<mCurveWindow> _activeProjectWindow;
 
         //曲线视图
         mPlotView* _plotView = nullptr;

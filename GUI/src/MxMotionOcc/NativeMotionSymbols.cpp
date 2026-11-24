@@ -2,10 +2,6 @@
 #include "CadDocument.h"
 #include "NativeMotionDocument.h"
 
-#include <BRepBndLib.hxx>
-#include <Bnd_Box.hxx>
-#include <Standard_Failure.hxx>
-
 #include <QJsonArray>
 #include <QQuaternion>
 #include <QVector3D>
@@ -103,19 +99,6 @@ void coil(MotionSymbol& symbol,const Point& a,const Point& b,double radius)
         line(symbol,previous,p);previous=p;}
     line(symbol,previous,b);
 }
-double modelScale(const CadDocument& cad)
-{
-    try {
-        Bnd_Box bounds;
-        for (const auto& part:cad.parts()) BRepBndLib::AddOptimal(part.shape,bounds,false,false);
-        if(!bounds.IsVoid()&&!bounds.IsOpen()){
-            double x0,y0,z0,x1,y1,z1;bounds.Get(x0,y0,z0,x1,y1,z1);
-            const double size=std::hypot(x1-x0,std::hypot(y1-y0,z1-z0));
-            if(std::isfinite(size)&&size>1e-9)return std::max(.1,size*.018);
-        }
-    }catch(const Standard_Failure&){}
-    return 5; // Display size only; never used as geometry or physics data.
-}
 }
 
 QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMotionDocument& document,
@@ -123,7 +106,8 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
     const std::map<int,QMatrix4x4>& explicitBodyPoses)
 {
     QVector<MotionSymbol> output;
-    const double scale=modelScale(cad);
+    const double diagonal = cad.displayBoundsDiagonal();
+    const double scale = diagonal > 1e-9 ? std::max(.1, diagonal * .018) : 5.0;
     // Independent flexible ports are real bodies with no separate CAD part.
     // A flexible part's rigid pose is also removed when its nodal mesh is
     // rendered. Use actual body transforms for their glyphs in both cases.

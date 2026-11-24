@@ -293,7 +293,7 @@ void MotionWindow::createRigidDocks(ads::CDockAreaWidget* bottom)
     connect(m_rigidPlot, &RigidPlot::curveRequestsChanged, this, [this](int scenarioId) {
         const auto requests = m_rigidPlot->curveRequests(scenarioId);
         for (auto& scenario : m_model.scenarios)
-            if (scenario.id == scenarioId) { scenario.curveRequests = requests; m_modified = true; }
+            if (scenario.id == scenarioId) { scenario.curveRequests = requests; setProjectModified(true); }
         syncNativeScenarioCurves(m_model, scenarioId);
         const auto result = m_results.find(scenarioId);
         if (result != m_results.end()) result->second->input.scenario.curveRequests = requests;
@@ -323,16 +323,17 @@ void MotionWindow::createRigidControls()
         seekRigidTime(time);
     });
     connect(m_animationDock, &ads::CDockWidget::closed, this, [this] {
-        if(!m_animationDock->property("mxOriginalAnimationControllerActive").toBool())leaveRigidAnimation();
+        if (m_projectActive && !m_animationDock->property("mxOriginalAnimationControllerActive").toBool())
+            leaveRigidAnimation();
     });
     auto* animationArea = m_animationDock->dockAreaWidget();
     connect(animationArea, &ads::CDockAreaWidget::currentChanged, this, [this, animationArea](int) {
-        if(m_animationDock->property("mxOriginalAnimationControllerActive").toBool())return;
+        if (!m_projectActive || m_animationDock->property("mxOriginalAnimationControllerActive").toBool()) return;
         if (m_animationActive && m_animationDock->dockAreaWidget() == animationArea
             && !m_animationDock->isCurrentTab()) leaveRigidAnimation();
     });
     connect(m_animationDock, &ads::CDockWidget::visibilityChanged, this, [this](bool visible) {
-        if(m_animationDock->property("mxOriginalAnimationControllerActive").toBool())return;
+        if (!m_projectActive || m_animationDock->property("mxOriginalAnimationControllerActive").toBool()) return;
         // Switching the shared parameter column to another editor ends the
         // animation session just like uneditAnimationPanel in the original UI.
         // ADS emits Hide before changing its current-widget pointer. The area
@@ -340,14 +341,14 @@ void MotionWindow::createRigidControls()
         // after reparenting for dock areas created by a later drag operation.
         // Minimizing the window keeps the animation as its area's current tab.
         if (!visible && m_animationActive) QTimer::singleShot(0, this, [this] {
-            if(m_animationDock->property("mxOriginalAnimationControllerActive").toBool())return;
+            if (!m_projectActive || m_animationDock->property("mxOriginalAnimationControllerActive").toBool()) return;
             if (m_animationActive && !m_animationDock->isCurrentTab()) leaveRigidAnimation();
         });
     });
     updatePlaybackControls();
 }
 
-bool MotionWindow::motionBusy() const { return bool(m_running); }
+bool MotionWindow::motionBusy() const { return m_running || m_importingGeometry; }
 
 bool MotionWindow::canRemovePart(int id) const
 {
@@ -374,7 +375,7 @@ void MotionWindow::updateRigidActions()
     command(Command::NewScenario)->setEnabled(idle);
     command(Command::LoadRigidExample)->setEnabled(idle);
     command(Command::StopSolve)->setEnabled(m_running && !m_running->stop.load());
-    command(Command::ImportMotionJson)->setEnabled(idle && !m_document.parts().empty());
+    command(Command::ImportMotionJson)->setEnabled(idle);
     command(Command::ExportMotionJson)->setEnabled(idle && !m_model.bodies.empty());
     for (const auto id : {Command::AddNativeJoint, Command::AddCoupling, Command::AddSpring,
             Command::AddVectorForce, Command::AddScalarForce, Command::AddScalarTorque,
@@ -510,7 +511,7 @@ void MotionWindow::showEditor(QWidget* editor)
     m_parameterLayout->setStretch(m_parameterLayout->count() - 1, scrollable ? 0 : 1);
     openDock(m_parameterDock);
     m_editor->show();
-    if (originalPanel) {
+    if (originalPanel || editor->property("mxFitParameterDock").toBool()) {
         QPointer<QWidget> guard(editor);
         QTimer::singleShot(0, this, [this, guard] {
             if (!guard || guard != m_editor)return;
@@ -542,15 +543,17 @@ void MotionWindow::showEditor(QWidget* editor)
     }
 }
 
-void MotionWindow::closeEditor()
+void MotionWindow::closeEditor(bool immediate)
 {
     if (m_original && m_editor && m_editor->property("mxOriginalMotionPanel").toBool()) m_original->endEdit();
     if (m_viewport && m_viewport->isPicking()) { m_viewport->endPick(); m_viewport->setProperty("nativePickOwner",QVariant{}); }
     if (!m_editor) return;
-    m_editor->hide();
-    m_parameterLayout->removeWidget(m_editor);
-    m_editor->deleteLater();
+    auto* editor = m_editor;
     m_editor = nullptr;
+    editor->hide();
+    m_parameterLayout->removeWidget(editor);
+    if (immediate) delete editor;
+    else editor->deleteLater();
     m_parameterLayout->setContentsMargins(8, 7, 8, 7);
     const int suggested = 12 * MxFunctions::UiMetrics::baseH()
         + 8 * qMax(0, 6 - MxFunctions::UiMetrics::baseG()) + 8;
@@ -770,7 +773,7 @@ void MotionWindow::commitRigid(RigidModel model, ModelNode selection)
     closeEditor();
     clearResults();
     m_model = std::move(model);
-    m_modified = true;
+    setProjectModified(true);
     m_selectionNode = selection;
     if (selection.kind != ModelNode::Part) { m_partId = -1; m_viewport->selectPart(-1); }
     updateTree();
@@ -839,6 +842,10 @@ void MotionWindow::pollRigidSolve()
     m_progress->setValue(int(std::clamp(run->progress.load(), 0.0, 1.0) * 100));
     if(run->inspectionFlexId<0)publishOriginalSolveProgress(run->input.scenario.id,m_progress->value());
     if (!run->done.load(std::memory_order_acquire)) return;
+    if (run->inspectionFlexId >= 0 && !m_projectActive) {
+        m_rigidPoll->stop();
+        return;
+    }
     m_solverThread.join();
     m_running.reset();
     m_rigidPoll->stop();
@@ -1084,20 +1091,21 @@ void MotionWindow::updatePlaybackControls()
         && std::any_of(it->second->result.flexBodies.begin(),it->second->result.flexBodies.end(),[](const auto& flex){return !flex.modalBasis.frequenciesHz.empty();}));
 }
 
-void MotionWindow::saveProject(bool choosePath)
+bool MotionWindow::saveProject(bool choosePath)
 {
     if(m_original)m_original->flush();
     snapshotNativeFlexMeshes();
     QString path = m_projectPath;
-    if (choosePath || path.isEmpty()) path = QFileDialog::getSaveFileName(this, tr("保存刚体项目"),
-        path.isEmpty() ? QStringLiteral("model.mxmotion") : path, tr("MxMotion 刚体项目 (*.mxmotion)"));
-    if (path.isEmpty()) return;
+    if (choosePath || path.isEmpty()) path = QFileDialog::getSaveFileName(window(), tr("保存项目"),
+        path.isEmpty() ? QStringLiteral("model.mxmotion") : path, tr("MxMotion 项目 (*.mxmotion)"));
+    if (path.isEmpty()) return false;
     if (!path.endsWith(QStringLiteral(".mxmotion"), Qt::CaseInsensitive)) path += ".mxmotion";
     QString error;
-    if (!saveRigidProject(path, m_document, m_model, error)) { setNotice(error, true); return; }
+    if (!saveRigidProject(path, m_document, m_model, error)) { setNotice(error, true); return false; }
     m_projectPath = path;
-    m_modified = false;
+    setProjectModified(false);
     setNotice(tr("已保存项目：%1").arg(QFileInfo(path).fileName()));
+    return true;
 }
 
 bool MotionWindow::openRigidProject(const QString& path)
@@ -1118,7 +1126,7 @@ bool MotionWindow::openRigidProject(const QString& path)
     m_meshForm->hide();
     command(Command::ShadedEdges)->trigger();
     m_projectPath = path;
-    m_modified = false;
+    setProjectModified(false);
     m_selectionNode = {};
     m_partId = -1;
     updateTree();

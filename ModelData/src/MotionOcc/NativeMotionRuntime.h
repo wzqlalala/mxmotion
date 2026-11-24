@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <memory>
 #include <set>
 
 namespace motion { class MotionFlexBodyAuxRef; }
@@ -62,6 +63,9 @@ public:
     std::uint64_t acceptedStepIndex=0;
     const NativeMotionInput* sourceInput=nullptr;
     bool projectPositions=false;
+    bool allowFullRankPositionProjection=false;
+    bool usedFullRankPositionProjection=false;
+    bool usedBilateralProjectionSolver=false;
     std::function<void(double)> validateFlexState;
     std::function<void(double)> captureFlexState;
     int positionIterations=50;
@@ -69,10 +73,20 @@ public:
     void configureControllers(const NativeMotionInput& input);
     void prepareStaticDescriptor(){DescriptorPrepareInject(*GetSystemDescriptor());}
     void projectConstraintVelocity(motion::MotionState& position, motion::MotionStateDelta& velocity, double& time);
-    void projectAcceptedPositions();
+    void projectAcceptedPositions(bool timeAdjusted);
     void CustomEndOfStep() override;
+
+private:
+    struct PositionProjectionFactor;
+    bool tryFullRankPositionProjection(bool timeAdjusted);
+    std::shared_ptr<PositionProjectionFactor> m_positionProjectionFactor;
+    friend void validateNativeAcceptedConstraints(const NativeMotionSystem& system);
+    struct AcceptedConstraintValidation;
+    mutable std::shared_ptr<const AcceptedConstraintValidation> m_acceptedConstraintValidation;
+    std::shared_ptr<motion::MotionSolver> m_bilateralProjectionSolver;
 };
 
+std::shared_ptr<motion::MotionSolver> makeNativeEquilibratedQr();
 void validateNativeAcceptedConstraints(const NativeMotionSystem& system);
 void rejectNativeGeometryBoundary(const NativeMotionSystem& system);
 

@@ -170,7 +170,7 @@ struct Geometry {
 
 struct Part {
     int id;
-    Geometry cad;
+    std::shared_ptr<const Geometry> cad;
     Geometry mesh;
     QVector3D origin; // shared rest-space origin for CAD and FEM rendering
     bool deformed = false;
@@ -188,11 +188,15 @@ struct PickCurve {
     std::vector<double> parameters;
 };
 
-struct PickGeometry {
+struct CadPickGeometry {
     TopoDS_Shape shape;
     TopTools_IndexedMapOfShape faces, edges, vertices, solids;
     std::vector<int> faceSolids;
     std::vector<PickCurve> curves;
+};
+
+struct PickGeometry {
+    std::shared_ptr<const CadPickGeometry> cad;
     std::vector<Vec> nodes;
     QVector<int> nodeIds;
     std::vector<Edge> meshEdges;
@@ -229,13 +233,14 @@ bool cadPick(PickKind kind)
 
 const TopoDS_Shape* pickTopology(const PickResult& pick,const PickGeometry& geometry)
 {
+    const auto& cad = *geometry.cad;
     const TopTools_IndexedMapOfShape* map=nullptr;
     switch(pick.kind) {
-    case PickKind::Part:return geometry.shape.IsNull()?nullptr:&geometry.shape;
-    case PickKind::Vertex:map=&geometry.vertices;break;
-    case PickKind::Edge:map=&geometry.edges;break;
-    case PickKind::Face:map=&geometry.faces;break;
-    case PickKind::Solid:map=&geometry.solids;break;
+    case PickKind::Part:return cad.shape.IsNull()?nullptr:&cad.shape;
+    case PickKind::Vertex:map=&cad.vertices;break;
+    case PickKind::Edge:map=&cad.edges;break;
+    case PickKind::Face:map=&cad.faces;break;
+    case PickKind::Solid:map=&cad.solids;break;
     default:return nullptr;
     }
     return pick.index>0 && pick.index<=map->Extent()?&(*map)(pick.index):nullptr;
@@ -256,11 +261,11 @@ bool validPickReference(const PickResult& pick,const PickGeometry& geometry)
         return true;
     };
     switch(pick.kind) {
-    case PickKind::Part:return !geometry.shape.IsNull();
-    case PickKind::Vertex:return inRange(geometry.vertices.Extent());
-    case PickKind::Edge:return inRange(geometry.edges.Extent());
-    case PickKind::Face:return inRange(geometry.faces.Extent());
-    case PickKind::Solid:return inRange(geometry.solids.Extent());
+    case PickKind::Part:return !geometry.cad->shape.IsNull();
+    case PickKind::Vertex:return inRange(geometry.cad->vertices.Extent());
+    case PickKind::Edge:return inRange(geometry.cad->edges.Extent());
+    case PickKind::Face:return inRange(geometry.cad->faces.Extent());
+    case PickKind::Solid:return inRange(geometry.cad->solids.Extent());
     case PickKind::Node:
         return pick.index>=0 && pick.index<int(geometry.nodes.size()) &&
                (pick.nodeId<=0 || pick.nodeId==geometry.nodeIds.value(pick.index,pick.index+1));
@@ -284,9 +289,9 @@ bool normalise(Vec& direction)
     return true;
 }
 
-PickGeometry pickGeometry(const CadPart& part, const FemMesh* mesh)
+CadPickGeometry cadPickGeometry(const CadPart& part)
 {
-    PickGeometry result;
+    CadPickGeometry result;
     result.shape = part.shape;
     TopExp::MapShapes(part.shape, TopAbs_FACE, result.faces);
     TopExp::MapShapes(part.shape, TopAbs_EDGE, result.edges);
@@ -334,11 +339,6 @@ PickGeometry pickGeometry(const CadPart& part, const FemMesh* mesh)
             // A failed edge cannot produce a made-up topology hit.
             out.points.clear(); out.parameters.clear();
         }
-    }
-    if (mesh) {
-        setMeshTopology(result, *mesh);
-        result.nodeIds.reserve(int(mesh->nodes.size()));
-        for (int i = 0; i < int(mesh->nodes.size()); ++i) result.nodeIds.append(i + 1);
     }
     return result;
 }
@@ -621,7 +621,7 @@ float coplanarDepthBias(QOpenGLFunctions_3_3_Core& gl)
     return bits > 0 ? float(4.0 / (std::ldexp(1.0, std::min(bits, 24)) - 1.0)) : 0.0f;
 }
 
-Geometry cadPickGeometry(const PickGeometry& source, const PickResult& pick)
+Geometry cadPickGeometry(const CadPickGeometry& source, const PickResult& pick)
 {
     Geometry result;
     const auto point = [&](const Vec& p) -> Index {
@@ -729,9 +729,21 @@ const QVector3D backdropBottom = rgb(242, 247, 252);
 
 } // namespace
 
+class PreparedCadScene {
+public:
+    struct PartData {
+        std::shared_ptr<const Geometry> display;
+        std::shared_ptr<const CadPickGeometry> picks;
+    };
+
+    std::vector<int> partIds;
+    std::map<int, PartData> parts;
+};
+
 struct OccViewport::State {
     std::vector<Part> parts;
     std::map<int, PickGeometry> pickGeometry;
+    std::shared_ptr<const PreparedCadScene> cadScene;
     std::set<int> partIds; // includes hidden document parts
     std::map<int, PartPose> poses; // only non-identity poses
     std::map<int, Geometry> restMeshes;
@@ -820,7 +832,7 @@ struct OccViewport::State {
         for (const auto& part : parts) {
             if (part.suppressed) continue;
             const auto* pose = poseFor(part.id);
-            if (!part.deformed) bounds.merge(pose ? posedBounds(part.cad.bounds, *pose) : part.cad.bounds);
+            if (!part.deformed) bounds.merge(pose ? posedBounds(part.cad->bounds, *pose) : part.cad->bounds);
             bounds.merge(pose ? posedBounds(part.mesh.bounds, *pose) : part.mesh.bounds);
         }
     }
@@ -895,7 +907,7 @@ OccViewport::OccViewport(QWidget* parent) : QOpenGLWidget(parent), m_state(std::
             float(state.autoRotationSign * 30.0 * seconds));
         state.camera.rotation = (delta * state.camera.rotation).normalized();
         state.hover = {};
-        update();
+        updateCamera();
     });
     auto& triadCamera = m_state->triadCamera;
     triadCamera.orientation = [this] { return m_state->camera.rotation.conjugated().normalized(); };
@@ -904,7 +916,7 @@ OccViewport::OccViewport(QWidget* parent) : QOpenGLWidget(parent), m_state(std::
         m_state->camera.rotation = orientation.conjugated().normalized();
         m_state->triadHistoryTimer->start(150);
         m_state->hover = {};
-        update();
+        updateCamera();
     };
     triadCamera.isOrbiting = [this] { return m_state->button != Qt::NoButton; };
     triadCamera.isometric = [this] { viewIsometric(); };
@@ -922,39 +934,139 @@ OccViewport::~OccViewport()
     cleanupGL();
 }
 
-void OccViewport::setScene(const CadDocument& document, const std::map<int, FemMesh>& meshes,
-                           const std::set<int>& hidden)
+void OccViewport::setPresentationPeers(const QList<OccViewport*>& viewports)
 {
+    m_peers.clear();
+    for (auto* viewport : viewports) if (viewport && viewport != this) m_peers.append(viewport);
+}
+
+void OccViewport::copyCameraFrom(const OccViewport& source)
+{
+    m_state->camera = source.m_state->camera;
+    m_state->hover = {};
+    update();
+}
+
+void OccViewport::updateCamera()
+{
+    emit cameraChanged();
+    update();
+}
+
+void OccViewport::copyPresentationFrom(const OccViewport& source)
+{
+    auto& next = *m_state;
+    const auto& previous = *source.m_state;
+    next.parts = previous.parts;
+    next.pickGeometry = previous.pickGeometry;
+    next.cadScene = previous.cadScene;
+    next.partIds = previous.partIds;
+    next.poses = previous.poses;
+    next.restMeshes = previous.restMeshes;
+    next.bounds = previous.bounds;
+    next.mode = previous.mode;
+    next.selected = previous.selected;
+    next.selectionFilter = previous.selectionFilter;
+    next.auxiliaryPicks = previous.auxiliaryPicks;
+    next.auxiliaryPoints = previous.auxiliaryPoints;
+    next.scalarParts = previous.scalarParts;
+    next.scalarMinimum = previous.scalarMinimum;
+    next.scalarMaximum = previous.scalarMaximum;
+    next.scalarTitle = previous.scalarTitle;
+    next.symbols = previous.symbols;
+    next.auxiliarySymbols = previous.auxiliarySymbols;
+    setMouseNavigationMode(previous.navigationMode);
+    next.sceneDirty = true;
+    update();
+}
+
+namespace {
+
+PreparedCadScene::PartData prepareCadPart(const CadPart& part)
+{
+    const auto& cad = part.display;
+    auto render = snapshot(cad.vertices.size(), cad.triangles, cad.edges, false,
+                           [&](Index i) { return vec(cad.vertices[i]); });
+    // CAD 的法线按 OCC 面求取，保留尖锐接缝。有限元仍使用单元平面法线。
+    for (std::size_t i = 0; i < render.vertices.size(); ++i) {
+        const Index sourceIndex = render.sourceIndices[i];
+        if (sourceIndex >= cad.normals.size()) continue;
+        Vec normal = vec(cad.normals[sourceIndex]);
+        if (!normalise(normal)) continue;
+        for (int axis = 0; axis < 3; ++axis) render.vertices[i].normal[axis] = float(normal[axis]);
+    }
+    return {std::make_shared<Geometry>(std::move(render)), std::make_shared<CadPickGeometry>(cadPickGeometry(part))};
+}
+
+const PreparedCadScene::PartData* findPreparedCadPart(const PreparedCadScene* scene, int id,
+                                                      const TopoDS_Shape& shape)
+{
+    if (!scene) return nullptr;
+    const auto found = scene->parts.find(id);
+    return found != scene->parts.end() && found->second.picks->shape.IsEqual(shape) ? &found->second : nullptr;
+}
+
+} // namespace
+
+std::shared_ptr<const PreparedCadScene> OccViewport::prepareCadScene(const CadDocument& document)
+{
+    auto scene = std::make_shared<PreparedCadScene>();
+    scene->partIds.reserve(document.parts().size());
+    for (const auto& part : document.parts()) {
+        scene->partIds.push_back(part.id);
+        scene->parts.emplace(part.id, prepareCadPart(part));
+    }
+    return scene;
+}
+
+void OccViewport::setScene(const CadDocument& document, const std::map<int, FemMesh>& meshes,
+                           const std::set<int>& hidden, const std::shared_ptr<const PreparedCadScene>& prepared,
+                           const std::vector<int>& preparedPartIds)
+{
+    std::map<int, int> originalIds;
+    if (prepared && preparedPartIds.size() == prepared->partIds.size()) {
+        for (std::size_t i = 0; i < preparedPartIds.size(); ++i)
+            originalIds.emplace(preparedPartIds[i], prepared->partIds[i]);
+    }
+    auto scene = std::make_shared<PreparedCadScene>();
+    scene->partIds.reserve(document.parts().size());
+    for (const auto& part : document.parts()) {
+        scene->partIds.push_back(part.id);
+        const auto original = originalIds.find(part.id);
+        const auto* data = findPreparedCadPart(prepared.get(), original == originalIds.end() ? part.id : original->second,
+                                               part.shape);
+        if (!data) data = findPreparedCadPart(m_state->cadScene.get(), part.id, part.shape);
+        if (data) scene->parts.emplace(part.id, *data);
+        else if (!hidden.count(part.id)) scene->parts.emplace(part.id, prepareCadPart(part));
+    }
+    applyPreparedScene(scene, meshes, hidden);
+}
+
+void OccViewport::applyPreparedScene(const std::shared_ptr<const PreparedCadScene>& scene,
+                                     const std::map<int, FemMesh>& meshes, const std::set<int>& hidden)
+{
+    updatePeers([&](OccViewport& peer) { peer.applyPreparedScene(scene, meshes, hidden); });
     auto& s = *m_state;
+    s.cadScene = scene;
     std::vector<Part> parts;
     std::map<int, PickGeometry> pickGeometry;
-    std::set<int> partIds;
-    const auto& source = document.parts();
-    parts.reserve(source.size());
-    for (const auto& part : source) {
-        partIds.insert(part.id);
-        if (hidden.find(part.id) != hidden.end()) continue;
-        Part copy{part.id, {}, {}, {}};
-        const auto& cad = part.display;
-        copy.cad = snapshot(cad.vertices.size(), cad.triangles, cad.edges, false,
-                            [&](Index i) { return vec(cad.vertices[i]); });
-        // CAD-only normals are calculated on each OCC face, preserving sharp
-        // seams. FEM keeps its element-flat normals and unchanged topology.
-        for (std::size_t i = 0; i < copy.cad.vertices.size(); ++i) {
-            const Index sourceIndex = copy.cad.sourceIndices[i];
-            if (sourceIndex >= cad.normals.size()) continue;
-            Vec normal = vec(cad.normals[sourceIndex]);
-            if (!normalise(normal)) continue;
-            for (int axis = 0; axis < 3; ++axis) copy.cad.vertices[i].normal[axis] = float(normal[axis]);
-        }
-        const auto found = meshes.find(part.id);
+    parts.reserve(scene->parts.size());
+    for (int id : scene->partIds) {
+        if (hidden.count(id)) continue;
+        const auto& prepared = scene->parts.at(id);
+        Part copy{id, prepared.display, {}, {}};
+        auto& topology = pickGeometry[id];
+        topology.cad = prepared.picks;
+        const auto found = meshes.find(id);
         if (found != meshes.end()) {
             const auto& fem = found->second;
             copy.mesh = snapshot(fem.nodes.size(), fem.surface, {}, true,
                                  [&](Index i) { return fem.nodes[i]; });
+            setMeshTopology(topology, fem);
+            topology.nodeIds.reserve(int(fem.nodes.size()));
+            for (int i = 0; i < int(fem.nodes.size()); ++i) topology.nodeIds.append(i + 1);
         }
-        pickGeometry.emplace(part.id, MotionOcc::pickGeometry(part, found == meshes.end() ? nullptr : &found->second));
-        Bounds rest = copy.cad.bounds;
+        Bounds rest = copy.cad->bounds;
         rest.merge(copy.mesh.bounds);
         const Vec origin = rest.center();
         copy.origin = QVector3D(float(origin[0]), float(origin[1]), float(origin[2]));
@@ -966,7 +1078,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
     std::set<int> unchangedCad,unchangedMesh;
     for(auto& [id,next]:pickGeometry) {
         const auto previous=s.pickGeometry.find(id);
-        if(previous==s.pickGeometry.end() || !previous->second.shape.IsEqual(next.shape))continue;
+        if(previous==s.pickGeometry.end() || !previous->second.cad->shape.IsEqual(next.cad->shape))continue;
         unchangedCad.insert(id);
         const auto& before=previous->second;
         if(before.nodes==next.nodes && before.meshEdges==next.meshEdges &&
@@ -1000,7 +1112,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
     s.scalarParts.clear();
     s.restMeshes.clear();
     s.dirtyMeshParts.clear();
-    s.partIds = std::move(partIds);
+    s.partIds = std::set<int>(scene->partIds.cbegin(), scene->partIds.cend());
     for (auto it = s.poses.begin(); it != s.poses.end();) {
         if (s.partIds.count(it->first)) ++it;
         else it = s.poses.erase(it);
@@ -1013,6 +1125,7 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
 
 void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
 {
+    updatePeers([&](OccViewport& peer) { peer.setPartPoses(poses); });
     auto& s = *m_state;
     s.hover = {}; // preselection is recomputed at the next pointer position
     std::map<int, PartPose> next;
@@ -1022,6 +1135,7 @@ void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
         if (makePartPose(matrix, pose)) next.emplace_hint(next.end(), id, std::move(pose));
     }
     if (next.empty()) {
+        const QScopedValueRollback<bool> updating(m_applyingPeerUpdate, true);
         clearPartPoses();
         return;
     }
@@ -1032,6 +1146,8 @@ void OccViewport::setPartPoses(const std::map<int, QMatrix4x4>& poses)
 
 void OccViewport::clearPartPoses()
 {
+    updatePeers([](OccViewport& peer) { peer.clearPartPoses(); });
+    const QScopedValueRollback<bool> updating(m_applyingPeerUpdate, true);
     auto& s = *m_state;
     clearMeshScalars();
     setDeformedMeshes({}, {});
@@ -1043,6 +1159,7 @@ void OccViewport::clearPartPoses()
 
 void OccViewport::setDeformedMeshes(const std::map<int, FemMesh>& meshes, const std::set<int>& suppressed)
 {
+    updatePeers([&](OccViewport& peer) { peer.setDeformedMeshes(meshes, suppressed); });
     auto& s = *m_state;
     if (s.restMeshes.empty() && meshes.empty()
         && std::none_of(s.parts.begin(), s.parts.end(), [](const auto& part) { return part.suppressed; })) return;
@@ -1070,6 +1187,7 @@ void OccViewport::setDeformedMeshes(const std::map<int, FemMesh>& meshes, const 
 
 void OccViewport::selectPart(int id)
 {
+    updatePeers([&](OccViewport& peer) { peer.selectPart(id); });
     if (m_state->selected == id) return;
     m_state->selected = id;
     update();
@@ -1134,13 +1252,13 @@ void OccViewport::clearViewportSelection()
 }
 
 void OccViewport::beginPick(PickKind kind, bool multiple, const std::set<int>& allowedParts,
-                            const QVector<PickResult>& initial)
+                            const QVector<PickResult>& initial, PartPickResolution partResolution)
 {
     auto& s = *m_state;
     s.pickActive = true; s.pickKind = kind; s.pickMultiple = multiple; s.pickParts = allowedParts;
     interruptPointerOperation();
     s.hover = {};
-    setPickSelection(initial);
+    setPickSelection(initial, partResolution);
     setFocus(Qt::OtherFocusReason);
     setCursor(Qt::CrossCursor);
     update();
@@ -1173,6 +1291,7 @@ void OccViewport::setPickFeedbackVisible(bool visible)
 
 void OccViewport::setAuxiliaryPickHighlights(const QString& key, const QVector<PickResult>& picks, const QColor& color)
 {
+    updatePeers([&](OccViewport& peer) { peer.setAuxiliaryPickHighlights(key, picks, color); });
     QVector<PickResult> valid;
     for(const auto& pick:picks) {
         const auto geometry=m_state->pickGeometry.find(pick.partId);
@@ -1184,11 +1303,13 @@ void OccViewport::setAuxiliaryPickHighlights(const QString& key, const QVector<P
 }
 void OccViewport::clearAuxiliaryPickHighlights(const QString& key)
 {
+    updatePeers([&](OccViewport& peer) { peer.clearAuxiliaryPickHighlights(key); });
     m_state->auxiliaryPicks.erase(key); update();
 }
 void OccViewport::setAuxiliaryPoints(const QString& key, const QVector<QVector3D>& points, const QColor& color,float pointSize)
 {
     if(!std::isfinite(pointSize)||pointSize<=0) {clearAuxiliaryPoints(key);return;}
+    updatePeers([&](OccViewport& peer) { peer.setAuxiliaryPoints(key, points, color, pointSize); });
     QVector<QVector3D> valid;
     for (const auto& point : points)
         if (std::isfinite(point.x()) && std::isfinite(point.y()) && std::isfinite(point.z())) valid.append(point);
@@ -1198,10 +1319,11 @@ void OccViewport::setAuxiliaryPoints(const QString& key, const QVector<QVector3D
 }
 void OccViewport::clearAuxiliaryPoints(const QString& key)
 {
+    updatePeers([&](OccViewport& peer) { peer.clearAuxiliaryPoints(key); });
     m_state->auxiliaryPoints.erase(key); update();
 }
 
-void OccViewport::setPickSelection(const QVector<PickResult>& selection)
+void OccViewport::setPickSelection(const QVector<PickResult>& selection, PartPickResolution partResolution)
 {
     auto& s = *m_state;
     s.picks.clear();
@@ -1215,23 +1337,24 @@ void OccViewport::setPickSelection(const QVector<PickResult>& selection)
                 pick.position = pick.hitPosition = geometry.nodes[pick.index];
                 pick.nodeId = geometry.nodeIds.value(pick.index,pick.index+1);
             } else if (pick.kind == PickKind::Vertex) {
-                pick.position = pick.hitPosition = vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(pick.index))));
+                pick.position = pick.hitPosition = vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.cad->vertices(pick.index))));
             } else if (pick.kind == PickKind::Edge) {
-                BRepAdaptor_Curve curve(TopoDS::Edge(geometry.edges(pick.index)));
+                BRepAdaptor_Curve curve(TopoDS::Edge(geometry.cad->edges(pick.index)));
                 pick.position = vec(curve.Value((curve.FirstParameter()+curve.LastParameter())*.5));
                 if (curve.GetType()==GeomAbs_Circle) pick.position=vec(curve.Circle().Location());
                 else if (curve.GetType()==GeomAbs_Ellipse) pick.position=vec(curve.Ellipse().Location());
-            } else if (pick.kind == PickKind::Face || pick.kind == PickKind::Part || pick.kind == PickKind::Solid) {
+            } else if (pick.kind == PickKind::Face || pick.kind == PickKind::Solid ||
+                       (pick.kind == PickKind::Part && partResolution == PartPickResolution::ExactCenter)) {
                 GProp_GProps props;
-                if (pick.kind == PickKind::Face) BRepGProp::SurfaceProperties(geometry.faces(pick.index),props);
-                else if (pick.kind == PickKind::Solid) BRepGProp::VolumeProperties(geometry.solids(pick.index),props);
+                if (pick.kind == PickKind::Face) BRepGProp::SurfaceProperties(geometry.cad->faces(pick.index),props);
+                else if (pick.kind == PickKind::Solid) BRepGProp::VolumeProperties(geometry.cad->solids(pick.index),props);
                 else {
-                    BRepGProp::VolumeProperties(geometry.shape,props);
-                    if (std::abs(props.Mass())<1e-14) BRepGProp::SurfaceProperties(geometry.shape,props);
-                    if (std::abs(props.Mass())<1e-14) BRepGProp::LinearProperties(geometry.shape,props);
+                    BRepGProp::VolumeProperties(geometry.cad->shape,props);
+                    if (std::abs(props.Mass())<1e-14) BRepGProp::SurfaceProperties(geometry.cad->shape,props);
+                    if (std::abs(props.Mass())<1e-14) BRepGProp::LinearProperties(geometry.cad->shape,props);
                 }
                 if (std::abs(props.Mass())>1e-14) pick.position=vec(props.CentreOfMass());
-            } else {
+            } else if (pick.kind != PickKind::Part) {
                 std::vector<Index> nodes;
                 if (pick.kind==PickKind::MeshEdge) nodes.assign(geometry.meshEdges[pick.index-1].begin(),geometry.meshEdges[pick.index-1].end());
                 else if (pick.kind==PickKind::Element && !geometry.elements.empty()) nodes.assign(geometry.elements[pick.index-1].begin(),geometry.elements[pick.index-1].end());
@@ -1255,6 +1378,7 @@ void OccViewport::setPickSelection(const QVector<PickResult>& selection)
 
 void OccViewport::setPickNodes(int partId, const FemMesh& mesh, const QVector<int>& nodeIds)
 {
+    updatePeers([&](OccViewport& peer) { peer.setPickNodes(partId, mesh, nodeIds); });
     const auto found = m_state->pickGeometry.find(partId);
     if (found == m_state->pickGeometry.end()) return;
     auto& target = found->second;
@@ -1276,6 +1400,7 @@ void OccViewport::setPickNodes(int partId, const FemMesh& mesh, const QVector<in
 void OccViewport::setMeshScalars(const std::map<int, std::vector<double>>& values,
                                  double minimum, double maximum, const QString& title)
 {
+    updatePeers([&](OccViewport& peer) { peer.setMeshScalars(values, minimum, maximum, title); });
     auto& s = *m_state;
     s.scalarParts.clear();
     if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum < minimum) { update(); return; }
@@ -1307,23 +1432,27 @@ std::optional<std::pair<double, double>> OccViewport::meshScalarRange() const
 
 void OccViewport::clearMeshScalars()
 {
+    updatePeers([](OccViewport& peer) { peer.clearMeshScalars(); });
     m_state->scalarParts.clear(); m_state->scalarTitle.clear(); update();
 }
 
 void OccViewport::setMotionSymbols(const QVector<MotionSymbol>& symbols)
 {
+    updatePeers([&](OccViewport& peer) { peer.setMotionSymbols(symbols); });
     m_state->symbols = symbols;
     update();
 }
 
 void OccViewport::setAuxiliaryMotionSymbols(const QString& key,const QVector<MotionSymbol>& symbols)
 {
+    updatePeers([&](OccViewport& peer) { peer.setAuxiliaryMotionSymbols(key, symbols); });
     if(symbols.isEmpty())m_state->auxiliarySymbols.erase(key);
     else m_state->auxiliarySymbols[key]=symbols;
     update();
 }
 void OccViewport::clearAuxiliaryMotionSymbols(const QString& key)
 {
+    updatePeers([&](OccViewport& peer) { peer.clearAuxiliaryMotionSymbols(key); });
     m_state->auxiliarySymbols.erase(key);update();
 }
 
@@ -1369,7 +1498,7 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
     if (s.mode != DisplayMode::Wireframe) {
         for (const auto& part : s.parts) {
             if (part.suppressed) continue;
-            const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
+            const auto& geometry = part.usesMesh(s.mode) ? part.mesh : *part.cad;
             const auto ray = restRay(world, s.poseFor(part.id));
             if (!intersectsBounds(ray, geometry.bounds, visibleDepth, unit)) continue;
             for (std::size_t i = 0; i + 2 < geometry.triangles.size(); i += 3) {
@@ -1399,13 +1528,13 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
         const auto part = std::find_if(s.parts.cbegin(), s.parts.cend(), [partId](const auto& p) { return p.id == partId; });
         if (part == s.parts.cend() || part->suppressed || part->deformed) continue;
         if (kind < PickKind::Node && !intersectsBounds(restRay(world, s.poseFor(partId)),
-                part->cad.bounds, visibleDepth + 8 * unit, 8 * unit)) continue;
+                part->cad->bounds, visibleDepth + 8 * unit, 8 * unit)) continue;
         PickResult candidate; candidate.kind = kind; candidate.partId = partId;
         try {
             if (kind == PickKind::Vertex) {
-                for (int index = 1; index <= geometry.vertices.Extent(); ++index) {
+                for (int index = 1; index <= geometry.cad->vertices.Extent(); ++index) {
                     candidate.index = index;
-                    pointHit(vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.vertices(index)))), candidate);
+                    pointHit(vec(BRep_Tool::Pnt(TopoDS::Vertex(geometry.cad->vertices(index)))), candidate);
                 }
             } else if (kind == PickKind::Node) {
                 for (int index = 0; index < int(geometry.nodes.size()); ++index) {
@@ -1465,8 +1594,8 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
                     best = candidate; bestDepth = depth;
                 }
             } else if (kind == PickKind::Edge) {
-                for (std::size_t index = 0; index < geometry.curves.size(); ++index) {
-                    const auto& curve = geometry.curves[index];
+                for (std::size_t index = 0; index < geometry.cad->curves.size(); ++index) {
+                    const auto& curve = geometry.cad->curves[index];
                     for (std::size_t j = 1; j < curve.points.size(); ++j) {
                         const QPointF a = projectPoint(curve.points[j-1], partId), b = projectPoint(curve.points[j], partId);
                         const auto delta = b - a; const double length2 = QPointF::dotProduct(delta, delta);
@@ -1500,7 +1629,7 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
             } else {
                 const auto ray = restRay(world, s.poseFor(partId));
                 IntCurvesFace_ShapeIntersector intersector;
-                intersector.Load(geometry.shape, 1e-7);
+                intersector.Load(geometry.cad->shape, 1e-7);
                 intersector.Perform(gp_Lin(gp_Pnt(ray.origin[0], ray.origin[1], ray.origin[2]),
                     gp_Dir(ray.direction[0], ray.direction[1], ray.direction[2])), 0, frame.nearZ - frame.farZ);
                 if (!intersector.IsDone()) continue;
@@ -1508,19 +1637,19 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
                     const double depth = intersector.WParameter(hit);
                     if (depth < 0 || depth >= bestDepth || depth > visibleDepth + 8 * unit) continue;
                     const auto face = intersector.Face(hit);
-                    candidate.index = kind == PickKind::Face ? geometry.faces.FindIndex(face) : -1;
+                    candidate.index = kind == PickKind::Face ? geometry.cad->faces.FindIndex(face) : -1;
                     if (kind == PickKind::Face && candidate.index < 1) continue;
                     if (kind == PickKind::Solid) {
-                        const int faceId=geometry.faces.FindIndex(face);
-                        candidate.index=faceId>0 ? geometry.faceSolids[std::size_t(faceId)] : -1;
+                        const int faceId=geometry.cad->faces.FindIndex(face);
+                        candidate.index=faceId>0 ? geometry.cad->faceSolids[std::size_t(faceId)] : -1;
                         if (candidate.index<1) continue; // shared/ambiguous solid boundary
                     }
                     candidate.hitPosition = vec(intersector.Pnt(hit));
                     GProp_GProps props;
                     if (kind == PickKind::Part) {
-                        BRepGProp::VolumeProperties(geometry.shape, props);
-                        if (std::abs(props.Mass()) < 1e-14) BRepGProp::SurfaceProperties(geometry.shape, props);
-                    } else if (kind==PickKind::Solid) BRepGProp::VolumeProperties(geometry.solids(candidate.index),props);
+                        BRepGProp::VolumeProperties(geometry.cad->shape, props);
+                        if (std::abs(props.Mass()) < 1e-14) BRepGProp::SurfaceProperties(geometry.cad->shape, props);
+                    } else if (kind==PickKind::Solid) BRepGProp::VolumeProperties(geometry.cad->solids(candidate.index),props);
                     else BRepGProp::SurfaceProperties(face, props);
                     candidate.position = std::abs(props.Mass()) > 1e-14 ? vec(props.CentreOfMass()) : candidate.hitPosition;
                     if (kind == PickKind::Face) {
@@ -1556,7 +1685,7 @@ PickResult OccViewport::pickAt(const QPointF& position, PickKind kind, const std
         if (partId > 0 && (allowedParts.empty() || allowedParts.count(partId))) {
             const auto found = s.pickGeometry.find(partId);
             if (found != s.pickGeometry.end()) {
-                GProp_GProps props; BRepGProp::LinearProperties(found->second.shape, props);
+                GProp_GProps props; BRepGProp::LinearProperties(found->second.cad->shape, props);
                 best.kind = PickKind::Part; best.partId = partId;
                 best.position = best.hitPosition = vec(props.CentreOfMass());
             }
@@ -1579,7 +1708,7 @@ void OccViewport::fitAllIncluding(const std::optional<Vec>& point)
     m_state->rememberCamera();
     m_state->camera.fit(bounds, size(), isVisible());
     m_state->rememberCamera();
-    update();
+    updateCamera();
 }
 
 void OccViewport::viewIsometric()
@@ -1588,7 +1717,7 @@ void OccViewport::viewIsometric()
     m_state->rememberCamera();
     m_state->camera.rotation = isometricRotation();
     m_state->rememberCamera();
-    update();
+    updateCamera();
 }
 
 void OccViewport::setViewOrientation(const QVector3D& direction, const QVector3D& up)
@@ -1597,7 +1726,7 @@ void OccViewport::setViewOrientation(const QVector3D& direction, const QVector3D
     m_state->rememberCamera();
     m_state->camera.rotation = viewRotation(direction, up);
     m_state->rememberCamera();
-    update();
+    updateCamera();
 }
 
 void OccViewport::viewFront() { setViewOrientation({0, -1, 0}, {0, 0, 1}); }
@@ -1627,7 +1756,7 @@ void OccViewport::rotateView(const QString& screenAxis, double degrees)
     state.camera.rotation = (delta * state.camera.rotation).normalized();
     state.rememberCamera();
     state.hover = {};
-    update();
+    updateCamera();
 }
 
 void OccViewport::panView(const QString& direction, double percent)
@@ -1646,7 +1775,7 @@ void OccViewport::panView(const QString& direction, double percent)
     state.camera.pan += offset * (state.camera.mmPerPixel(size()) * percent / 200.0);
     state.rememberCamera();
     state.hover = {};
-    update();
+    updateCamera();
 }
 
 void OccViewport::zoomView(bool zoomIn, double factor)
@@ -1657,7 +1786,7 @@ void OccViewport::zoomView(bool zoomIn, double factor)
     state.camera.zoomAt((zoomIn ? -1.0 : 1.0) * std::log(factor), rect().center(), size());
     state.rememberCamera();
     state.hover = {};
-    update();
+    updateCamera();
 }
 
 void OccViewport::stepViewHistory(bool forward)
@@ -1672,7 +1801,7 @@ void OccViewport::stepViewHistory(bool forward)
     if (next < 0 || next >= int(state.cameraHistory.size())) return;
     state.cameraHistoryPosition = next;
     state.camera = state.cameraHistory[std::size_t(next)];
-    update();
+    updateCamera();
 }
 
 void OccViewport::setAutoRotation(const QString& screenAxis, bool enabled)
@@ -1823,7 +1952,7 @@ bool OccViewport::uploadScene()
     s.buffers.resize(s.parts.size());
     bool ok = true;
     for (std::size_t i = 0; i < s.parts.size() && ok; ++i) {
-        ok = bufferGeometry(gl, s.parts[i].cad, s.buffers[i].cad) &&
+        ok = bufferGeometry(gl, *s.parts[i].cad, s.buffers[i].cad) &&
              bufferGeometry(gl, s.parts[i].mesh, s.buffers[i].mesh);
     }
     gl.glBindVertexArray(0);
@@ -2008,7 +2137,7 @@ void OccViewport::paintGL()
             const auto& part = s.parts[i];
             if (part.suppressed) continue;
             const bool meshed = part.usesMesh(s.mode), selected = part.id == s.selected;
-            const auto& geometry = meshed ? part.mesh : part.cad;
+            const auto& geometry = meshed ? part.mesh : *part.cad;
             const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
             if (!gpu.edgeCount || !showsEdges(s.mode, geometry)) continue;
             const auto color = selected ? rgb(15, 78, 150) : (meshed ? rgb(31, 67, 95) : rgb(42, 57, 75));
@@ -2108,7 +2237,7 @@ void OccViewport::drawCadPickFeedback() try
             bool ok = false;
             GLenum uploadError = GL_NO_ERROR;
             try {
-                const auto geometry = cadPickGeometry(s.pickGeometry.at(pick.partId), pick);
+                const auto geometry = cadPickGeometry(*s.pickGeometry.at(pick.partId).cad, pick);
                 ok = bufferGeometry(gl, geometry, buffer);
                 uploadError = gl.glGetError();
                 ok = ok && uploadError == GL_NO_ERROR;
@@ -2434,7 +2563,7 @@ int OccViewport::pickPart(const QPointF& position) const
     if (!wireframe) {
         for (const auto& part : s.parts) {
             if (part.suppressed) continue;
-            const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
+            const auto& geometry = part.usesMesh(s.mode) ? part.mesh : *part.cad;
             const Ray localRay = restRay(ray, s.poseFor(part.id));
             if (!intersectsBounds(localRay, geometry.bounds, nearest, unit * 0.01)) continue;
             const auto& triangles = geometry.triangles;
@@ -2455,7 +2584,7 @@ int OccViewport::pickPart(const QPointF& position) const
     const bool hitFace = best != -1;
     for (const auto& part : s.parts) {
         if (part.suppressed) continue;
-        const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
+        const auto& geometry = part.usesMesh(s.mode) ? part.mesh : *part.cad;
         if (!showsEdges(s.mode, geometry) || (hitFace && !geometry.triangles.empty())) continue;
         const auto* pose = s.poseFor(part.id);
         if (!intersectsBounds(restRay(ray, pose), geometry.bounds, nearest, tolerance)) continue;
@@ -2556,7 +2685,7 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     s.dragTo(event->localPos(), size());
-    if (s.dragging) update();
+    if (s.dragging) updateCamera();
     event->accept();
 }
 
@@ -2666,7 +2795,7 @@ bool OccViewport::setRotationCenterAt(const QPointF& position)
     bool found = false;
     for (const auto& part : s.parts) {
         if (part.suppressed) continue;
-        const auto& geometry = part.usesMesh(s.mode) ? part.mesh : part.cad;
+        const auto& geometry = part.usesMesh(s.mode) ? part.mesh : *part.cad;
         const auto ray = restRay(world, s.poseFor(part.id));
         if (!intersectsBounds(ray, geometry.bounds, nearest, unit)) continue;
         for (std::size_t i = 0; i + 2 < geometry.triangles.size(); i += 3) {
@@ -2683,7 +2812,7 @@ bool OccViewport::setRotationCenterAt(const QPointF& position)
     Vec point;
     for (int k = 0; k < 3; ++k) point[k] = world.origin[k] + world.direction[k]*nearest;
     s.camera.setPivot(point);
-    update();
+    updateCamera();
     return true;
 }
 
@@ -2792,7 +2921,7 @@ void OccViewport::wheelEvent(QWheelEvent* event)
         s.camera.zoomAt(-steps*0.16, position, size());
         s.rememberCamera();
         s.hover = s.pickActive ? pickAt(position) : PickResult{};
-        update();
+        updateCamera();
     }
     event->accept();
 }

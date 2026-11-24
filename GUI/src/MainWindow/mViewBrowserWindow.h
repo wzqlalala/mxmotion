@@ -7,6 +7,7 @@
 #include <QAbstractItemModel>
 #include <QVector>
 
+#include "ViewportLayouts.h"
 #include "mTreeModel.h" //Roles / ViewTreeTypes
 
 namespace MechPreData
@@ -16,28 +17,6 @@ namespace MechPreData
 
 namespace MechMainWindow
 {
-    //////////////////////////////////////////////////////////////////////////
-    // 视口布局定义：条带模型，统一表达 均分/横分/纵分/上N下M/左N右M 全部布局。
-    // verticalBands=true ：条带沿纵向堆叠（上N下M、横分、均分的行），条带内格子横向排列；
-    // verticalBands=false：条带沿横向排列（左N右M、纵分），条带内格子纵向堆叠。
-    // 各条带等分主轴，条带内格子等分条带。
-    //////////////////////////////////////////////////////////////////////////
-    struct mViewLayoutDef
-    {
-        const char* icon;   //图标文件名（:/mMainWidgets/Icon/CenterMainWindow/<icon>）
-        const char* name;   //显示名/tooltip
-        bool verticalBands;
-        int bands[4];       //各条带格子数
-        int bandCount;
-    };
-
-    //布局表（顺序即下拉网格顺序，与图标资源一一对应）
-    const QVector<mViewLayoutDef>& viewLayoutTable();
-    //布局总格数
-    int viewLayoutSlotCount(const mViewLayoutDef& def);
-    //第 cellIndex 个格子的矩形（按条带顺序编号，从0开始）
-    QRect viewLayoutCellRect(const mViewLayoutDef& def, int cellIndex, const QSize& area);
-
     //////////////////////////////////////////////////////////////////////////
     // 视图树数据模型：页（顶级节点）-> 视口子节点
     // 视口子节点 phyID 存视口全局ID，可跨模型混排（一页内允许不同模型的不同视口）

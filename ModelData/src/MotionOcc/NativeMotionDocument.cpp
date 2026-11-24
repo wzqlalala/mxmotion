@@ -39,7 +39,7 @@ constexpr int MaxReportedIssues = 100;
 
 QStringList collectionNames()
 {
-    return {QStringLiteral("bodies"), QStringLiteral("joints"), QStringLiteral("drives"),
+    return {QStringLiteral("bodies"), QStringLiteral("joints"), QStringLiteral("drives"), QStringLiteral("bodyDrives"),
         QStringLiteral("markers"), QStringLiteral("springs"), QStringLiteral("couplings"),
         QStringLiteral("vectorForces"), QStringLiteral("scalarForces"), QStringLiteral("scalarTorques"),
         QStringLiteral("threePointForces"), QStringLiteral("threePointTorques"), QStringLiteral("contacts"),
@@ -220,7 +220,7 @@ public:
     void curve(const QJsonObject& object, const QString& where)
     {
         QMap<QString, QString> sources{{"Body", "bodies"}, {"Joint", "joints"}, {"Marker", "markers"},
-            {"Drive", "drives"}, {"Coupling", "couplings"}, {"Sensor", "sensors"}, {"Controller", "controllers"},
+            {"Drive", "drives"}, {"BodyDrive", "bodyDrives"}, {"Coupling", "couplings"}, {"Sensor", "sensors"}, {"Controller", "controllers"},
             {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
             {"VectorForce", "vectorForces"}, {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
             {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"},
@@ -298,6 +298,31 @@ public:
             if((jointType=="Revolute"&&!rotation)||(jointType=="Translational"&&rotation))
                 issue(where,QStringLiteral("驱动方向与目标副的自由度不一致：旋转副只能旋转，移动副只能平移"));
             table(object, "driveTableX", "driveTableY", where);
+        } else if (kind == "bodyDrives") {
+            enumeration(object, "bodyDriveMode", {"LinearPosition", "LinearSpeed", "RotationAngle", "RotationSpeed", "Pose"}, where, true);
+            ref(object, "targetBodyId", "bodies", where, false, true);
+            ref(object, "referenceBodyId", "bodies", where, true);
+            const int target = object.value("targetBodyId").toInt(-1);
+            const int reference = object.value("referenceBodyId").toInt(-1);
+            if (target >= 0 && target == reference)
+                issue(where, QStringLiteral("运动体与参考体不能相同"));
+            if (doc.entity("bodies", target).value("isFixed").toBool())
+                issue(where, QStringLiteral("驱动目标需要可运动的刚体"));
+            vector(object, "origin", where);
+            const bool pose = object.value("bodyDriveMode").toString() == "Pose";
+            if (pose) vector(object, "frameAngles", where);
+            else nonzeroVector(object, "axis", where);
+            if (object.contains("guide") && !object.value("guide").isBool())
+                issue(where, QStringLiteral("轴向导向设置需要布尔值"));
+            const auto channels = object.value("channels").toObject();
+            const QString axes = pose ? QStringLiteral("XYZABC") : QStringLiteral("X");
+            for (const auto axis : axes) {
+                const QString key(axis);
+                const auto channel = channels.value(key).toObject();
+                if (channel.isEmpty() || !channel.value("expression").isString())
+                    issue(where, QStringLiteral("驱动分量 %1 缺少函数").arg(key));
+                table(channel, "driveTableX", "driveTableY", where + "." + key);
+            }
         } else if (kind == "markers") {
             ref(object, "bodyId", "bodies", where, true);
             vector(object, "localPosition", where); quaternion(object, "localRotation", where); number(object, "size", where, 0);
@@ -621,6 +646,7 @@ std::array<double, 3> principalMoments(const std::array<double, 6>& tensor)
 
 ShapeSignature signature(const CadPart& part)
 {
+    if (!part.metreDisplaySource.IsNull()) return {};
     ShapeSignature out;
     try {
         GProp_GProps properties;

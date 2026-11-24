@@ -37,6 +37,7 @@ else()
 endif()
 set(MX_QWT_ROOT "${MX_QWT_DEFAULT}" CACHE PATH "Qwt SDK prefix (optional with system Linux packages)")
 set(MX_MOTIONENGINE_BUILD_DIR "" CACHE PATH "Optional matching Release Ninja build of the pinned motionengine")
+set(MX_MOTIONENGINE_SOURCE_DIR "" CACHE PATH "Optional MotionEngine checkout matching the supplied build")
 set(MX_ENGINE_BUILD_JOBS "4" CACHE STRING "Parallel jobs for the isolated MotionEngine build")
 include(cmake/MotionOccDependencies.cmake)
 option(MX_DEPLOY_QT "Deploy the Windows Qt runtime beside MxMotion.exe" ${WIN32})
@@ -84,6 +85,7 @@ endfunction()
 set(model_dir "${CMAKE_CURRENT_SOURCE_DIR}/ModelData/src/MotionOcc")
 add_library(MotionOccData STATIC
     "${model_dir}/CadDocument.cpp"
+    "${model_dir}/VerifiedStepCache.cpp"
     "${model_dir}/NativeMotionDocument.cpp"
     "${model_dir}/NativeMotionExchange.cpp"
     "${model_dir}/NativeTopologyBinding.cpp"

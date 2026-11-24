@@ -1,6 +1,9 @@
 # Keep the legacy MotionEngine configure isolated from the Qt application.
 function(mx_import_motionengine)
     set(source "${PROJECT_SOURCE_DIR}/motionengine")
+    if(MX_MOTIONENGINE_SOURCE_DIR)
+        get_filename_component(source "${MX_MOTIONENGINE_SOURCE_DIR}" ABSOLUTE)
+    endif()
     if(NOT EXISTS "${source}/src/motion/physics/SystemNSC.h" OR
        NOT EXISTS "${source}/packages/eigen/Eigen/Core")
         message(FATAL_ERROR "Initialize the motionengine submodule: git submodule update --init --recursive")
@@ -14,7 +17,7 @@ function(mx_import_motionengine)
         set(modal_library "lib/${CMAKE_SHARED_LIBRARY_PREFIX}MotionEngine_modal${CMAKE_SHARED_LIBRARY_SUFFIX}")
         set(engine_byproducts "${engine_library};${modal_library}")
     endif()
-    if(NOT WIN32)
+    if(NOT WIN32 AND NOT MX_MOTIONENGINE_SOURCE_DIR)
         # Do not alter the pinned submodule: apply compile portability fixes
         # to an isolated build-tree copy, with exact replacements checked.
         set(original_source "${source}")
@@ -68,6 +71,10 @@ function(mx_import_motionengine)
         IMPORTED_LOCATION "${build}/${engine_library}"
         INTERFACE_INCLUDE_DIRECTORIES "${source}/src;${build};${source}/packages/eigen"
         INTERFACE_COMPILE_DEFINITIONS "NOMINMAX;_ENABLE_EXTENDED_ALIGNED_STORAGE;EIGEN_DONT_PARALLELIZE")
+    file(STRINGS "${source}/src/motion/utils/ParserAdams.h" body_drive_declaration REGEX "enum class BodyDriveMode")
+    if(body_drive_declaration)
+        target_compile_definitions(MotionEngine::Core INTERFACE MX_HAS_BODY_DRIVES=1)
+    endif()
     if(MSVC)
         set_target_properties(MotionEngine::Core PROPERTIES
             IMPORTED_IMPLIB "${build}/lib/motionengine.lib"

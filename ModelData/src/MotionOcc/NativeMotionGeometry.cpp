@@ -106,6 +106,8 @@ std::vector<TopoDS_Face> bodyFaces(const CadDocument& cad, const QVector<int>& p
     for (int id : parts) {
         const auto* part = cad.part(id);
         if (!part) fail(QStringLiteral("绑定的 CAD 部件 %1 不存在。").arg(id));
+        if (!part->metreDisplaySource.IsNull())
+            fail(QStringLiteral("零件“%1”的毫米拓扑未通过校验，无法用作精确接触几何。请先修复源 STEP。").arg(part->name));
         for (TopExp_Explorer it(part->shape, TopAbs_FACE); it.More(); it.Next())
             out.push_back(TopoDS::Face(it.Current()));
     }
@@ -132,6 +134,8 @@ std::vector<TopoDS_Shape> selectedShapes(const CadDocument& cad, const NativeMot
         // Faces retain the original selected base-body surface semantics.
         if (!part || (kind == TopAbs_FACE && !bodyParts.contains(partId)))
             fail(QStringLiteral("%1 引用了不存在或不属于运动体 %2 的 CAD 部件。").arg(field).arg(bodyId));
+        if (!part->metreDisplaySource.IsNull())
+            fail(QStringLiteral("零件“%1”的毫米拓扑未通过校验，无法用于曲线或曲面约束求解。请先修复源 STEP。").arg(part->name));
         TopTools_IndexedMapOfShape shapes;
         TopExp::MapShapes(part->shape, kind, shapes);
         if (index < 1 || index > shapes.Extent()) fail(QStringLiteral("%1 的 OCC 拓扑索引 %2 超出范围。").arg(field).arg(index));
@@ -237,6 +241,12 @@ BodyProperties prepareProperties(const CadDocument& cad, const NativeMotionDocum
         for (int partId : doc.bodyPartBindings.value(id)) {
             const auto* part = cad.part(partId);
             if (!part) fail(QStringLiteral("运动体 %1 缺少 CAD 几何绑定。").arg(id));
+            if (!part->metreDisplaySource.IsNull()) {
+                if (needGeometry && !fixed)
+                    fail(QStringLiteral("零件“%1”的毫米拓扑未通过校验，请为运动体 %2 提供完整质量属性。").arg(part->name).arg(id));
+                completeAggregate = false;
+                continue;
+            }
             bool haveSolid=false;
             for (TopExp_Explorer it(part->shape, TopAbs_SOLID); it.More(); it.Next()) {
                 haveSolid=true;
@@ -355,7 +365,13 @@ NativeFlexGeometry prepareFlex(const CadDocument& cad, const NativeMotionDocumen
         BRep_Builder builder; TopoDS_Compound compound; builder.MakeCompound(compound);
         const auto partIds=doc.bodyPartBindings.value(out.bodyId);
         if(partIds.isEmpty())fail(QStringLiteral("自动柔性体 %1 没有可用于自动剖分的 CAD 实体。").arg(out.id));
-        for(int partId:partIds){const auto* part=cad.part(partId);if(!part)fail("柔性体 CAD 部件不存在。");builder.Add(compound,part->shape);}
+        for (int partId : partIds) {
+            const auto* part = cad.part(partId);
+            if (!part) fail("柔性体 CAD 部件不存在。");
+            if (!part->metreDisplaySource.IsNull())
+                fail(QStringLiteral("零件“%1”的毫米拓扑未通过校验，无法直接生成柔性体网格。").arg(part->name));
+            builder.Add(compound, part->shape);
+        }
         std::ostringstream serialized;BRepTools::Write(compound,serialized);
         out.sourceBrep=QByteArray::fromStdString(serialized.str());
 #ifdef Q_OS_WIN

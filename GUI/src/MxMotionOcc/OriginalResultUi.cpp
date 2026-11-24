@@ -15,6 +15,7 @@
 
 #include <DockWidget.h>
 #include <DockAreaWidget.h>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QPointer>
 #include <QScrollArea>
@@ -32,8 +33,12 @@ void openDock(ads::CDockWidget* dock) {
 
 void MotionWindow::ensureOriginalCurveHost()
 {
-    if (!m_curveDock) return;
-    auto* window = mCurveWindow::getInstance();
+    if (!m_curveDock || !m_projectActive) return;
+    if (m_workspace) {
+        if (!m_projectCurveWindow) m_projectCurveWindow = mCurveWindow::createForProject(this);
+        mCurveWindow::setActiveProjectWindow(m_projectCurveWindow);
+    }
+    auto* window = m_projectCurveWindow ? m_projectCurveWindow : mCurveWindow::getInstance();
     if (m_curveDock->widget() != window) {
         // ADS releases its old child without deleting it. Keep the native
         // playback backend alive while the uploaded CurveWindow owns the UI.
@@ -59,11 +64,42 @@ void MotionWindow::ensureOriginalCurveHost()
     }
 }
 
+void MotionWindow::deactivateOriginalCurveHost()
+{
+    if (!m_workspace || !m_projectCurveWindow) return;
+    mCurveWindow::setActiveProjectWindow(nullptr);
+    mDockLayoutManager::getInstance()->setActivationHandler({});
+}
+
+void MotionWindow::restoreProjectEditor()
+{
+    const bool resumeAnimation = m_selectionNode.kind == ModelNode::Animation
+        && m_animationActive && m_resultScenario == m_selectionNode.id;
+    const double seconds = m_playbackTime;
+    const bool elastic = m_flexContour->currentData().toInt() == int(FlexContourKind::ElasticDisplacement);
+    const bool adaptive = m_flexRange->currentData().toInt() == 0;
+    selectRigidNode(m_selectionNode);
+
+    if (!resumeAnimation || !m_editor) return;
+    auto* panel = m_editor->findChild<mMotionAnimationPanel*>();
+    if (!panel) return;
+    if (auto* contour = panel->findChild<QComboBox*>(QStringLiteral("originalMotionFlexContour"))) {
+        const QSignalBlocker blocked(contour);
+        contour->setCurrentIndex(elastic ? 1 : 0);
+    }
+    if (auto* scale = panel->findChild<QCheckBox*>(QStringLiteral("originalMotionFlexAdaptiveScale"))) {
+        const QSignalBlocker blocked(scale);
+        scale->setChecked(adaptive);
+    }
+    panel->setCurrentTime(seconds);
+}
+
 bool MotionWindow::showOriginalMotionResult(ModelNode node)
 {
     if (node.kind != ModelNode::Animation && node.kind != ModelNode::Curves && node.kind != ModelNode::Export)
         return false;
     if (!m_model.nativeDocument) return false;
+    if (!m_projectActive) return true;
     const auto found = m_results.find(node.id);
     if (motionBusy() || m_jobPart >= 0 || found == m_results.end()
         || found->second->result.frames.empty()) return true;
@@ -107,7 +143,7 @@ bool MotionWindow::showOriginalMotionResult(ModelNode node)
         times=series.times;values=series.values;error.clear();return true;
     };
     bridge->displayMotionTime = [this](int scenarioId, double seconds, int reference, bool adaptive) {
-        if (m_results.find(scenarioId) == m_results.end()) return;
+        if (!m_projectActive || m_results.find(scenarioId) == m_results.end()) return;
         m_resultScenario = scenarioId;
         m_animationActive = true;
         const int contour = int(reference == 0 ? FlexContourKind::TotalDisplacement
@@ -119,7 +155,9 @@ bool MotionWindow::showOriginalMotionResult(ModelNode node)
     };
     bridge->resetMotionDisplay = [this] {
         if (m_animationDock) m_animationDock->setProperty("mxOriginalAnimationControllerActive", false);
-        leaveRigidAnimation();
+        // Deactivating a project closes its original editor while its viewport
+        // can remain visible in a split layout. Keep its last rendered frame.
+        if (m_projectActive) leaveRigidAnimation();
     };
     bridge->exportMotionLoads = [this](int id,const QString& path,const NativeLoadSource& source,
                                        const NativeLoadExportOptions& options,QString& error) {

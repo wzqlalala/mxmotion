@@ -27,7 +27,7 @@ QString safeName(QString text) { return text.replace('.', '_'); }
 
 NativePickSession::NativePickSession(OccViewport* viewport, const CadDocument& cad,
     const QJsonObject& references, QObject* parent)
-    : QObject(parent), m_viewport(viewport), m_cad(cad), m_references(references)
+    : QObject(parent), m_cad(cad), m_references(references)
 {
     m_legacyContext=LegacyPickContext::forObject(parent);
     if (!m_legacyContext || m_legacyContext->viewport()!=viewport || &m_legacyContext->document()!=&cad) {
@@ -37,6 +37,15 @@ NativePickSession::NativePickSession(OccViewport* viewport, const CadDocument& c
     connect(m_legacyContext,&LegacyPickContext::allowedTypesChanged,this,[this] {
         if (MechMainWindow::mPickWidgetController::hasActivePickController() && m_button) finish();
     });
+    connectViewport(viewport);
+}
+
+void NativePickSession::connectViewport(OccViewport* viewport)
+{
+    if (m_viewport == viewport) return;
+    if (m_viewport) disconnect(m_viewport, nullptr, this, nullptr);
+    m_viewport = viewport;
+    if (!viewport) return;
     connect(viewport, &OccViewport::pickSelectionChanged, this, [this](const QVector<PickResult>& picks) {
         if (!ownsSession() || !m_changed) return;
         record(m_key,picks);
@@ -89,6 +98,8 @@ void NativePickSession::begin(const QString& key, QPushButton* button, PickKind 
 {
     if (ownsSession() && m_button==button && m_viewport->isPicking()) { finish(); return; }
     finish();
+    if (m_legacyContext) connectViewport(m_legacyContext->viewport());
+    if (!m_viewport) return;
     if (auto* active=MechMainWindow::mPickWidgetController::activeController()) active->setPickActive(false);
     m_key=key; m_button=button; m_buttonText=button->text(); m_initial=initial; m_changed=std::move(changed); m_cancelled=std::move(cancelled);
     m_viewport->setProperty("nativePickOwner",QVariant::fromValue(reinterpret_cast<quintptr>(this)));
@@ -112,7 +123,7 @@ void NativePickSession::finish(bool cancel)
     m_changed={}; m_cancelled={}; m_button=nullptr;
 }
 
-void NativePickSession::decorateVector(QFormLayout* form, QGroupBox* box, const QString& key, const QString& path)
+QWidget* NativePickSession::decorateVector(QFormLayout* form, QGroupBox* box, const QString& key, const QString& path)
 {
     using namespace MechMainWindow;
     const QStringList positions{"origin","actionPoint","centerOfMass","localI","localJ","localTarget",
@@ -120,10 +131,10 @@ void NativePickSession::decorateVector(QFormLayout* form, QGroupBox* box, const 
     const QStringList directions{"axis","direction","fixedDirection","fixedAxis","actionSpin","actionPin",
         "baseSpin","basePin","actionVector","baseVector","axisDirection","gravity"};
     const bool isDirection=directions.contains(key);
-    if ((!isDirection && !positions.contains(key)) || !m_legacyContext) return;
+    if ((!isDirection && !positions.contains(key)) || !m_legacyContext) return nullptr;
     std::array<QLineEdit*,3> edits{};
     for(int i=0;i<3;++i)edits[i]=box->findChild<QLineEdit*>(QStringLiteral("native_")+QString(QChar('x'+i)));
-    if(!edits[0]||!edits[1]||!edits[2])return;
+    if(!edits[0]||!edits[1]||!edits[2])return nullptr;
     const auto initial=std::array<double,3>{edits[0]->text().toDouble(),edits[1]->text().toDouble(),edits[2]->text().toDouble()};
     const auto write=[edits](const QVector3D& value) {
         const double xyz[]={value.x(),value.y(),value.z()};
@@ -154,7 +165,7 @@ void NativePickSession::decorateVector(QFormLayout* form, QGroupBox* box, const 
             write(point->coordinate());
             record(path,m_legacyContext->resolve(point->pickData().pickedData));
         });
-        return;
+        return point;
     }
     const bool gravity=key==QStringLiteral("gravity");
     auto* selector=new mDirectionSelectorWidget(title,gravity,QStringLiteral("大小"),gravity,
@@ -208,5 +219,6 @@ void NativePickSession::decorateVector(QFormLayout* form, QGroupBox* box, const 
     };
     connect(selector,&mDirectionSelectorWidget::directionChanged,this,update);
     connect(selector,&mDirectionSelectorWidget::magnitudeChanged,this,update);
+    return selector;
 }
 } // namespace MotionOcc

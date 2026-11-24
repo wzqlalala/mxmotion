@@ -31,6 +31,7 @@ public:
     QVector<int> nodeIds(int partId) const;
     void refreshGeometry();
     OccViewport* viewport() const { return m_viewport; }
+    void setViewport(OccViewport* viewport);
     const CadDocument& document() const { return m_document; }
 
     std::pair<MxFunctions::PickDataType, RenderPickResultData> toLegacy(const PickResult& pick,
@@ -62,6 +63,7 @@ signals:
     void selectionRejected(const QString& message);
 private:
     void ensureGeometry() const;
+    QVector<PickResult> resolvePickerFeedback(const LegacyPickMap& data) const;
     struct GeometryIndex;
     std::unique_ptr<GeometryIndex> m_index;
     QPointer<OccViewport> m_viewport;

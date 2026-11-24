@@ -29,6 +29,7 @@
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QEventLoop>
+#include <QTreeWidget>
 #include <optional>
 
 using namespace MechMainWindow;
@@ -73,14 +74,14 @@ QJsonObject physicsFields(QJsonObject root) {
 }
 }
 void MotionWindow::ensureOriginalMotionContext() {
+    if (!m_projectActive) return;
     ensureOriginalCurveHost();
     if(!m_model.nativeDocument)return;
     if(m_original && m_original->document().root==m_model.nativeDocument->root
        && m_original->document().bodyPartBindings==m_model.nativeDocument->bodyPartBindings
        && m_original->document().baseDirectory==m_model.nativeDocument->baseDirectory
-       && m_original->document().projectAssetDirectory==m_model.nativeDocument->projectAssetDirectory) {
-        m_original->refreshMeshes();return;
-    }
+       && m_original->document().projectAssetDirectory==m_model.nativeDocument->projectAssetDirectory)
+        return;
     m_original.reset();
     m_original=std::make_unique<LegacyMotionContext>(this,m_viewport,m_document,m_meshes,*m_model.nativeDocument);
     connect(m_original.get(),&LegacyMotionContext::documentChanged,this,&MotionWindow::commitOriginalMotionDocument);
@@ -109,7 +110,7 @@ void MotionWindow::ensureOriginalMotionContext() {
             if(!done)wait.exec(QEventLoop::ExcludeUserInputEvents);
             if(!success) { error=tr("部件 %1 的真实体网格生成失败，请查看信息输出。").arg(part);return false; }
         }
-        if(m_original) { m_original->refreshMeshes();if(m_model.nativeDocument)m_original->adoptExternalDocument(*m_model.nativeDocument); }
+        if(m_original&&m_model.nativeDocument)m_original->adoptExternalDocument(*m_model.nativeDocument);
         return true;
     };
     bridge->previewBodyMesh=[this,savedMode=std::optional<OccViewport::DisplayMode>{}](int bodyId,bool show) mutable {
@@ -147,7 +148,7 @@ void MotionWindow::commitOriginalMotionDocument(const NativeMotionDocument& docu
     // The original scenario manager owns curve requests. Reparse those
     // changes instead of retaining the retired generated editor's copy.
     m_model.scenarios.clear();
-    syncNativeMotionModel(m_model);m_modified=true;
+    syncNativeMotionModel(m_model);setProjectModified(true);
     updateTree();updateActions();
     if(physicsChanged)m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,document,{},m_selectionNode.collection,m_selectionNode.id));
 }
@@ -165,13 +166,17 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
         "controlInputs","scenarios","autoFlexBodies","electroImports","electroExports","hydraulics","rlTasks",
         "mechanisms","transmissions","mechElecHyd"};
     if(!supported.contains(collection))return false;
-    if(motionBusy() || m_jobPart>=0)return true;
+    if(!m_projectActive || motionBusy() || m_jobPart>=0)return true;
     if(collection=="joints" && id<0 && !jointType(type)) {
         setNotice(tr("无法创建未知运动副类型：%1").arg(type),true);return true;
     }
     if(!ensureNativeModel())return true;
     closeEditor();ensureOriginalMotionContext();
-    QSet<int> previousIds;for(const auto& row:m_original->document().collection(collection))previousIds.insert(row.toObject().value("id").toInt(-1));
+    const bool creating = id < 0;
+    QSet<int> previousIds;
+    if (creating)
+        for (const auto& row : m_original->document().collection(collection))
+            previousIds.insert(row.toObject().value("id").toInt(-1));
     QWidget* panel=nullptr;std::function<void()> enter,leave;
     std::function<void(int)> editCreated;
     // These are the uploaded GUI classes, with their original constructors,
@@ -217,7 +222,7 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
     showOriginalParameterPanel(panel, "originalMotionScroll_"+collection);
     m_original->watch(panel);m_original->unedit=std::move(leave);
     enter();m_original->flush();
-    if(id<0) {
+    if(creating) {
         for(const auto& row:m_original->document().collection(collection)) {
             const int candidate=row.toObject().value("id").toInt(-1);
             if(!previousIds.contains(candidate)) { id=candidate;break; }
@@ -230,9 +235,16 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
     }
     appendOriginalEngineExtensions(panel,m_original.get(),collection,id);
     if(id>=0)m_selectionNode=collection=="scenarios" ? ModelNode{ModelNode::Scenario,id} : ModelNode{ModelNode::Native,id,collection};
-    updateTree();return true;
+    const auto* current = m_tree->currentItem();
+    const bool alreadySelected = current && current->data(0, Qt::UserRole).toInt() == m_selectionNode.id
+        && current->data(0, Qt::UserRole + 1).toInt() == int(m_selectionNode.kind)
+        && current->data(0, Qt::UserRole + 2).toString() == m_selectionNode.collection;
+    // 编辑现有选中行时，文档真正变动会触发刷新；打开参数页本身无需重建整棵树。
+    if (creating || !alreadySelected) updateTree();
+    return true;
 }
 void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVariant& argument) {
+    if (!m_projectActive) return;
     if (action == "importMotionMnf") { importMnf(argument.toString()); return; }
     if(action=="createMotionVectorForce") {
         static const QMap<QString,QString> collections{{"ScalarForce","scalarForces"},{"ScalarTorque","scalarTorques"},
@@ -257,6 +269,7 @@ void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVar
     if(actions.contains(action)) { editOriginalMotionEntity(actions.value(action),-1,argument.toString());return; }
     if(action=="createMotionSoftStop" || action=="createSoftStop") { if(ensureNativeModel())editNativeEntity("softStops");return; }
     if(action=="createMotionTensionCable" || action=="createTensionCable") { if(ensureNativeModel())editNativeEntity("tensionCables");return; }
+    if(action=="createBodyDrive") { if(ensureNativeModel())editNativeEntity("bodyDrives",-1,argument.toString());return; }
     if(dispatchOriginalWorkspaceAction(action,argument))return;
     QString title;
     const auto matches=[&](const QObject* object) {

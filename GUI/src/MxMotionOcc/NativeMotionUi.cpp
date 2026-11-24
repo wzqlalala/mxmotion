@@ -42,11 +42,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSet>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -62,6 +64,8 @@ QString label(const QString& key)
 {
     static const QMap<QString, QString> names{
         {"bodies", "运动体"}, {"joints", "运动副"}, {"couplings", "耦合副"}, {"drives", "驱动"},
+        {"bodyDrives", "运动体驱动"}, {"bodyDriveMode", "驱动类型"},
+        {"frameAngles", "初始坐标系内禀 XYZ 角 (°)"}, {"guide", "约束其余五个自由度"},
         {"springs", "弹簧"}, {"vectorForces", "力 / 力矩 / 衬套"}, {"scalarForces", "标量力"},
         {"scalarTorques", "标量力矩"}, {"threePointForces", "三点力"}, {"threePointTorques", "三点力矩"},
         {"tensionCables", "只拉绳索"}, {"softStops", "止挡"}, {"contacts", "接触"}, {"markers", "标记点"},
@@ -167,6 +171,8 @@ QString enumLabel(const QString& value)
         {"PointOnCurve", "点在曲线上"}, {"PointOnSurface", "点在曲面上"}, {"CurveOnCurve", "曲线在曲线上"},
         {"GearRack", "齿轮齿条"}, {"Cable", "双向线缆耦合"}, {"BodyPoint", "体点弹簧"}, {"Torsional", "扭转弹簧"},
         {"Position", "位置 / 位移"}, {"Velocity", "速度"}, {"Acceleration", "加速度"},
+        {"LinearPosition", "平移位移"}, {"LinearSpeed", "线速度"}, {"RotationAngle", "转角"},
+        {"RotationSpeed", "角速度"}, {"Pose", "六自由度位姿"},
         {"Dynamic", "动力学"}, {"Static", "静力平衡"}, {"PreloadedDynamics", "静力预载后动力学"},
         {"FAST", "FAST · 快速"}, {"CONTACT", "CONTACT · 接触"}, {"ROBUST", "ROBUST · 稳健"}, {"HIGH_PRECISION", "HIGH_PRECISION · 高精度"},
         {"SharedBody", "共用参考体 · 模态缩减"}, {"Independent", "独立接口 · 共回转全有限元"},
@@ -375,6 +381,28 @@ QJsonObject templateRecord(const NativeMotionDocument& doc, const QString& colle
                 {"lowerValue", -10.0}, {"upperValue", 10.0}, {"penaltyOnly", true},
                 {"lowerCushion", 0.1}, {"upperCushion", 0.1}, {"lowerStiffness", 100.0}, {"upperStiffness", 100.0},
                 {"lowerDamping", 1.0}, {"upperDamping", 1.0}}}});
+    } else if (collection == "bodyDrives") {
+        const QString mode = type.isEmpty() ? QStringLiteral("LinearPosition") : type;
+        int movable = -1;
+        for (const auto& item : doc.collection("bodies")) {
+            const auto candidate = item.toObject();
+            if (!candidate.value("isFixed").toBool()) {
+                movable = candidate.value("id").toInt(-1);
+                break;
+            }
+        }
+        merge({{"bodyDriveMode", mode}, {"targetBodyId", movable}, {"referenceBodyId", -1},
+            {"origin", vec()}, {"enabled", true}});
+        const bool pose = mode == "Pose";
+        if (pose) row.insert("frameAngles", vec());
+        else {
+            row.insert("guide", true);
+            row.insert("axis", mode.startsWith("Rotation") ? vec(0, 0, 1) : vec(1, 0, 0));
+        }
+        QJsonObject channels;
+        for (const auto axis : (pose ? QStringLiteral("XYZABC") : QStringLiteral("X")))
+            channels.insert(QString(axis), QJsonObject{{"expression", "0"}, {"driveTableX", QJsonArray{}}, {"driveTableY", QJsonArray{}}});
+        row.insert("channels", channels);
     } else if (collection == "drives") {
         const bool rotation = doc.entity("joints", joint).value("jointType").toString() != "Translational";
         merge({{"driveType", "JointDrive"}, {"targetType", "Joint"}, {"targetJointId", joint},
@@ -463,6 +491,7 @@ QStringList choices(const QString& key)
         {"couplingType", {"Gear", "GearRack", "Cable"}}, {"springType", {"BodyPoint", "Translational", "Torsional"}},
         {"inertiaConvention", {"auto", "tensor", "products"}},
         {"controlMode", {"Position", "Velocity", "Force", "Torque"}}, {"motionType", {"Rotation", "Translation"}},
+        {"bodyDriveMode", {"LinearPosition", "LinearSpeed", "RotationAngle", "RotationSpeed", "Pose"}},
         {"analysisType", {"Dynamic", "Static", "PreloadedDynamics"}},
         {"interfaceMode", {"SharedBody", "Independent"}},
         {"loadType", {"Force", "Torque", "Bushing"}}, {"magnitudeMode", {"Constant", "Expression"}},
@@ -481,11 +510,15 @@ QStringList choices(const QString& key)
 
 ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& value,
                    const NativeMotionDocument& doc, const QString& collection, int depth = 0,
-                   NativePickSession* picker = nullptr, const QString& parentPath = {})
+                   NativePickSession* picker = nullptr, const QString& parentPath = {}, const QString& fieldLabel = {})
 {
-    const QString text = label(key);
+    const QString text = fieldLabel.isEmpty() ? label(key) : fieldLabel;
+    const auto addLabeledRow = [&](QWidget* editor) {
+        if (collection == "bodyDrives" && depth == 0) form->addRow(new PanelLabel(text), editor);
+        else form->addRow(text, editor);
+    };
     const QString path = parentPath.isEmpty() ? key : parentPath + "." + key;
-    const QStringList vectorKeys{"origin","actionPoint","centerOfMass","localI","localJ","localTarget","localOrigin","localPosition",
+    const QStringList vectorKeys{"origin","frameAngles","actionPoint","centerOfMass","localI","localJ","localTarget","localOrigin","localPosition",
         "referencePoint","localPos","position","axis","direction","fixedDirection","fixedAxis","actionSpin","actionPin","baseSpin","basePin",
         "actionVector","baseVector","axisDirection","gravity","initialVelocity","initialAngularVelocity"};
     if (value.isArray() && value.toArray().size()==3 && vectorKeys.contains(key)) {
@@ -499,9 +532,18 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
         const auto original = value.toObject();
         QMap<QString, ReadValue> fields;
         for (auto it = original.begin(); it != original.end(); ++it) fields.insert(it.key(), addField(nested, it.key(), it.value(), doc, collection, depth + 1, picker, path));
+        QWidget* pickWidget = nullptr;
         if (picker && original.size()==3 && original.contains("x") && original.contains("y") && original.contains("z"))
-            picker->decorateVector(nested,box,key,path);
-        form->addRow(box);
+            pickWidget = picker->decorateVector(nested,box,key,path);
+        if (collection == "bodyDrives" && depth == 0 && pickWidget) {
+            // 直接使用原拾取控件自己的边框。隐藏容器只保留序列化使用的坐标字段。
+            nested->removeWidget(pickWidget);
+            form->addRow(pickWidget);
+            box->setParent(form->parentWidget());
+            box->hide();
+        } else {
+            form->addRow(box);
+        }
         return [fields, original] { auto out = original; for (auto it = fields.begin(); it != fields.end(); ++it) out.insert(it.key(), it.value()()); return out; };
     }
     if (value.isBool()) {
@@ -521,7 +563,7 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
             combo->addItem(QStringLiteral("%1 [%2]").arg(row.value("name").toString()).arg(row.value("id").toInt()), row.value("id").toInt()); }
         int index = combo->findData(value.toInt());
         if (index < 0) { combo->addItem(QStringLiteral("缺失引用 [%1]").arg(value.toInt()), value.toInt()); index = combo->count() - 1; }
-        combo->setCurrentIndex(index); form->addRow(text, combo); return [combo] { return combo->currentData().toInt(); };
+        combo->setCurrentIndex(index); addLabeledRow(combo); return [combo] { return combo->currentData().toInt(); };
     }
     if ((key == "directionMode" || key == "axisMode" || key == "side") && value.isDouble()) {
         auto* combo = new QComboBox; combo->setObjectName("native_" + key);
@@ -540,8 +582,8 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
         int index = combo->findData(value.toString());
         if (index < 0) { combo->addItem(value.toString(), value.toString()); index = combo->count() - 1; }
         combo->setCurrentIndex(index);
-        if (QStringList{"jointType", "couplingType", "springType", "sensorType", "loadType"}.contains(key)) combo->setEnabled(false);
-        form->addRow(text, combo); return [combo] { return combo->currentData().toString(); };
+        if (QStringList{"jointType", "couplingType", "springType", "sensorType", "loadType", "bodyDriveMode"}.contains(key)) combo->setEnabled(false);
+        addLabeledRow(combo); return [combo] { return combo->currentData().toString(); };
     }
     if (value.isString() || value.isDouble()) {
         const QString original = value.isDouble() ? QString::number(value.toDouble(), 'g', 17) : value.toString();
@@ -580,7 +622,7 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
                 if(collection=="springs"&&key=="dampingFunction")
                     if(auto* enabled=editor->findChild<QCheckBox*>("native_dampingEnabled"))enabled->setChecked(true);
             });
-        }else form->addRow(text, edit);
+        }else addLabeledRow(edit);
         return [edit, value, original, text] {
             if (edit->text() == original) return value;
             if (value.isString()) return QJsonValue(edit->text());
@@ -861,7 +903,7 @@ void MotionWindow::snapshotNativeFlexMeshes()
     }
     if (changed) {
         m_model.nativeDocument=std::make_shared<NativeMotionDocument>(std::move(document));
-        m_modified=true;
+        setProjectModified(true);
     }
 }
 
@@ -893,7 +935,7 @@ void MotionWindow::updateNativeFlexMeshForPart(int partId)
         put(document,"autoFlexBodies",flex); changed=true;
     }
     if (changed) {
-        m_model.nativeDocument=std::make_shared<NativeMotionDocument>(std::move(document)); m_modified=true;
+        m_model.nativeDocument=std::make_shared<NativeMotionDocument>(std::move(document)); setProjectModified(true);
         clearResults(); updateTree();
     }
 }
@@ -941,7 +983,8 @@ void MotionWindow::ensureNativeFlexMesh(int flexId)
     restoreNativeFlexMeshes();
     command(Command::MeshDisplay)->setEnabled(true); command(Command::MeshDisplay)->trigger();
     syncViewport();
-    editNativeEntity("autoFlexBodies",flexId);
+    if (m_projectActive) editNativeEntity("autoFlexBodies",flexId);
+    else m_restoreProjectEditor = true;
     setNotice(tr("自动柔性体已保存：%1").arg(flexMeshSummary(mesh)));
 }
 
@@ -953,7 +996,7 @@ void MotionWindow::createNativeCommands()
     };
     add(Command::ImportMotionJson, tr("导入运动 JSON"), "movingBody.png", [this] {
         const auto path = QFileDialog::getOpenFileName(this, tr("导入运动数据"), {}, tr("Motion 运动数据 (*.motion.json *.json)"));
-        if (!path.isEmpty()) importMotionJson(path);
+        if (!path.isEmpty()) startMotionJsonImport(path);
     });
     add(Command::ExportMotionJson, tr("导出运动 JSON"), "movingBody.png", [this] {
         if (!ensureNativeModel()) return;
@@ -1040,14 +1083,14 @@ MxFunctions::PhysicalFieldType originalTreeType(const QString& collection) {
 }
 QStringList originalTreeCollections(const QString& group) {
     if(group=="forceElements")return {"vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques","tensionCables","softStops"};
-    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","springs","vectorForces","scalarForces","scalarTorques",
+    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","bodyDrives","springs","vectorForces","scalarForces","scalarTorques",
         "threePointForces","threePointTorques","tensionCables","softStops","contacts","markers","sensors","controllers",
         "controlInputs","scenarios","autoFlexBodies","electroImports","electroExports","hydraulics","rlTasks"};
     return {group};
 }
 QString originalCurveCollection(const QString& source) {
     static const QMap<QString,QString> aliases{{"Body","bodies"},{"Joint","joints"},{"Marker","markers"},
-        {"Drive","drives"},{"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
+        {"Drive","drives"},{"BodyDrive","bodyDrives"},{"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
         {"Spring","springs"},{"TensionCable","tensionCables"},{"SoftStop","softStops"},
         {"VectorForce","vectorForces"},{"ScalarForce","scalarForces"},{"ScalarTorque","scalarTorques"},
         {"ThreePointForce","threePointForces"},{"ThreePointTorque","threePointTorques"},{"AutoFlexBody","autoFlexBodies"}};
@@ -1098,6 +1141,14 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"标量力矩","Motion/moment.png","createMotionVectorForce","ScalarTorque"},
         {"衬套","Motion/bush.png","createMotionVectorForce","Bushing"}};
     if(collection=="drives")return {{"运动副驱动","Motion/rotaryJoint.png","createMotionDrive","Velocity"}};
+#if defined(MX_HAS_BODY_DRIVES)
+    if(collection=="bodyDrives")return {
+        {"平移位移","Motion/drive.png","createBodyDrive","LinearPosition"},
+        {"线速度","Motion/drive.png","createBodyDrive","LinearSpeed"},
+        {"转角","Motion/drive.png","createBodyDrive","RotationAngle"},
+        {"角速度","Motion/drive.png","createBodyDrive","RotationSpeed"},
+        {"六自由度位姿","Motion/drive.png","createBodyDrive","Pose"}};
+#endif
     static const QMap<QString,OriginalTreeCreation> simple{
         {"bodies",{"新建运动体","BrowserTree/xinjian-23x.png","createMotionBody"}},
         {"markers",{"新建标记点","caotu/dian.png","createMotionMarker"}},
@@ -1207,8 +1258,8 @@ void MotionWindow::deleteOriginalTreeEntities(const QString& collection,int id) 
 bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoint& position) {
     if(!item)return false;const auto collection=item->data(0,Qt::UserRole+2).toString();
     const auto type=originalTreeType(collection);const bool root=collection=="__motionRoot";
-    if(type==MxFunctions::Physical_None&&!root)return false;
     const bool group=item->data(0,Qt::UserRole+3).toBool();const int id=item->data(0,Qt::UserRole).toInt();
+    if(type==MxFunctions::Physical_None&&!root&&!(group&&collection=="bodyDrives"))return false;
     const bool idle=!motionBusy()&&m_jobPart<0;
     mUiMenu menu(this);menu.setObjectName("originalMotionTreeMenu");
     const auto action=[&](QMenu* target,const char* artwork,const QString& text,const std::function<void()>& callback) {
@@ -1237,6 +1288,9 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
         submenu("joints",tr("新建运动副"),TreeIcons::item("joints"),true);
         submenu("couplings",tr("新建耦合副"),TreeIcons::item("couplings"),true);
         create(&menu,{"新建驱动","BrowserTree/motion_driveParentItem.png","createMotionDrive","Velocity"});
+#if defined(MX_HAS_BODY_DRIVES)
+        submenu("bodyDrives",tr("新建运动体驱动"),TreeIcons::item("bodyDrives"),true);
+#endif
         create(&menu,originalTreeCreations("markers").first());
         submenu("sensors",tr("新建传感器"),TreeIcons::item("sensors"),true);
         create(&menu,{"新建控制器","Motion/controlCalculation.png","createMotionController"});
@@ -1249,7 +1303,8 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
             if(answer==0)deleteOriginalTreeEntities("__motionRoot",-1);
         });
     } else if(group) {
-        if(QStringList{"joints","couplings","drives","sensors"}.contains(collection))
+        if(!originalTreeCreations(collection).isEmpty()
+            && QStringList{"joints","couplings","drives","sensors","bodyDrives"}.contains(collection))
             submenu(collection,tr("新建%1").arg(label(collection)),TreeIcons::item(collection));
         else {
             const bool multiple=collection=="springs"||collection=="forceElements";
@@ -1355,6 +1410,7 @@ bool MotionWindow::importMotionJson(const QString& path, bool interactiveBinding
         setNotice(error, true);
         return false;
     }
+    const bool bindingsChecked = hasGeometry;
     if (!hasGeometry) {
         if (m_document.parts().empty()) {
             const auto directory = QFileInfo(path).absoluteDir();
@@ -1372,8 +1428,77 @@ bool MotionWindow::importMotionJson(const QString& path, bool interactiveBinding
             if (!exchangeCad.importFile(stepPath, imported, error)) { setNotice(error, true); return false; }
             hasGeometry = true;
         }
-        if (!resolveNativeBindings(hasGeometry ? exchangeCad : m_document, document, interactiveBinding)) return false;
     }
+    return installMotionJson(path, std::move(document), std::move(exchangeCad), hasGeometry,
+                             bindingsChecked, interactiveBinding);
+}
+
+bool MotionWindow::startMotionJsonImport(const QString& path, std::function<void(bool)> finished)
+{
+    return startMotionJsonImport(path, {}, std::move(finished));
+}
+
+bool MotionWindow::startMotionJsonImport(const QString& path, const QString& legacyStep, std::function<void(bool)> finished)
+{
+    struct Import {
+        NativeMotionDocument document;
+        CadDocument cad;
+        std::shared_ptr<const PreparedCadScene> scene;
+        QString error;
+        bool hasGeometry = false;
+        bool bindingsChecked = false;
+        bool needsStep = false;
+    };
+    auto result = std::make_shared<Import>();
+    const bool reuseCad = !m_document.parts().empty();
+    return runGeometryImport(path, [path, legacyStep, reuseCad, result] {
+        auto& [document, cad, scene, error, hasGeometry, bindingsChecked, needsStep] = *result;
+        if (!readNativeMotionDocument(path, document, error) ||
+            !readNativeMotionExchange(path, document, cad, hasGeometry, error)) return;
+        bindingsChecked = hasGeometry;
+        if (!hasGeometry && (!reuseCad || !legacyStep.isEmpty())) {
+            const auto directory = QFileInfo(path).absoluteDir();
+            const auto companions = directory.entryList({"*.stp", "*.step", "*.STP", "*.STEP"}, QDir::Files);
+            const auto step = !legacyStep.isEmpty() ? legacyStep :
+                (companions.size() == 1 ? directory.filePath(companions.front()) : QString{});
+            if (step.isEmpty()) { needsStep = true; return; }
+            std::vector<int> ids;
+            if (!cad.importFile(step, ids, error)) return;
+            hasGeometry = true;
+            auto bound = document;
+            QVector<NativeMotionBindingIssue> bodyIssues;
+            QVector<NativeTopologyBindingIssue> topologyIssues;
+            if (autoBindNativeMotionBodies(cad, bound, bodyIssues) &&
+                autoBindNativeMotionTopology(cad, bound, topologyIssues)) {
+                document = std::move(bound);
+                bindingsChecked = true;
+            }
+        }
+        if (hasGeometry) scene = OccViewport::prepareCadScene(cad);
+    }, [this, path, result, finished = std::move(finished)](const QString& failure) {
+        const auto error = failure.isEmpty() ? result->error : failure;
+        bool success = false;
+        if (!error.isEmpty()) setNotice(error, true);
+        else if (result->needsStep) {
+            const auto pathToStep = QFileDialog::getOpenFileName(this, tr("选择与旧版运动 JSON 配套的 STEP"),
+                QFileInfo(path).absolutePath(), tr("STEP 几何 (*.stp *.step)"));
+            if (!pathToStep.isEmpty() && startMotionJsonImport(path, pathToStep, finished)) return;
+            if (pathToStep.isEmpty()) setNotice(tr("未导入运动 JSON，当前工程保留。"));
+        } else {
+            success = installMotionJson(path, std::move(result->document), std::move(result->cad),
+                result->hasGeometry, result->bindingsChecked, true, result->scene);
+        }
+        if (finished) finished(success);
+        emit geometryImportFinished(success);
+    });
+}
+
+bool MotionWindow::installMotionJson(const QString& path, NativeMotionDocument&& document, CadDocument&& exchangeCad,
+                                     bool hasGeometry, bool bindingsChecked, bool interactiveBinding,
+                                     const std::shared_ptr<const PreparedCadScene>& prepared)
+{
+    if (!bindingsChecked && !resolveNativeBindings(hasGeometry ? exchangeCad : m_document, document, interactiveBinding)) return false;
+    QString error;
     const int bodies = document.collection("bodies").size(), joints = document.collection("joints").size();
     RigidModel imported;
     imported.nativeDocument = std::make_shared<NativeMotionDocument>(std::move(document));
@@ -1397,7 +1522,8 @@ bool MotionWindow::importMotionJson(const QString& path, bool interactiveBinding
     }
     commitRigid(std::move(imported), {});
     restoreNativeFlexMeshes();
-    syncViewport();
+    syncViewport(hasGeometry, prepared);
+    if (hasGeometry) for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
     setNotice(tr("已导入 %1：%2 个运动体、%3 个运动副。几何绑定已核对，可选择求解方案运行。")
         .arg(QFileInfo(path).fileName()).arg(bodies).arg(joints)); return true;
 }
@@ -1406,13 +1532,15 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
 {
     const QMap<QString, QString> groupNames{{"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"importedMnfBodies", tr("柔性体")},
-        {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")}, {"springs", tr("弹簧")},
+        {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")}, {"bodyDrives", tr("运动体驱动")}, {"springs", tr("弹簧")},
         {"vectorForces", tr("力元")}, {"scalarForces", tr("力元")}, {"scalarTorques", tr("力元")},
         {"threePointForces", tr("力元")}, {"threePointTorques", tr("力元")}, {"tensionCables", tr("力元")}, {"softStops", tr("力元")},
         {"sensors", tr("传感器")}, {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")}, {"controlInputs", tr("控制输入")}};
     for (auto it = groupNames.begin(); it != groupNames.end(); ++it) {
+        const auto rows = m_model.nativeDocument->collection(it.key());
+        if (rows.isEmpty()) continue;
         auto* group = groups.at(it.value());
-        for (const auto& value : m_model.nativeDocument->collection(it.key())) {
+        for (const auto& value : rows) {
             const auto row = value.toObject(); const int id = row.value("id").toInt();
             auto* item = new QTreeWidgetItem(group, {row.value("name").toString()});
             item->setIcon(0, TreeIcons::entity(it.key(), row));
@@ -1476,6 +1604,7 @@ void MotionWindow::batchNativeBodies()
 
 void MotionWindow::editNativeEntity(const QString& collection, int id, const QString& requestedType)
 {
+    if (!m_projectActive) return;
     if (editOriginalMotionEntity(collection,id,requestedType)) return;
     if (motionBusy() || m_jobPart >= 0 || !m_model.nativeDocument) return;
     auto document = *m_model.nativeDocument;
@@ -1560,12 +1689,26 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     if (collection == "bodies" && !row.contains("isCustomMassProps")) row.insert("isCustomMassProps",false);
     if (collection == "sensors") convertSensorPoints(row,document,true);
     if (collection == "bodies" && !row.contains("densityKgMm3")) row.insert("densityKgMm3", kDefaultNativeBodyDensityKgMm3);
+    const bool bodyDrive = collection == "bodyDrives";
+    const auto bodyDriveMode = row.value("bodyDriveMode").toString();
+    const bool poseDrive = bodyDriveMode == "Pose";
     auto* panel = new QWidget; panel->setObjectName("nativeEditor_" + collection);
     auto* picker = new NativePickSession(m_viewport, m_document, row.value("occPickReferences").toObject(), panel);
     auto* form = new QFormLayout(panel); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setSizeConstraint(QLayout::SetMinimumSize);
-    auto* title = new QLabel(label(collection)); title->setStyleSheet(QStringLiteral("font-weight:600")); form->addRow(title);
+    if (bodyDrive) {
+        form->setContentsMargins(0, 0, 0, 0);
+        form->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
+    } else {
+        auto* title = new QLabel(label(collection)); title->setStyleSheet(QStringLiteral("font-weight:600")); form->addRow(title);
+    }
+    const auto addBodyDriveSection = [form](const QString& title, const QString& name) {
+        auto* section = new MechMainWindow::FoldSection(title);
+        section->setObjectName(name);
+        form->addRow(section);
+        return section;
+    };
     if (collection == "bodies") {
         auto* help = new QLabel(tr("取消“指定质量属性”后，按绑定几何和密度计算质量、质心及惯量。导入数据先保留原值；重新计算或更改绑定、密度时更新。惯量顺序为 Ixx、Iyy、Izz、Ixy、Ixz、Iyz，后三项区分矩阵项与正号惯量积。"));
         help->setWordWrap(true); form->addRow(help);
@@ -1627,12 +1770,55 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         form->addRow(tr("体网格"), meshState);
     }
     const QStringList hidden{"id", "isUserRename", "geoEntityIds", "geoEntityNames", "currentCurveRequest", "curveNode", "curveRequests",
-        "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds", "occPickReferences"};
-    if (row.contains("name")) fields.insert("name", addField(form, "name", row.value("name"), document, collection));
-    const auto specialisedFields = addNativeTypedFields(panel, form, row, collection, document,
+        "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds", "occPickReferences",
+        "channels"};
+    if (!bodyDrive && row.contains("name")) fields.insert("name", addField(form, "name", row.value("name"), document, collection));
+    auto specialisedFields = addNativeTypedFields(panel, form, row, collection, document,
         [&, picker](QFormLayout* target, const QString& field, const QJsonValue& value) {
             return addField(target, field, value, document, collection, 0, picker);
         }, fields);
+    if (bodyDrive) {
+        const auto bind = [&](MechMainWindow::FoldSection* section, const QString& key) {
+            if (!row.contains(key)) return;
+            fields.insert(key, addField(section->layout(), key, row.value(key), document, collection, 0, picker));
+            specialisedFields.insert(key);
+        };
+        auto* target = addBodyDriveSection(tr("驱动目标"), "bodyDriveTargetSection");
+        for (const auto* key : {"name", "bodyDriveMode", "targetBodyId", "referenceBodyId", "enabled"})
+            bind(target, QString::fromLatin1(key));
+
+        auto* coordinates = addBodyDriveSection(tr("坐标定义"), "bodyDriveCoordinateSection");
+        bind(coordinates, "origin");
+        if (poseDrive && row.contains("frameAngles")) {
+            const auto source = row.value("frameAngles");
+            const auto angles = source.toArray();
+            const auto object = source.toObject();
+            QMap<QString, ReadValue> readers;
+            const QString axes = QStringLiteral("xyz");
+            const QString components = QStringLiteral("ABC");
+            auto* layout = coordinates->layout();
+            for (int i = 0; i < axes.size(); ++i) {
+                const QString key(axes[i]);
+                const QJsonValue value = angles.size() == 3 ? angles.at(i) : object.value(key);
+                readers.insert(key, addField(layout, key, QJsonValue(value.toDouble()), document, collection,
+                                             0, nullptr, {}, tr("初始 %1 (°)").arg(components[i])));
+                layout->itemAt(layout->rowCount() - 1, QFormLayout::LabelRole)->widget()
+                    ->setToolTip(tr("驱动坐标系的初始内禀 X、Y、Z 转角。"));
+            }
+            fields.insert("frameAngles", [source, object, readers] {
+                if (source.isArray()) return QJsonValue(QJsonArray{readers.value("x")(), readers.value("y")(), readers.value("z")()});
+                auto updated = object;
+                for (auto it = readers.cbegin(); it != readers.cend(); ++it) updated.insert(it.key(), it.value()());
+                return QJsonValue(updated);
+            });
+            specialisedFields.insert("frameAngles");
+        } else if (!poseDrive) {
+            bind(coordinates, "axis");
+            bind(coordinates, "guide");
+            if (auto* axis = panel->findChild<QWidget*>("originalDirectionPicker_axis"))
+                axis->setToolTip(tr("轴用初始全局坐标定义，随参考体运动。"));
+        }
+    }
     if (collection == "sensors") for (const auto& key : {"sensorType", "variable"})
         if (auto* selector = panel->findChild<QComboBox*>(QStringLiteral("native_") + key))
             connect(selector, qOverload<int>(&QComboBox::currentIndexChanged), panel, [picker] { picker->finish(); });
@@ -1843,6 +2029,71 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                 attachState->setText(tr("目标体已变更，请重新选择附着节点；留空将按新目标体的运动副自动附着。"));
             });
     }
+    if (bodyDrive) {
+        const bool speed = bodyDriveMode.endsWith("Speed");
+        const auto stored = row.value("channels").toObject();
+        const auto scenarios = document.collection("scenarios");
+        const double duration = scenarios.isEmpty() ? 10 : scenarios.first().toObject().value("endTime").toDouble(10);
+        auto* excitation = poseDrive ? addBodyDriveSection(tr("平移激励"), "bodyDriveTranslationSection")
+                                     : addBodyDriveSection(tr("驱动激励"), "bodyDriveExcitationSection");
+        auto* rotation = poseDrive ? addBodyDriveSection(tr("转动激励"), "bodyDriveRotationSection") : nullptr;
+        QMap<QString, ReadValue> channelReaders;
+        const QString axes = poseDrive ? QStringLiteral("XYZABC") : QStringLiteral("X");
+        for (int i=0; i<axes.size(); ++i) {
+            const QString key(axes[i]);
+            const bool angular = bodyDriveMode.startsWith("Rotation") || (poseDrive && i >= 3);
+            const QString unit = (angular ? QStringLiteral("°") : QStringLiteral("mm")) +
+                                 (speed ? QStringLiteral("/s") : QString{});
+            auto channel = std::make_shared<QJsonObject>(stored.value(key).toObject());
+            auto* controls = new QWidget;
+            auto* layout = new QHBoxLayout(controls);
+            layout->setContentsMargins(0,0,0,0);
+            layout->setSpacing(MxFunctions::UiMetrics::choiceGap());
+            auto* expression = new QLineEdit(channel->value("expression").toString("0"), controls);
+            expression->setObjectName(QStringLiteral("native_bodyDriveChannel")+key);
+            auto* editor = new QToolButton(controls);
+            editor->setObjectName(QStringLiteral("native_bodyDriveFunction") + key);
+            editor->setIcon(QIcon(QStringLiteral(":/mMainWidgets/Icon/homepage/hanshu3x.png")));
+            editor->setIconSize(MxFunctions::UiMetrics::quickIconSize());
+            const auto editorLabel = tr("编辑函数与时间表…");
+            editor->setToolTip(editorLabel);
+            editor->setAccessibleName(editorLabel);
+            const int controlHeight = MxFunctions::UiMetrics::controlHeight();
+            editor->setFixedSize(controlHeight, controlHeight);
+            layout->addWidget(expression, 1);
+            layout->addWidget(editor);
+            auto* section = poseDrive && i >= 3 ? rotation : excitation;
+            section->addRow(QStringLiteral("%1 (%2)").arg(poseDrive ? key : enumLabel(bodyDriveMode), unit), controls);
+            const auto sync = [expression, channel] {
+                const auto samples = channel->value("driveTableX").toArray().size();
+                expression->setReadOnly(samples > 0);
+                expression->setToolTip(samples > 0 ? QObject::tr("当前使用时间表，共 %1 个采样点。").arg(samples) : QObject::tr("输入常数或时间函数，t 的单位为秒。"));
+            };
+            sync();
+            connect(editor, &QToolButton::clicked, panel, [this, expression, channel, unit, duration, sync] {
+                auto value = expression->text();
+                auto times = channel->value("driveTableX").toArray();
+                auto values = channel->value("driveTableY").toArray();
+                if (!editNativeFunction(this, value, times, values, unit, duration)) return;
+                expression->setText(value);
+                channel->insert("expression", value);
+                channel->insert("driveTableX", times);
+                channel->insert("driveTableY", values);
+                sync();
+            });
+            channelReaders.insert(key, [expression, channel] {
+                auto out = *channel;
+                out.insert("expression", expression->text());
+                return out;
+            });
+        }
+        fields.insert("channels", [channelReaders] {
+            QJsonObject out;
+            for (auto channel = channelReaders.begin(); channel != channelReaders.end(); ++channel)
+                out.insert(channel.key(), channel.value()());
+            return out;
+        });
+    }
     if (collection=="drives") {
         auto* function=new QPushButton(tr("函数编辑、表格与预览…")); function->setObjectName("nativeFunctionBuilder"); form->addRow(function);
         connect(function,&QPushButton::clicked,panel,[this,panel,document] {
@@ -1867,6 +2118,10 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         });
     }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); form->addRow(buttons);
+    if (bodyDrive) {
+        buttons->button(QDialogButtonBox::Ok)->setText(tr("保存"));
+        buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
+    }
     buttons->button(QDialogButtonBox::Ok)->setObjectName(QStringLiteral("motionApplyButton"));
     connect(buttons, &QDialogButtonBox::rejected, this, [this] { closeEditor(); updateParameters(); });
     connect(buttons, &QDialogButtonBox::accepted, this, [this, document, row, fields, parts, collection, id, panel, picker]() mutable {
@@ -1939,7 +2194,19 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* scroll = new QScrollArea;
     scroll->setObjectName(QStringLiteral("nativeParameterScroll"));
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
-    if (autoFlex || !specialisedFields.isEmpty()) {
+    if (bodyDrive) {
+        scroll->setProperty("mxFitParameterDock", true);
+        for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
+            surface->setProperty("mxSurface", true);
+            surface->setAttribute(Qt::WA_StyledBackground);
+        }
+        for (auto* combo : panel->findChildren<QComboBox*>()) {
+            combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            combo->setMinimumContentsLength(8);
+            combo->setMinimumWidth(0);
+            combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        }
+    } else if (autoFlex || !specialisedFields.isEmpty()) {
         // Keep the ordinary form-label layout, wrapping only rows that do not
         // fit. Material/body names must not widen the complete parameter dock.
         for (auto* layout : panel->findChildren<QFormLayout*>()) layout->setRowWrapPolicy(QFormLayout::WrapLongRows);

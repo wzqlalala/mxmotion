@@ -2,6 +2,7 @@
 #include "NativeMotionExchange.h"
 #include "NativeTopologyBinding.h"
 #include "CadDocument.h"
+#include "VerifiedStepCache.h"
 
 #include <BRepGProp.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
@@ -27,6 +28,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTextStream>
 
@@ -176,6 +178,21 @@ void geometryExchange(const QTemporaryDir& temp)
     require(packed.entity("joints", 71).value("occCurveEdges").toArray().first().toObject().value("partId").toInt() == first
         && packed.entity("joints", 72).value("occSurfaceFaces").toArray().first().toObject().value("partId").toInt() == second,
         "Relocated STEP lost the proven edge or face identity");
+
+    CadDocument fromDisk;
+    require(VerifiedStepCache::hasEntry(hash) && VerifiedStepCache::read(hash, fromDisk)
+        && fromDisk.parts().size() == 2 && fromDisk.parts().front().id == 1
+        && fromDisk.parts().front().display.vertices == restored.part(first)->display.vertices
+        && fromDisk.parts().front().display.triangles == restored.part(first)->display.triangles,
+        "Disk cache lost pre-binding part IDs or changed the display mesh");
+    const auto cachedShape = fromDisk.parts().front().shape;
+    const QDir cacheDirectory(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+    QFile cachedStep(cacheDirectory.filePath("cad/verified-step.bin"));
+    require(cachedStep.open(QIODevice::Append) && cachedStep.write("!") == 1, "Could not corrupt the cache fixture");
+    cachedStep.close();
+    require(!VerifiedStepCache::read(hash, fromDisk) && fromDisk.parts().front().shape.IsEqual(cachedShape),
+        "Corrupt disk cache replaced valid CAD");
+    require(cachedStep.remove(), "Could not remove the corrupt cache fixture");
 
     NativeMotionDocument legacy;
     auto known = body(0, {91}, source.parts()[1]);
@@ -331,6 +348,8 @@ void sourceFrameBindings(const QTemporaryDir& temp)
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    QStandardPaths::setTestModeEnabled(true);
+    app.setApplicationName(QStringLiteral("MxMotionNativeDocumentSmoke-%1").arg(app.applicationPid()));
     QTextStream output(stdout), errors(stderr);
     try {
         QString error;

@@ -39,7 +39,8 @@ PickDataType pickType(mxr::SelectionInfoType type) {
 }
 namespace mxr {
 void mSymbolController::UpdateAllSymbol() {
-    if(!viewport_)return;
+    auto* viewport = context_ ? context_->viewport() : nullptr;
+    if(!viewport)return;
     QVector<MotionOcc::MotionSymbol> output;
     for(const auto& data:symbols_) {
         if(!data || !data->_showState || data->_vexter.isEmpty())continue;
@@ -70,7 +71,7 @@ void mSymbolController::UpdateAllSymbol() {
         }
         output.append(symbol);
     }
-    viewport_->setAuxiliaryMotionSymbols(QStringLiteral("original:%1").arg(quintptr(this)),output);
+    viewport->setAuxiliaryMotionSymbols(QStringLiteral("original:%1").arg(quintptr(this)),output);
 }
 LegacyHighLightRender::~LegacyHighLightRender() { if(context_)context_->clearHighlightLayer("original:"+key_); }
 void LegacyHighLightRender::updateHighLightRender(const mGeoSelectData* value,HighStyle) {
@@ -129,16 +130,18 @@ void LegacyCommonShapeRender::appendCylinder(const QString& key,const QVector3D&
     }
 }
 LegacyCameraController::State LegacyCameraController::getCameraState() const {
-    if(!view_)return {};
-    const auto state=view_->queryCameraState();
+    const auto* view = context_ ? context_->viewport() : nullptr;
+    if(!view)return {};
+    const auto state=view->queryCameraState();
     return {{state.eye.x(),state.eye.y(),state.eye.z()},
             {state.target.x(),state.target.y(),state.target.z()},
             {state.up.x(),state.up.y(),state.up.z()},state.ortho_zoom};
 }
 CCSMRendWidget::CCSMRendWidget(MotionOcc::LegacyPickContext* context,mMeshData* mesh,QObject* parent)
-    :QObject(parent),context_(context),selection_(this),highlight_(context),symbols_(context->viewport()),common_(context,&symbols_),geoParts_(context->document()),model_{mesh,&geoParts_},camera_(context->viewport()) {
+    :QObject(parent),context_(context),selection_(this),highlight_(context),symbols_(context),common_(context,&symbols_),geoParts_(context->document()),model_{mesh,&geoParts_},camera_(context) {
     selection_.symbols.changed=[this] { symbols_.setSelectedSymbols(selection_.symbols.values); };
-    partPicker_=MechMainWindow::mGeneralPickUp::createDirectionPickWidgetPickMore(MechMainWindow::CBRed,context->viewport());
+    auto* owner = qobject_cast<QWidget*>(context->parent());
+    partPicker_=MechMainWindow::mGeneralPickUp::createDirectionPickWidgetPickMore(MechMainWindow::CBRed,owner ? owner : context->viewport());
     partPicker_->widget()->hide();partPicker_->setContext(context);
     partPicker_->setAllowedTypes([] { return QSet<PickDataType>{PickDataType::Part}; });
     connect(partPicker_,&MechMainWindow::mPickWidgetController::dataChanged,this,[this] {

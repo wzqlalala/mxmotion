@@ -184,18 +184,20 @@ void NativeMotionSystem::CustomEndOfStep()
     // can accumulate a larger error than its end tolerance and trigger an
     // artificial ~1e-12 s final dynamics step. Normalize accepted times before
     // PID, position projection, and recording, never after simulating that step.
+    bool timeAdjusted = true;
     if(acceptedStepSize>0){
         const double exact=std::min(acceptedEndTime,(++acceptedStepIndex)*acceptedStepSize);
         const double current=GetMotionTime();
         const double tolerance=256*std::numeric_limits<double>::epsilon()*std::max({1.0,std::abs(current),std::abs(exact)});
         if(!std::isfinite(current)||std::abs(current-exact)>tolerance)
             throw std::runtime_error("积分器没有推进到请求的输出时刻，已中止以免记录错误时间轴。");
+        timeAdjusted = current != exact;
         SetMotionTime(exact);
         GetTimestepper()->SetTime(exact);
     }
     const double time=GetMotionTime();
     if(validateFlexState)validateFlexState(time);
-    if(projectPositions)projectAcceptedPositions();
+    if(projectPositions)projectAcceptedPositions(timeAdjusted);
     if(acceptedStepSize>0)rejectNativeGeometryBoundary(*this);
     validateNativeAcceptedConstraints(*this);
     if(captureFlexState)captureFlexState(time);

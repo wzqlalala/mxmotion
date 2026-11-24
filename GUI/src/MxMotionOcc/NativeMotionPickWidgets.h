@@ -24,11 +24,12 @@ public:
                const std::set<int>& allowedParts, const QVector<PickResult>& initial,
                Changed changed, std::function<void()> cancelled = {});
     void finish(bool cancel = false);
-    void decorateVector(QFormLayout*, QGroupBox*, const QString& key, const QString& path);
+    QWidget* decorateVector(QFormLayout*, QGroupBox*, const QString& key, const QString& path);
     QVector<PickResult> saved(const QString& key) const;
     QJsonObject references() const { return m_references; }
 
 private:
+    void connectViewport(OccViewport* viewport);
     bool ownsSession() const;
     void record(const QString&, const QVector<PickResult>&);
     QPointer<OccViewport> m_viewport;

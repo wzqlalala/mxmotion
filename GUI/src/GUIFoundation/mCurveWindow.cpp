@@ -241,13 +241,25 @@ namespace MechMainWindow
 
     /* 单例实例指针 */
     mCurveWindow* mCurveWindow::_instance = nullptr;
+    QPointer<mCurveWindow> mCurveWindow::_activeProjectWindow;
 
     /*================== 单例获取 ==================*/
     mCurveWindow* mCurveWindow::getInstance()
     {
+        if (_activeProjectWindow) return _activeProjectWindow;
         if (!_instance)
             _instance = new mCurveWindow();
         return _instance;
+    }
+
+    mCurveWindow* mCurveWindow::createForProject(QWidget* owner)
+    {
+        return new mCurveWindow(owner);
+    }
+
+    void mCurveWindow::setActiveProjectWindow(mCurveWindow* window)
+    {
+        _activeProjectWindow = window;
     }
 
     mPlotView* mCurveWindow::getPlotView()
@@ -368,7 +380,8 @@ namespace MechMainWindow
 
         /* 曲线页"曲线样式"按钮（发送方为PostCurve模块的mCurveMenuContributor，经全局信号总线解耦） */
         connect(MechCommon::mMechGlobalSignals::getInstance(), &MechCommon::mMechGlobalSignals::clickCurveStyleSig, this, [this]() {
-            getPlotView()->getPlotViewStyleWidget()->show();
+            if (this == (_activeProjectWindow ? _activeProjectWindow.data() : _instance))
+                getPlotView()->getPlotViewStyleWidget()->show();
             });
 
         QFont font(MxFunctions::UiMetrics::uiFontFamily(), 10);   // 第二参数是点阵大小

@@ -1,16 +1,16 @@
 #include "MotionWindow.h"
+#include "MotionWorkspace.h"
+#include "MotionViewPages.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "compat/picking/LegacyPickContext.h"
 #include "NativeMotionSymbols.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
-#include "OriginalSelection.h"
 #include "RigidProject.h"
 
 #include "ThemeManager.h"
 #include "UiMetrics.h"
 #include "UiPalette.h"
-#include "ViewportWidget.h"
 #include "mFloatingDockFrameless.h"
 #include "mFramelessDialog.h"
 #include "mFramelessWindowHelper.h"
@@ -36,6 +36,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -55,6 +56,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QtConcurrentRun>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -70,7 +72,7 @@ constexpr int partRole = Qt::UserRole;
 constexpr int nodeKindRole = Qt::UserRole + 1;
 const auto cadFilters = QStringLiteral("CAD 几何 (*.step *.stp *.iges *.igs *.brep *.brp);;STEP (*.step *.stp);;IGES (*.iges *.igs);;BREP (*.brep *.brp)");
 const auto exportFilters = QStringLiteral("STEP (*.step);;IGES (*.iges);;BREP (*.brep)");
-const auto projectFilter = QStringLiteral("MxMotion 刚体项目 (*.mxmotion)");
+const auto projectFilter = QStringLiteral("MxMotion 项目 (*.mxmotion)");
 
 ModelNode treeNode(const QTreeWidgetItem* item)
 {
@@ -111,8 +113,12 @@ QDoubleSpinBox* dimension(QWidget* parent, double value)
 }
 }
 
-MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
+MotionWindow::MotionWindow(QWidget* parent) : MotionWindow(parent, nullptr, 1) {}
+
+MotionWindow::MotionWindow(QWidget* parent, MotionWorkspace* workspace, int modelNumber)
+    : QMainWindow(parent), m_modelNumber(modelNumber), m_workspace(workspace), m_projectActive(!workspace)
 {
+    if (m_workspace) setWindowFlags(Qt::Widget);
     setObjectName(QStringLiteral("mMechMainWindow"));
     setWindowTitle(QStringLiteral("MxSim.Motion V1.0"));
     setWindowIcon(icon(QStringLiteral("logo.png")));
@@ -121,7 +127,12 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
         initialSize = initialSize.boundedTo(screen->availableGeometry().size());
     resize(initialSize);
     setMinimumSize(870, 520);
-    MechMainWindow::FramelessWindowHelper::installFrameless(this);
+    if (!m_workspace) MechMainWindow::FramelessWindowHelper::installFrameless(this);
+    if (m_workspace) m_viewManager = m_workspace->m_viewManager.get();
+    else {
+        m_ownedViewManager = std::make_unique<MotionViewPages>(nullptr, this);
+        m_viewManager = m_ownedViewManager.get();
+    }
     createCommands();
     createRigidCommands();
     createWorkspace();
@@ -135,14 +146,16 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
     auto* layout = new QVBoxLayout(wrapper);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    auto* title = new MechMainWindow::mWindowTitleBar(this);
-    title->setSeparatorVisible(false);
-    layout->addWidget(title);
+    if (!m_workspace) {
+        auto* title = new MechMainWindow::mWindowTitleBar(this);
+        title->setSeparatorVisible(false);
+        layout->addWidget(title);
+    }
     auto* ribbon = createMotionRibbon(*this, wrapper);
     layout->addWidget(ribbon);
     setMenuWidget(wrapper);
     ThemeManager::registerDockThemeApplier([] {
-        for (auto* widget : QApplication::topLevelWidgets())
+        for (auto* widget : QApplication::allWidgets())
             if (auto* window = qobject_cast<MotionWindow*>(widget)) window->applyDockTheme();
     });
     ThemeManager::instance()->applyAll(ribbon);
@@ -170,13 +183,12 @@ MotionWindow::MotionWindow(QWidget* parent) : QMainWindow(parent)
     setNotice(tr("就绪 · OCC / Netgen / MotionEngine / Qwt"));
     QTimer::singleShot(0, this, [this] {
         resetLayout(false);
-        m_viewport->fitAll();
+        if (m_viewport) m_viewport->fitAll();
     });
 }
 
 MotionWindow::~MotionWindow()
 {
-    ThemeManager::registerDockThemeApplier({});
     if (m_running) m_running->stop.store(true, std::memory_order_relaxed);
     if (m_solverThread.joinable()) m_solverThread.join();
     if (m_worker && m_worker->state() != QProcess::NotRunning) {
@@ -186,16 +198,17 @@ MotionWindow::~MotionWindow()
     }
     // Original editors retain pointers into the typed model and callbacks
     // into the viewport. Release them while both services still exist.
-    closeEditor();
+    closeEditor(true);
     if(m_original) {
         m_original->disconnect(this);
         m_original.reset();
     }
+    if (m_viewManager) m_viewManager->removeProject(*this);
 }
 
 bool MotionWindow::nativeEvent(const QByteArray& eventType, void* message, long* result)
 {
-    return MechMainWindow::FramelessWindowHelper::handleNativeEvent(this, message, result)
+    return (!m_workspace && MechMainWindow::FramelessWindowHelper::handleNativeEvent(this, message, result))
         || QMainWindow::nativeEvent(eventType, message, result);
 }
 
@@ -221,6 +234,7 @@ void MotionWindow::createCommands()
         m_commands.emplace(id, action);
         if (!shortcut.isEmpty()) {
             action->setShortcut(shortcut);
+            if (m_workspace) action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
             addAction(action);
         }
         connect(action, &QAction::triggered, this, fn);
@@ -229,7 +243,10 @@ void MotionWindow::createCommands()
     const auto home = QStringLiteral("homepage/");
     const auto geo = QStringLiteral("geometry/");
     const auto view = QStringLiteral("CenterMainWindow/");
-    add(Command::New, tr("新建"), home + "xinjian3x.png", [this] { newModel(); }, QKeySequence::New);
+    add(Command::New, tr("新建"), home + "xinjian3x.png", [this] {
+        if (m_workspace) m_workspace->newProject();
+        else newModel();
+    }, QKeySequence::New);
     add(Command::Open, tr("打开"), home + "dakai3x.png", [this] { openCadDialog(false); }, QKeySequence::Open);
     add(Command::Save, tr("保存"), home + "baocun3x.png", [this] { saveProject(false); }, QKeySequence::Save);
     add(Command::SaveAs, tr("另存为"), home + "lingcunwei3x.png", [this] { saveProject(true); }, QKeySequence::SaveAs);
@@ -243,7 +260,7 @@ void MotionWindow::createCommands()
         m_meshes.erase(m_partId);
         m_hidden.erase(m_partId);
         m_partId = -1;
-        m_modified = true;
+        setProjectModified(true);
         updateTree();
         syncViewport();
         selectPart(-1);
@@ -350,7 +367,7 @@ void MotionWindow::createCommands()
                "支持几何文件、基础体和有限元网格。\n"
                "刚体求解使用 MotionEngine，结果绘图使用 Qwt。不包含 CGM、原版 .mxcae、柔性体或接触。"));
     });
-    add(Command::Exit, tr("退出"), "close3x.png", [this] { close(); }, QKeySequence::Quit);
+    add(Command::Exit, tr("退出"), "close3x.png", [this] { window()->close(); }, QKeySequence::Quit);
 }
 
 void MotionWindow::createWorkspace()
@@ -365,16 +382,7 @@ void MotionWindow::createWorkspace()
     center->setWidget(createViewportFrame());
     m_docks->setCentralWidget(center);
 
-    auto* views = new QTreeWidget;
-    views->setHeaderHidden(true);
-    views->setIndentation(14);
-    auto* viewRoot = new QTreeWidgetItem(views, { tr("视图页 1") });
-    auto* viewItem = new QTreeWidgetItem(viewRoot, { tr("前处理") });
-    viewItem->setIcon(0, icon(QStringLiteral("viewport/1.svg")));
-    views->expandAll();
-    connect(views, &QTreeWidget::itemDoubleClicked, this, [this] { m_viewport->fitAll(); });
-
-    auto* viewDock = addPane("ViewTree", tr("视图"), views);
+    auto* viewDock = addPane("ViewTree", tr("视图"), createViewPageTree());
     m_modelDock = addPane("Tree", tr("模型"), createModelBrowser());
     m_parameterDock = addPane("Info", tr("参数"), createParameterPage());
     // Same Info-dock sizing rule as the uploaded mDockLayoutManager. A 225 px
@@ -453,7 +461,7 @@ void MotionWindow::resetLayout(bool resetVisibility)
 {
     if (resetVisibility) m_docks->restoreState(m_defaultLayout);
     if (auto* treeArea = m_modelDock->dockAreaWidget()) {
-        treeArea->setCurrentDockWidget(m_modelDock);
+        if (resetVisibility) treeArea->setCurrentDockWidget(m_modelDock);
         const auto sizes = m_docks->splitterSizes(treeArea);
         if (sizes.size() == 3) {
             const int suggested = 12 * UiMetrics::baseH()
@@ -588,30 +596,10 @@ QWidget* MotionWindow::createViewportFrame()
     auto* viewDisplay = new QToolBar(tr("视图显示栏"), frame);
     viewDisplay->setObjectName(QStringLiteral("viewDisplayBar"));
     viewDisplay->setIconSize(QSize(20, 20));
-    auto* page = new QComboBox(viewDisplay);
-    page->addItem(tr("视图页 1"));
-    page->setMinimumWidth(105);
-    viewDisplay->addWidget(page);
-    auto* oneView = viewDisplay->addAction(icon(QStringLiteral("viewport/1.svg")), tr("单视图"));
-    oneView->setCheckable(true);
-    oneView->setChecked(true);
-    connect(oneView, &QAction::triggered, this, [oneView] { oneView->setChecked(true); });
-    viewDisplay->addWidget(new QLabel(QStringLiteral("1/1"), viewDisplay));
     toolRow->addWidget(viewDisplay);
     layout->addLayout(toolRow);
 
-    m_viewport = new OccViewport;
-    m_viewport->setObjectName(QStringLiteral("occViewport"));
-    m_viewport->setToolTip(m_viewport->mouseNavigationHint());
-    auto* viewportFrame = new MechMainWindow::ViewportWidget(1, m_viewport, frame);
-    viewportFrame->setTitle(tr("前处理"));
-    viewportFrame->setState(MechMainWindow::ViewportWidget::State::Maximized);
-    layout->addWidget(viewportFrame, 1);
-
-    connect(m_viewport, &OccViewport::partPicked, this, &MotionWindow::selectPart);
-    connect(m_viewport, &OccViewport::viewportSelectionChanged, this, &MotionWindow::updateSelectionInfo);
-    connect(m_viewport, &OccViewport::pickSelectionChanged, this, &MotionWindow::updateSelectionInfo);
-    connect(m_viewport, &OccViewport::pickSessionChanged, this, [this, pickModes, pickButton, viewportFilter, showMode](bool active) {
+    m_refreshViewportPickControls = [this, pickModes, pickButton, viewportFilter, showMode](bool active) {
         const auto* field = LegacyPickContext::activeForViewport(*m_viewport);
         const auto allowed = field ? field->allowedTypes() : QSet<PickType>{};
         for (auto* action : pickModes->actions()) {
@@ -624,10 +612,8 @@ QWidget* MotionWindow::createViewportFrame()
         }
         pickButton->setToolTip(field ? tr("切换当前参数支持的拾取模式") : active ? tr("当前拾取使用固定类型") : tr("切换视口拾取模式"));
         updateSelectionInfo();
-    });
-    connect(m_viewport, &OccViewport::graphicsError, this, [this](const QString& error) {
-        setNotice(tr("OpenGL：%1").arg(error), true);
-    });
+    };
+    layout->addWidget(createViewPages(viewDisplay, frame), 1);
     return frame;
 }
 
@@ -810,12 +796,15 @@ void MotionWindow::updateTree()
     const std::vector<std::pair<QString, QString>> groups = {
         {"parts", tr("部件")}, {"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")},
+        {"bodyDrives", tr("运动体驱动")},
         {"springs", tr("弹簧")}, {"forceElements", tr("力元")}, {"sensors", tr("传感器")},
         {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")},
         {"controlInputs", tr("控制输入")}
     };
     std::map<QString, QTreeWidgetItem*> groupItems;
     for (const auto& entry : groups) {
+        if (entry.first == "bodyDrives" && (!m_model.nativeDocument
+            || m_model.nativeDocument->collection(entry.first).isEmpty())) continue;
         auto* group = new QTreeWidgetItem(root, { entry.second });
         groupItems.emplace(entry.second, group);
         group->setIcon(0, TreeIcons::item(entry.first));
@@ -886,6 +875,8 @@ QString MotionWindow::partSummary() const
     const auto* part = m_document.part(m_partId);
     QString summary = part ? tr("部件编号：%1\n几何状态：%2").arg(part->id).arg(m_hidden.count(m_partId) ? tr("隐藏") : tr("显示"))
                            : tr("尚未选择部件。");
+    if (part && !part->metreDisplaySource.IsNull())
+        summary += tr("\n毫米拓扑未通过校验，按米制几何显示。");
     const auto mesh = m_meshes.find(m_partId);
     if (mesh != m_meshes.end()) {
         summary += tr("\n节点：%1\n三角面：%2\n四面体：%3")
@@ -908,15 +899,67 @@ void MotionWindow::updateParameters()
 
 void MotionWindow::updateSelectionInfo()
 {
-    if (!m_selection || !m_selectionDetails) return;
+    if (!m_viewport || !m_selection || !m_selectionDetails) return;
+    ++m_selectionInfoRevision;
+    m_pendingPartSelection.clear();
     const bool picking = m_viewport->isPicking();
     auto picks = picking ? m_viewport->pickSelection() : m_viewport->viewportSelection();
     if (picks.isEmpty() && !picking && m_document.part(m_partId)) {
-        PickResult part;
-        part.partId = m_partId;
-        picks.append(part);
+        PickResult pick;
+        pick.partId = m_partId;
+        picks.append(pick);
     }
-    const auto info = describeSelection(m_document, m_meshes, picks);
+    if (!picks.isEmpty() && std::all_of(picks.cbegin(), picks.cend(), [](const PickResult& pick) {
+        return pick.kind == PickKind::Part;
+    })) {
+        // 先更新选中状态。体积和质心用当前部件的精确几何在后台计算。
+        m_pendingPartSelection.reserve(picks.size());
+        for (const auto& pick : std::as_const(picks)) {
+            SelectedPartGeometry selected;
+            selected.position = pick.position;
+            if (const auto* part = m_document.part(pick.partId)) {
+                selected.name = part->name;
+                selected.shape = part->metreDisplaySource.IsNull() ? part->shape : part->metreDisplaySource;
+                selected.millimetresPerUnit = part->metreDisplaySource.IsNull() ? 1.0 : 1000.0;
+                const auto mesh = m_meshes.find(pick.partId);
+                selected.meshCounts = mesh == m_meshes.end() ? QStringList{QStringLiteral("0"), QStringLiteral("0")}
+                    : QStringList{QString::number(mesh->second.nodes.size()),
+                        QString::number(mesh->second.tetrahedra.empty() ? mesh->second.surface.size() : mesh->second.tetrahedra.size())};
+            }
+            m_pendingPartSelection.append(std::move(selected));
+        }
+        auto status = tr("%1 部件").arg(picks.size());
+        if (picks.size() == 1 && !m_pendingPartSelection.front().name.isEmpty())
+            status += tr(" · %1").arg(m_pendingPartSelection.front().name);
+        showSelectionInfo({status, {}, {}});
+        startPartSelectionMeasurement();
+        return;
+    }
+    showSelectionInfo(describeSelection(m_document, m_meshes, picks));
+}
+
+void MotionWindow::startPartSelectionMeasurement()
+{
+    if (m_partSelectionWorker || m_pendingPartSelection.isEmpty()) return;
+    QVector<SelectedPartGeometry> request;
+    request.swap(m_pendingPartSelection);
+    const auto revision = m_selectionInfoRevision;
+    auto* watcher = new QFutureWatcher<SelectionInfo>(this);
+    m_partSelectionWorker = watcher;
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, revision] {
+        m_partSelectionWorker = nullptr;
+        watcher->deleteLater();
+        // 快速连续选中时仅计算最新的候选，旧结果不能覆盖当前部件。
+        if (revision == m_selectionInfoRevision) showSelectionInfo(watcher->result());
+        startPartSelectionMeasurement();
+    });
+    watcher->setFuture(QtConcurrent::run([request = std::move(request)] {
+        return describePartSelection(request);
+    }));
+}
+
+void MotionWindow::showSelectionInfo(const SelectionInfo& info)
+{
     const auto status = tr("选择：%1").arg(info.status);
     const auto label = m_selection->fontMetrics().elidedText(status, Qt::ElideRight, qMax(120, width() / 4));
     m_selection->setText(QStringLiteral("<a href='selection' style='color:%2;text-decoration:none'>%1</a>")
@@ -965,14 +1008,18 @@ void MotionWindow::updateActions()
     m_meshGenerateButton->setEnabled(hasPart && !busy);
     m_meshKind->setEnabled(!busy);
     m_meshSize->setEnabled(!busy);
-    for (const auto id : { Command::New, Command::Open, Command::Import, Command::Box, Command::Cylinder, Command::Sphere })
+    for (const auto id : { Command::New, Command::Open }) command(id)->setEnabled(m_workspace || !busy);
+    for (const auto id : { Command::Import, Command::Box, Command::Cylinder, Command::Sphere })
         command(id)->setEnabled(!busy);
     updateRigidActions();
 }
 
-void MotionWindow::syncViewport(bool fit)
+void MotionWindow::syncViewport(bool fit, const std::shared_ptr<const PreparedCadScene>& prepared,
+                               const std::vector<int>& preparedPartIds)
 {
-    m_viewport->setScene(m_document, m_meshes, m_hidden);
+    m_viewport->setScene(m_document, m_meshes, m_hidden, prepared, preparedPartIds);
+    // 场景数据刷新时才同步拾取拓扑和有限元节点编号。
+    if (m_original) m_original->refreshMeshes();
     m_viewport->setMotionSymbols(m_model.nativeDocument
         ? nativeMotionSymbols(m_document,*m_model.nativeDocument,{},m_selectionNode.collection,m_selectionNode.id) : QVector<MotionSymbol>{});
     m_viewport->selectPart(m_partId);
@@ -1017,7 +1064,10 @@ void MotionWindow::showPartMenu(const QPoint& position)
         return;
     }
     mUiMenu menu(this);
-    if (item == m_partsItem) {
+    QAction* removeModel = nullptr;
+    if (!item->parent() && m_workspace) {
+        removeModel = menu.addAction(icon(QStringLiteral("BrowserTree/shanchu.png")), tr("删除模型"));
+    } else if (item == m_partsItem) {
         menu.addAction(command(Command::Import));
         auto* exportAll = menu.addAction(command(Command::Export)->icon(), tr("导出全部部件"));
         exportAll->setEnabled(!m_document.parts().empty());
@@ -1044,7 +1094,8 @@ void MotionWindow::showPartMenu(const QPoint& position)
         menu.addAction(command(Command::ExportMesh));
     } else return;
     ThemeManager::applyMenuStyle(&menu);
-    menu.exec(m_tree->viewport()->mapToGlobal(position));
+    if (auto* selected = menu.exec(m_tree->viewport()->mapToGlobal(position)); selected && selected == removeModel)
+        m_workspace->closeProject(*this);
 }
 
 void MotionWindow::setNotice(const QString& message, bool error)
@@ -1057,47 +1108,120 @@ void MotionWindow::setNotice(const QString& message, bool error)
 
 bool MotionWindow::importCad(const QString& path)
 {
-    if (motionBusy()) return false;
+    if (motionBusy() || m_jobPart >= 0) return false;
     std::vector<int> ids;
     QString error;
     if (!m_document.importFile(path, ids, error)) {
         setNotice(error, true);
         return false;
     }
-    m_modified = true;
+    showImportedCad(path, ids, false);
+    return true;
+}
+
+bool MotionWindow::runGeometryImport(const QString& path, std::function<void()> prepare,
+                                     std::function<void(const QString&)> finish)
+{
+    if (motionBusy() || m_jobPart >= 0) {
+        setNotice(tr("当前项目有任务正在运行，请等待完成后再导入。"), true);
+        return false;
+    }
+    closeEditor();
+    m_importingGeometry = true;
+    m_progress->setRange(0, 0);
+    m_progress->show();
+    setNotice(tr("正在后台导入 %1…").arg(QFileInfo(path).fileName()));
+    updateActions();
+    auto* watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, finish = std::move(finish)] {
+        const auto error = watcher->result();
+        watcher->deleteLater();
+        m_importingGeometry = false;
+        m_progress->hide();
+        updateActions();
+        finish(error);
+    });
+    watcher->setFuture(QtConcurrent::run([prepare = std::move(prepare)]() -> QString {
+        try {
+            prepare();
+            return {};
+        } catch (const std::exception& failure) {
+            return QObject::tr("后台导入失败：%1").arg(QString::fromUtf8(failure.what()));
+        } catch (...) {
+            return QObject::tr("后台导入失败。");
+        }
+    }));
+    return true;
+}
+
+bool MotionWindow::startCadImport(const QString& path, bool replace, std::function<void(bool)> finished)
+{
+    if (replace && !confirmReplace()) return false;
+    struct Import {
+        CadDocument cad;
+        std::vector<int> ids;
+        QString error;
+        std::shared_ptr<const PreparedCadScene> scene;
+    };
+    auto result = std::make_shared<Import>();
+    return runGeometryImport(path, [path, result] {
+        if (result->cad.importFile(path, result->ids, result->error))
+            result->scene = OccViewport::prepareCadScene(result->cad);
+    }, [this, path, replace, finished = std::move(finished), result](const QString& failure) {
+        auto error = failure.isEmpty() ? result->error : failure;
+        bool success = error.isEmpty();
+        if (success && replace) replaceWithCad(std::move(result->cad));
+        else if (success) success = m_document.appendImported(std::move(result->cad), path, result->ids, error);
+        if (success) showImportedCad(path, result->ids, replace, result->scene);
+        else setNotice(error, true);
+        if (finished) finished(success);
+        emit geometryImportFinished(success);
+    });
+}
+
+void MotionWindow::showImportedCad(const QString& path, const std::vector<int>& ids, bool replace,
+                                   const std::shared_ptr<const PreparedCadScene>& prepared)
+{
+    setProjectModified(!replace);
     m_partId = ids.front();
     updateTree();
-    syncViewport(true);
+    syncViewport(true, prepared, ids);
     selectPart(m_partId);
     for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
-    setNotice(tr("已导入 %1 · %2 个部件").arg(QFileInfo(path).fileName()).arg(ids.size())
+    setNotice((replace ? tr("已打开 %1 · %2 个部件") : tr("已导入 %1 · %2 个部件"))
+        .arg(QFileInfo(path).fileName()).arg(ids.size())
         + (m_document.importNotes().isEmpty() ? QString{} : tr(" · %1 条导入说明").arg(m_document.importNotes().size())));
-    return true;
 }
 
 void MotionWindow::openCadDialog(bool addToModel)
 {
     const auto path = QFileDialog::getOpenFileName(this, addToModel ? tr("导入几何模型") : tr("打开项目或 CAD 几何"), {},
-        addToModel ? cadFilters : projectFilter + QStringLiteral(";;") + cadFilters);
+        addToModel ? cadFilters : projectFilter + QStringLiteral(";;运动数据 (*.json);;") + cadFilters);
     if (path.isEmpty()) return;
     if (addToModel) {
-        importCad(path);
+        startCadImport(path);
         return;
     }
-    if (QFileInfo(path).suffix().compare(QStringLiteral("mxmotion"), Qt::CaseInsensitive) == 0) {
-        openRigidProject(path);
+    if (m_workspace) {
+        m_workspace->openProject(path);
         return;
     }
-    if (!confirmReplace()) return;
-    CadDocument next;
-    QString error;
-    std::vector<int> ids;
-    if (!next.importFile(path, ids, error)) {
-        setNotice(error, true);
-        return;
-    }
+    openWorkspaceFile(path);
+}
+
+bool MotionWindow::openWorkspaceFile(const QString& path)
+{
+    const auto suffix = QFileInfo(path).suffix();
+    if (suffix.compare(QStringLiteral("mxmotion"), Qt::CaseInsensitive) == 0) return openRigidProject(path);
+    if (suffix.compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0) return startMotionJsonImport(path);
+    return startCadImport(path, true);
+}
+
+void MotionWindow::replaceWithCad(CadDocument&& next)
+{
     closeEditor();
     clearResults();
+    m_original.reset();
     m_model = {};
     m_selectionNode = {};
     m_document = std::move(next);
@@ -1106,12 +1230,6 @@ void MotionWindow::openCadDialog(bool addToModel)
     m_meshForm->hide();
     command(Command::ShadedEdges)->trigger();
     m_projectPath.clear();
-    m_modified = false;
-    m_partId = ids.front();
-    updateTree();
-    syncViewport(true);
-    selectPart(m_partId);
-    setNotice(tr("已打开 %1 · %2 个部件").arg(QFileInfo(path).fileName()).arg(ids.size()));
 }
 
 void MotionWindow::saveCad(bool all)
@@ -1147,6 +1265,61 @@ bool MotionWindow::confirmReplace()
         QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Discard;
 }
 
+bool MotionWindow::confirmProjectClose(bool deletingModel)
+{
+    if (motionBusy() || m_jobPart >= 0) {
+        setNotice(tr("当前项目正在运行任务。请等待任务结束，或停止任务后关闭。"), true);
+        return false;
+    }
+    if (m_original) m_original->flush();
+    const auto name = m_projectPath.isEmpty() ? tr("多体动力学-%1").arg(m_modelNumber) : QFileInfo(m_projectPath).fileName();
+    if (!m_modified) {
+        return !deletingModel || QMessageBox::question(window(), tr("删除模型"), tr("确定要删除模型“%1”吗？").arg(name),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+    }
+    const auto message = deletingModel ? tr("删除“%1”前，是否保存更改？").arg(name) : tr("是否保存“%1”的更改？").arg(name);
+    const auto choice = QMessageBox::question(window(), tr("未保存的项目"), message,
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    return choice == QMessageBox::Discard || (choice == QMessageBox::Save && saveProject(false));
+}
+
+void MotionWindow::setProjectModified(bool modified)
+{
+    m_modified = modified;
+    emit projectInfoChanged();
+}
+
+void MotionWindow::setProjectActive(bool active)
+{
+    if (m_projectActive == active) return;
+    m_projectActive = active;
+    if (!active) {
+        m_restoreProjectEditor = m_editor && m_editor->property("mxOriginalMotionPanel").toBool()
+            && m_selectionNode.kind != ModelNode::None && m_selectionNode.kind != ModelNode::Part
+            && m_selectionNode.collection != QLatin1String("importedMnfBodies");
+        for (auto* inspector : findChildren<QDialog*>(QStringLiteral("nativeModeInspector"))) inspector->close();
+        setPlayback(false);
+        closeEditor(true);
+        if (m_original) {
+            m_original->flush();
+            m_original->disconnect(this);
+            m_original.reset();
+        }
+        for (auto* picks : findChildren<LegacyPickContext*>(QString(), Qt::FindDirectChildrenOnly)) delete picks;
+        deactivateOriginalCurveHost();
+        m_docks->hideManagerAndFloatingWidgets();
+        return;
+    }
+    if (m_projectCurveWindow) ensureOriginalCurveHost();
+    if (m_running && !m_rigidPoll->isActive()) m_rigidPoll->start();
+    if (m_restoreProjectEditor) {
+        m_restoreProjectEditor = false;
+        restoreProjectEditor();
+    }
+    updateParameters();
+    m_docks->show();
+}
+
 void MotionWindow::newModel()
 {
     if (!confirmReplace()) return;
@@ -1160,7 +1333,7 @@ void MotionWindow::newModel()
     m_meshForm->hide();
     command(Command::ShadedEdges)->trigger();
     m_projectPath.clear();
-    m_modified = false;
+    setProjectModified(false);
     m_partId = -1;
     ++m_modelNumber;
     updateTree();
@@ -1197,7 +1370,7 @@ void MotionWindow::addPrimitive(Primitive primitive)
         setNotice(error, true);
         return;
     }
-    m_modified = true;
+    setProjectModified(true);
     m_partId = id;
     updateTree();
     syncViewport(true);
@@ -1236,7 +1409,12 @@ void MotionWindow::beginMesh()
 
 bool MotionWindow::beginPartMesh(int partId, double elementSize, MeshKind kind)
 {
-    if (!m_document.part(partId) || m_jobPart != -1 || !(elementSize>0)) return false;
+    const auto* part = m_document.part(partId);
+    if (!part || m_jobPart != -1 || !(elementSize>0)) return false;
+    if (!part->metreDisplaySource.IsNull()) {
+        setNotice(tr("零件“%1”的毫米拓扑未通过校验，无法直接生成有限元网格。").arg(part->name), true);
+        return false;
+    }
     auto dir = std::make_unique<QTemporaryDir>(QDir::temp().filePath(QStringLiteral("MxMotionMesh-XXXXXX")));
     if (!dir->isValid()) {
         setNotice(tr("无法创建网格工作目录。"), true);

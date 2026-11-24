@@ -116,6 +116,59 @@ void drivesAndSensors(){
     d=drive("Position","30*t*t");collection(f.doc,"drives",{d});result=f.solve();expectNear(channel(result,"drives",0,"ImposedValue").values.back(),.012,1e-9,"expression position drive");
 }
 
+#if defined(MX_HAS_BODY_DRIVES)
+void bodyDriveDocumentAndResults()
+{
+    Fixture f;
+    auto makeChannel = [](const QString& expression) {
+        return QJsonObject{{"expression", expression}, {"driveTableX", QJsonArray{}}, {"driveTableY", QJsonArray{}}};
+    };
+    QJsonObject drive{{"id", 0}, {"name", "Body drive"}, {"bodyDriveMode", "LinearPosition"},
+        {"targetBodyId", 0}, {"referenceBodyId", -1}, {"origin", xyz(5, 5, 5)}, {"axis", xyz(1, 0, 0)},
+        {"guide", true}, {"channels", QJsonObject{{"X", makeChannel("12*t*t")}}}};
+    collection(f.doc, "bodyDrives", {drive});
+    auto scenario = f.doc.entity("scenarios", 0);
+    scenario["gravity"] = xyz(0, 0, -9810);
+    scenario["integratorType"] = "HHT";
+    collection(f.doc, "scenarios", {scenario});
+    auto result = f.solve();
+    expectNear(channel(result, "bodyDrives", 0, "ImposedValue").values.back(), .0048, 1e-10, "axis target mm");
+    const auto& axisPosition = channel(result, "bodies", 0, "Position").values;
+    expectNear(axisPosition[axisPosition.size() - 3], 5.0048, 1e-7, "axis actual mm");
+    const auto& axisForce = channel(result, "bodyDrives", 0, "ActuationForce").values;
+    expectNear(axisForce[axisForce.size() - 3], .048, .005, "axis force N");
+    expectNear(axisForce.back(), 19.62, .005, "axis upward restraint N");
+
+    QJsonObject poseChannels{{"X", makeChannel("15*t*t")}, {"Y", makeChannel("7*t*t")},
+        {"Z", makeChannel("0")}, {"A", makeChannel("0")}, {"B", makeChannel("0")}, {"C", makeChannel("500*t*t")}};
+    drive["bodyDriveMode"] = "Pose";
+    drive["frameAngles"] = xyz(0, 0, 0);
+    drive["channels"] = poseChannels;
+    collection(f.doc, "bodyDrives", {drive});
+    QTemporaryDir folder;
+    require(folder.isValid(), "body drive save directory");
+    const auto path = folder.filePath("body-drive.motion.json");
+    QString error;
+    const bool saved = writeNativeMotionDocument(path, f.doc, error);
+    require(saved, "body drive save: " + error);
+    NativeMotionDocument restored;
+    const bool loaded = readNativeMotionDocument(path, restored, error);
+    require(loaded, "body drive load: " + error);
+    require(restored.entity("bodyDrives", 0).value("channels").toObject() == poseChannels,
+        "body drive channel definitions were lost during save and load");
+    restored.bodyPartBindings = f.doc.bodyPartBindings;
+    f.doc = std::move(restored);
+    result = f.solve();
+    const auto& posePosition = channel(result, "bodyDrives", 0, "Position").values;
+    expectNear(posePosition[posePosition.size() - 3], 5.006, 1e-7, "pose position X mm");
+    expectNear(posePosition[posePosition.size() - 2], 5.0028, 1e-7, "pose position Y mm");
+    expectNear(channel(result, "bodyDrives", 0, "Rotation").values.back(), .2, 1e-7, "pose angle degrees");
+    const auto& poseForce = channel(result, "bodyDrives", 0, "ActuationForce").values;
+    expectNear(poseForce[poseForce.size() - 3], .060, .005, "pose force N");
+    expectNear(poseForce.back(), 19.62, .005, "pose upward restraint N");
+}
+#endif
+
 void exactAcceptedTimeline(){
     Fixture f;f.scenario(15.0,.001);
     auto source=f.doc.entity("bodies",0);source["initialVelocity"]=xyz(1,0,0);collection(f.doc,"bodies",{source});
@@ -189,7 +242,8 @@ void inertiaConventionsWithCadEvidence(){
 
 void closedLoopProjectionAndConflict(){
     Fixture f;f.scenario(.1,.01);
-    auto scenario=f.doc.entity("scenarios",0);scenario["gravity"]=xyz(0,0,-9810);scenario["usePreset"]=true;scenario["presetMode"]="FAST";collection(f.doc,"scenarios",{scenario});
+    auto scenario=f.doc.entity("scenarios",0);scenario["gravity"]=xyz(0,0,-9810);scenario["usePreset"]=true;scenario["presetMode"]="FAST";
+    scenario["positionAssemblyIterations"]=3;collection(f.doc,"scenarios",{scenario});
     // A small-inertia, redundant six-body ellipsograph reproduces the original
     // case's >1 mm error with only three position iterations per accepted step.
     const double properties[6][7]={
@@ -214,6 +268,8 @@ void closedLoopProjectionAndConflict(){
     addJoint(7,"Revolute",5,0,xyz(0,0,0),xyz(0,0,1));
     collection(f.doc,"joints",joints);collection(f.doc,"drives",{drive("Velocity","57.29577951308232",0,7)});
     const auto result=f.solve();double maxClosure=0;
+    require(result.diagnostics.join('\n').contains("位置投影使用平衡缩放稀疏 QR"),
+        "FAST did not select the bilateral position projection solver");
     for(const auto& frame:result.frames){
         std::map<int,const BodyState*> states;for(const auto& b:frame.bodies)states.emplace(b.bodyId,&b);
         const auto vec=[](const QJsonValue& value){const auto o=value.toObject();return motion::MotionVector<>(o.value("x").toDouble(),o.value("y").toDouble(),o.value("z").toDouble());};
@@ -498,6 +554,10 @@ int main(int argc,char** argv)
 {
     QCoreApplication app(argc,argv);
     try{
+#if defined(MX_HAS_BODY_DRIVES)
+        bodyDriveDocumentAndResults();
+        if (app.arguments().contains("--body-drive")) return 0;
+#endif
         originalCurveRequests();
         pinchedPlanarTessellation();
         drivesAndSensors();exactAcceptedTimeline();inertiaConventionsWithCadEvidence();closedLoopProjectionAndConflict();jointFamilies();forcesAndUnilateral();forceFamilies();pidAndTrajectories();geometryAndContact();curveOnCurveRollingAndSliding();failureAndCancellation();

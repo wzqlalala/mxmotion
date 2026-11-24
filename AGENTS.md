@@ -1,5 +1,10 @@
 # MxMotion 协作约定
 
+## 提交与注释
+
+- Git 提交标题和正文使用中文，允许保留 `fix:`、`feat:` 等约定前缀。
+- 新增或随代码修改更新的注释优先使用中文。代码标识符和标准技术术语沿用项目惯例。
+
 ## 界面与渲染校验
 
 - 默认在后台执行界面、渲染和截图回归。使用 `ctest --test-dir build-desktop -L desktop --output-on-failure` 或对应的 `MxMotion.exe --*-smoke` 入口。

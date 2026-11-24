@@ -32,7 +32,8 @@ namespace MechMotionData {
         ThreePointForce = 13,
         ThreePointTorque = 14,
         AutoFlexBody = 15,
-        NativeChannel = 16
+        NativeChannel = 16,
+        BodyDrive = 17
     };
 
     /**

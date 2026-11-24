@@ -1,5 +1,6 @@
 #include "CadDocument.h"
 #include "NativeMotionDocument.h"
+#include "NativeMotionExchange.h"
 #include "NativeTopologyBinding.h"
 #ifdef MX_NATIVE_SOLVE_CASES
 #include "NativeMotionSolver.h"
@@ -43,9 +44,8 @@ using namespace MotionOcc;
 
 QJsonArray vector(double x, double y, double z) { return {x, y, z}; }
 
-bool saveReport(const QString& path, const QJsonArray& cases, QString& error)
+bool saveJson(const QString& path, const QJsonObject& report, QString& error)
 {
-    QJsonObject report{{"format", "MxMotionNativeCaseReport"}, {"cases", cases}};
     const auto bytes = QJsonDocument(report).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
@@ -59,6 +59,13 @@ QJsonArray geometryReport(const CadDocument& cad)
     QJsonArray parts;
     for (const auto& part : cad.parts()) {
         QJsonObject item{{"id", part.id}, {"name", part.name}, {"sourceName", part.sourceName}, {"instancePath", part.instancePath}};
+        item["displayTriangles"] = static_cast<double>(part.display.triangles.size());
+        item["displayEdges"] = static_cast<double>(part.display.edges.size());
+        item["metreDisplay"] = !part.metreDisplaySource.IsNull();
+        if (!part.metreDisplaySource.IsNull()) {
+            parts.append(item);
+            continue;
+        }
         GProp_GProps props;
         BRepGProp::VolumeProperties(part.shape, props);
         const auto point = props.CentreOfMass();
@@ -119,6 +126,36 @@ QJsonArray bindingReport(const NativeMotionDocument& doc, const QVector<NativeMo
 }
 
 #ifdef MX_NATIVE_SOLVE_CASES
+QJsonArray poseSamples(const RigidResult& result)
+{
+    const auto& frames = result.frames;
+    QJsonArray samples;
+    std::size_t lastSample = 0;
+    const auto append = [&](std::size_t index) {
+        const auto& frame = frames[index];
+        QJsonArray bodies;
+        for (const auto& body : frame.bodies) {
+            const auto& center = body.positionMm;
+            const auto& rotation = body.rotation;
+            bodies.append(QJsonObject{{"source_body_id", body.bodyId},
+                {"center_mm", vector(center[0], center[1], center[2])},
+                {"rotation_wxyz", QJsonArray{rotation[0], rotation[1], rotation[2], rotation[3]}}});
+        }
+        samples.append(QJsonObject{{"time_s", frame.seconds}, {"body_poses", bodies}});
+        lastSample = index;
+    };
+    append(0);
+    std::size_t later = 1;
+    for (double seconds = 1; seconds < frames.back().seconds; ++seconds) {
+        while (later + 1 < frames.size() && frames[later].seconds < seconds) ++later;
+        const auto earlier = later - 1;
+        const auto index = seconds - frames[earlier].seconds <= frames[later].seconds - seconds ? earlier : later;
+        if (index != lastSample) append(index);
+    }
+    if (lastSample != frames.size() - 1) append(frames.size() - 1);
+    return samples;
+}
+
 using Vec = std::array<double, 3>;
 Vec sub(const Vec& a, const Vec& b) { return {a[0]-b[0], a[1]-b[1], a[2]-b[2]}; }
 Vec add(const Vec& a, const Vec& b) { return {a[0]+b[0], a[1]+b[1], a[2]+b[2]}; }
@@ -440,6 +477,9 @@ int main(int argc,char** argv)
     parser.addOption({"filter","Only JSON paths containing this substring.","substring"});
     parser.addOption({"cad","Use this explicitly selected CAD file for one unique JSON case (e.g. a newer CAD containing construction geometry).","file"});
     parser.addOption({"bind-only","Import and bind geometry without solving."});
+#ifdef MX_NATIVE_SOLVE_CASES
+    parser.addOption({"pose-samples","Write one case's accepted body poses nearest each second, including initial and final frames.","file"});
+#endif
     parser.process(app);
     QTextStream output(stdout),errors(stderr);
     if(!parser.isSet("cases")||!parser.isSet("report")){errors<<"--cases and --report are required\n";return 2;}
@@ -457,6 +497,14 @@ int main(int argc,char** argv)
     if(parser.isSet("cad") && (paths.size()!=1 || !QFileInfo::exists(parser.value("cad")))) {
         errors<<"--cad requires exactly one unique JSON case and an existing CAD file\n";return 2;
     }
+#ifdef MX_NATIVE_SOLVE_CASES
+    const auto posePath = parser.value("pose-samples");
+    if (parser.isSet("pose-samples") && (posePath.isEmpty() || paths.size() != 1 || parser.isSet("bind-only")
+        || QFileInfo(posePath).absoluteFilePath() == QFileInfo(parser.value("report")).absoluteFilePath())) {
+        errors << "--pose-samples requires one unique solved case and a separate output file\n"; return 2;
+    }
+    QJsonArray poseScenarios;
+#endif
     QJsonArray reports;
     QString currentCad;
     QString currentCadError;
@@ -473,18 +521,40 @@ int main(int argc,char** argv)
         else{
             QJsonObject counts;const auto data=document.root.value("motionData").toObject();
             for(auto it=data.begin();it!=data.end();++it)if(it.value().isArray())counts[it.key()]=it.value().toArray().size();report["collections"]=counts;
+            const bool mappedExchange = document.root.contains("geometryExchange");
+            const auto association = mappedExchange ? document.root.value("geometryExchange").toObject()
+                : document.root.value("generatorNotes").toObject().value("geometryBinding").toObject();
+            CadDocument exchangeCad;
+            bool hasExchangeGeometry = false;
+            const bool exchangeRead = parser.isSet("cad") || readNativeMotionExchange(path, document, exchangeCad, hasExchangeGeometry, error);
             const QDir directory=QFileInfo(path).absoluteDir();
-            const auto candidates=directory.entryList({"*.stp","*.step","*.STP","*.STEP","*.brep","*.iges","*.igs"},QDir::Files,QDir::Name);
             QString selected;
-            const QString expected=QFileInfo(path).fileName().chopped(QStringLiteral(".motion.json").size());
-            for(const auto& file:candidates)if(QFileInfo(file).completeBaseName()==expected){selected=file;break;}
-            if(selected.isEmpty()&&candidates.size()==1)selected=candidates.front();
-            if(parser.isSet("cad"))selected=QFileInfo(parser.value("cad")).absoluteFilePath();
-            if(selected.isEmpty()){report["status"]="cad-pair-unresolved";report["error"]="No unique same-directory CAD match";report["cadCandidates"]=QJsonArray::fromStringList(candidates);}
+            QStringList candidates;
+            if (hasExchangeGeometry) {
+                selected = QDir::fromNativeSeparators(association.value("stepFile").toString());
+            } else if (parser.isSet("cad")) {
+                selected = QFileInfo(parser.value("cad")).absoluteFilePath();
+            } else if (exchangeRead) {
+                candidates=directory.entryList({"*.stp","*.step","*.STP","*.STEP","*.brep","*.iges","*.igs"},QDir::Files,QDir::Name);
+                const QString expected=QFileInfo(path).fileName().chopped(QStringLiteral(".motion.json").size());
+                for(const auto& file:candidates)if(QFileInfo(file).completeBaseName()==expected){selected=file;break;}
+                if(selected.isEmpty()&&candidates.size()==1)selected=candidates.front();
+            }
+            if (!exchangeRead) { report["status"] = "cad-exchange-failed"; report["error"] = error; }
+            else if(selected.isEmpty()){report["status"]="cad-pair-unresolved";report["error"]="No unique same-directory CAD match";report["cadCandidates"]=QJsonArray::fromStringList(candidates);}
             else{
                 const auto cadPath=QFileInfo(selected).isAbsolute()?selected:directory.absoluteFilePath(selected);report["cad"]=root.relativeFilePath(cadPath);
                 if(parser.isSet("cad"))report["cadPairEvidence"]="Explicit CAD input; source JSON unchanged";
-                if(currentCad!=cadPath){
+                if (hasExchangeGeometry) {
+                    report["cadPairEvidence"] = mappedExchange ? "Verified STEP exchange with saved body and topology bindings"
+                        : "Verified legacy STEP association with resolved body and topology bindings";
+                    output << "  CAD " << root.relativeFilePath(cadPath) << Qt::endl;
+                    cad = std::make_unique<CadDocument>(std::move(exchangeCad));
+                    currentCad.clear();
+                    currentCadError.clear();
+                    currentGeometry = geometryReport(*cad);
+                    for (const auto& note : cad->importNotes()) output << "  CAD: " << note << Qt::endl;
+                } else if(currentCad!=cadPath){
                     cad=std::make_unique<CadDocument>();std::vector<int> imported;
                     output<<"  CAD "<<root.relativeFilePath(cadPath)<<Qt::endl;
                     currentCad = cadPath;
@@ -500,11 +570,11 @@ int main(int argc,char** argv)
                     report["cadImportNotes"] = QJsonArray::fromStringList(cad->importNotes());
                     QVector<NativeMotionBindingIssue> issues;
                     QMap<int, QString> evidence;
-                    const bool bound=autoBindNativeMotionBodies(*cad,document,issues,&evidence);
+                    const bool bound=hasExchangeGeometry || autoBindNativeMotionBodies(*cad,document,issues,&evidence);
                     report["bodies"]=bindingReport(document,issues,currentGeometry,evidence);
                     report["status"]=bound?"bound":"binding-unresolved";
                     output<<"  "<<document.bodyPartBindings.size()<<"/"<<document.collection("bodies").size()<<" bodies bound, "<<issues.size()<<" unresolved"<<Qt::endl;
-                    if (bound) {
+                    if (bound && !hasExchangeGeometry) {
                         QVector<NativeTopologyBindingIssue> topologyIssues;
                         QStringList topologyEvidence;
                         const bool topologyBound = autoBindNativeMotionTopology(*cad, document, topologyIssues, &topologyEvidence);
@@ -533,7 +603,10 @@ int main(int argc,char** argv)
                                     lastProgress = progress;
                                     output << "    " << progress * 10 << "% (" << solveTimer.elapsed() / 1000.0 << " s wall)" << Qt::endl;
                                 };
+                                QElapsedTimer nativeSolveTimer;
+                                nativeSolveTimer.start();
                                 const auto status=solveNativeMotion(input,result,error,callbacks);
+                                scenario["nativeSolveSeconds"]=nativeSolveTimer.elapsed()/1000.0;
                                 if(status!=SolveStatus::Completed){scenario["status"]="solve-failed";scenario["error"]=error;allPassed=false;}
                                 else if(!checkResult(*cad,input,result,scenario,error)){scenario["status"]="result-check-failed";scenario["error"]=error;allPassed=false;}
                                 else if (result.termination == ResultTermination::GeometryBoundary) {
@@ -542,7 +615,12 @@ int main(int argc,char** argv)
                                 } else if (result.termination == ResultTermination::FlexDivergence) {
                                     scenario["status"] = "flex-diverged"; anyFlexDivergence = true;
                                     output << "  Flex divergence, clean prefix retained: " << result.diagnostics.join("; ") << Qt::endl;
-                                } else scenario["status"]="passed";
+                                } else {
+                                    scenario["status"] = "passed";
+                                    if (!posePath.isEmpty()) poseScenarios.append(QJsonObject{{"id", id},
+                                        {"name", definition.value("name")}, {"frames", int(result.frames.size())},
+                                        {"samples", poseSamples(result)}});
+                                }
                             }
                             scenario["wallSeconds"]=solveTimer.elapsed()/1000.0;scenarios.append(scenario);
                             output<<"  "<<scenario.value("status").toString()<<" "<<scenario.value("error").toString()<<Qt::endl;
@@ -559,7 +637,20 @@ int main(int argc,char** argv)
         else if(status=="flex-diverged"){++flexDiverged;++failed;}
         else if(status!="bound"&&status!="passed")++failed;
         reports.append(report);
-        if(!saveReport(parser.value("report"),reports,error)){errors<<"Cannot save report: "<<error<<'\n';return 2;}
+        if(!saveJson(parser.value("report"), {{"format", "MxMotionNativeCaseReport"}, {"cases", reports}}, error)) {
+            errors << "Cannot save report: " << error << '\n'; return 2;
+        }
+#ifdef MX_NATIVE_SOLVE_CASES
+        if (!posePath.isEmpty()) {
+            if (status != "passed" || poseScenarios.isEmpty()) {
+                errors << "Cannot export pose samples: the case did not complete all scenarios\n"; return 1;
+            }
+            if (!saveJson(posePath, {{"format", "MxMotionNativePoseSamples"}, {"case", root.relativeFilePath(path)},
+                {"scenarios", poseScenarios}}, error)) {
+                errors << "Cannot save pose samples: " << error << '\n'; return 2;
+            }
+        }
+#endif
         output<<"  "<<status<<" in "<<timer.elapsed()/1000.0<<" s"<<Qt::endl;
     }
     output<<paths.size()<<" unique JSON cases checked; "<<failed<<" unresolved/failed; "<<boundaryStopped

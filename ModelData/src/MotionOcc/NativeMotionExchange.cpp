@@ -2,6 +2,7 @@
 #include "CadDocument.h"
 #include "NativeMotionDocument.h"
 #include "NativeTopologyBinding.h"
+#include "VerifiedStepCache.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -13,6 +14,9 @@
 #include <QTemporaryDir>
 
 #include <exception>
+#include <memory>
+#include <mutex>
+#include <new>
 #include <utility>
 
 namespace MotionOcc {
@@ -20,7 +24,6 @@ namespace {
 
 constexpr int exchangeVersion = 1;
 constexpr int maxParts = 20000;
-constexpr qint64 maxStepBytes = 128ll * 1024 * 1024;
 const QLatin1String exchangeKey("geometryExchange");
 
 struct ExchangeError { QString message; };
@@ -62,7 +65,7 @@ QString stepHash(const QString& path, QFile* snapshot = nullptr)
     require(QFileInfo(path).isFile() && file.open(QIODevice::ReadOnly),
         QStringLiteral("无法读取关联 STEP：%1").arg(path));
     const auto size = file.size();
-    require(size > 0 && size <= maxStepBytes, QStringLiteral("关联 STEP 为空或超过 128 MiB。"));
+    require(size > 0, QStringLiteral("关联 STEP 为空：%1").arg(path));
     QCryptographicHash hash(QCryptographicHash::Sha256);
     qint64 read = 0;
     while (read < size) {
@@ -81,10 +84,45 @@ void importVerifiedStep(const QString& path, const QJsonValue& expected, CadDocu
     const auto sha256 = expected.toString().toLower();
     static const QRegularExpression hashPattern(QStringLiteral("\\A[0-9a-f]{64}\\z"));
     require(hashPattern.match(sha256).hasMatch(), QStringLiteral("关联 STEP 缺少有效的 SHA-256。"));
+    struct StepCache {
+        std::mutex mutex;
+        QString sha256;
+        std::shared_ptr<const CadDocument> geometry;
+    };
+    static StepCache cache;
+    const auto remember = [&] {
+        std::shared_ptr<const CadDocument> geometry;
+        try {
+            geometry = std::make_shared<const CadDocument>(cad);
+        } catch (const std::bad_alloc&) {
+            return; // 缓存不是导入所必需的。内存不足时仍使用已验证的几何。
+        }
+        const std::lock_guard<std::mutex> lock(cache.mutex);
+        cache.sha256 = sha256;
+        cache.geometry.swap(geometry);
+    };
+    std::shared_ptr<const CadDocument> cached;
+    {
+        const std::lock_guard<std::mutex> lock(cache.mutex);
+        if (cache.sha256 == sha256) cached = cache.geometry;
+    }
+    if (cached) {
+        // 每次核对外部文件的实际内容。缓存只保存未绑定、只读的 CAD 形状，
+        // 后续各工程还原自己的零件编号、名称和运动体绑定。
+        require(stepHash(path) == sha256, QStringLiteral("关联 STEP 的 SHA-256 不匹配：%1").arg(path));
+        cad = *cached;
+        return;
+    }
+    if (VerifiedStepCache::hasEntry(sha256)) {
+        require(stepHash(path) == sha256, QStringLiteral("关联 STEP 的 SHA-256 不匹配：%1").arg(path));
+        if (VerifiedStepCache::read(sha256, cad)) {
+            remember();
+            return;
+        }
+    }
     QTemporaryDir temporary;
     require(temporary.isValid(), temporary.errorString());
-    // Import exactly the bytes whose hash was checked, even if the companion
-    // file is concurrently updated by another process.
+    // 对分块校验过的文件副本执行导入，避免关联文件在校验后被其他进程修改。
     QFile snapshot(temporary.filePath("verified.step"));
     require(snapshot.open(QIODevice::WriteOnly), snapshot.errorString());
     require(stepHash(path, &snapshot) == sha256, QStringLiteral("关联 STEP 的 SHA-256 不匹配：%1").arg(path));
@@ -93,6 +131,8 @@ void importVerifiedStep(const QString& path, const QJsonValue& expected, CadDocu
     std::vector<int> imported;
     QString detail;
     require(cad.importFile(snapshot.fileName(), imported, detail), detail);
+    VerifiedStepCache::write(sha256, cad);
+    remember();
 }
 
 void restoreExchangeBindings(const QJsonObject& exchange, CadDocument& cad, NativeMotionDocument& document)

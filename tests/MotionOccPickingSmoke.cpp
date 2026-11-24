@@ -203,6 +203,25 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         require(picked.hasDirection && std::abs(picked.direction[2]) > .999, "Cylindrical face direction should be its real axis");
         require(graphicsError.isEmpty(), graphicsError);
         log << "Circular-edge center/axis and cylindrical-face axis passed\n";
+
+        CadDocument appended;
+        int temporaryId = -1;
+        require(appended.addPrimitive(Primitive::Box, 40, 30, 100, temporaryId, error), error);
+        const auto prepared = OccViewport::prepareCadScene(appended);
+        std::vector<int> ids;
+        require(cad.appendImported(std::move(appended), output.filePath("prepared.step"), ids, error), error);
+        require(ids.size() == 1 && ids.front() != temporaryId, "Append did not exercise CAD scene ID remapping");
+        view.setScene(cad, {}, {}, prepared, ids);
+        require(view.pickSelection().size() == 1 && view.pickSelection().front().partId == cylinder,
+                "Appending prepared CAD geometry invalidated a pick on unchanged topology");
+        view.viewTop(); view.fitAll();
+        view.beginPick(PickKind::Vertex, false, {ids.front()});
+        click(view, view.projectPoint({40,30,100}, ids.front()));
+        require(view.pickSelection().size() == 1, "Remapped prepared part does not accept geometry picks");
+        picked = view.pickSelection().front();
+        require(picked.partId == ids.front() && pointsNear(picked.position, {40,30,100}),
+                "Remapped prepared part changed its ID or vertex location");
+        log << "Prepared scene append preserves existing picks and remaps new geometry IDs\n";
         log << "PASS; selection changes=" << changed << "\n"; log.flush();
         view.close(); return 0;
     } catch (const std::exception& failure) {

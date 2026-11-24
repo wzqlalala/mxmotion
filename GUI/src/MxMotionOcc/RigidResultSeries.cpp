@@ -68,7 +68,7 @@ QString rigidChannelSourceType(const QString& sourceType)
     // Original .motion.json files use singular PascalCase enum names. New
     // results and requests use the stable document collection names.
     static const QMap<QString, QString> collections{
-        {"Body", "bodies"}, {"Joint", "joints"}, {"Marker", "markers"}, {"Drive", "drives"},
+        {"Body", "bodies"}, {"Joint", "joints"}, {"Marker", "markers"}, {"Drive", "drives"}, {"BodyDrive", "bodyDrives"},
         {"Coupling", "couplings"}, {"Sensor", "sensors"}, {"Controller", "controllers"},
         {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
         {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
@@ -80,7 +80,7 @@ QString rigidChannelSourceType(const QString& sourceType)
 QString rigidChannelSourceLabel(const QString& sourceType)
 {
     static const QMap<QString, const char*> names{
-        {"bodies", "运动体"}, {"joints", "运动副"}, {"markers", "标记点"}, {"drives", "驱动"},
+        {"bodies", "运动体"}, {"joints", "运动副"}, {"markers", "标记点"}, {"drives", "驱动"}, {"bodyDrives", "运动体驱动"},
         {"couplings", "耦合副"}, {"sensors", "传感器"}, {"controllers", "控制器"},
         {"springs", "弹簧"}, {"tensionCables", "拉索"}, {"softStops", "柔性限位"},
         {"scalarForces", "标量力"}, {"scalarTorques", "标量力矩"},

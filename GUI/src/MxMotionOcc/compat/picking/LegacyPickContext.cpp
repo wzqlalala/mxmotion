@@ -56,12 +56,26 @@ QPointer<LegacyPickContext> LegacyPickContext::s_current;
 
 LegacyPickContext::LegacyPickContext(QWidget* owner, OccViewport* viewport, const CadDocument& document,
                                      const std::map<int,FemMesh>* meshes)
-    : QObject(owner), m_index(std::make_unique<GeometryIndex>()), m_viewport(viewport), m_document(document), m_meshes(meshes)
+    : QObject(owner), m_index(std::make_unique<GeometryIndex>()), m_document(document), m_meshes(meshes)
 {
     setObjectName(QStringLiteral("originalGuiPickContext"));
     if (owner) owner->setProperty("motionOccLegacyPickContext", QVariant::fromValue(static_cast<QObject*>(this)));
     s_current = this;
     ensureGeometry();
+    setViewport(viewport);
+}
+
+void LegacyPickContext::setViewport(OccViewport* viewport)
+{
+    if (m_viewport == viewport) return;
+    if (m_controller) {
+        if (m_viewport && m_viewport->isPicking()) return;
+        m_controller->setPickActive(false);
+        m_controller = nullptr;
+    }
+    if (m_viewport) disconnect(m_viewport, nullptr, this, nullptr);
+    m_viewport = viewport;
+    if (!viewport) return;
     connect(viewport,&OccViewport::pickSelectionChanged,this,[this](const QVector<PickResult>& picks) {
         if (!m_controller || !m_controller->isPickActive() || !m_viewport ||
             m_viewport->property("legacyPickOwner").value<QObject*>() != this) return;
@@ -148,7 +162,7 @@ QVector<int> LegacyPickContext::nodeIds(int partId) const
     for(int i=0;i<int(mesh->second.nodes.size());++i)result.append(i+1);
     return result;
 }
-void LegacyPickContext::refreshGeometry() { m_index=std::make_unique<GeometryIndex>(); ensureGeometry(); }
+void LegacyPickContext::refreshGeometry() { ensureGeometry(); }
 void LegacyPickContext::ensureGeometry() const
 {
     const auto& parts = m_document.parts();
@@ -189,16 +203,19 @@ int LegacyPickContext::globalTopologyId(const PickResult& pick) const
 std::pair<Type,RenderPickResultData> LegacyPickContext::toLegacy(const PickResult& pick, Type selectedType)
 {
     Q_UNUSED(selectedType);
-    ensureGeometry(); if (!pick.isValid()) return {Type::None,{}};
+    if (!pick.isValid()) return {Type::None,{}};
     Type type=typeOf(pick.kind); RenderPickResultData result;
     result.part_id=pick.partId;
+    if (type == Type::Part) {
+        result.result_id = pick.partId;
+        return {type, result};
+    }
+    ensureGeometry();
     if (category(type)>=0) result.result_id=globalTopologyId(pick);
     else if (type==Type::Node) result.result_id=pick.nodeId;
     else if (type==Type::ElementEdge) {
         if (pick.nodeIds.size()!=2) return {Type::None,{}};
         result.result_id=pick.nodeIds[0]; result.result_id2=pick.nodeIds[1];
-    } else if (type==Type::Part) {
-        result.result_id=pick.partId;
     } else result.result_id=pick.index;
     if (result.result_id<0) return {Type::None,{}};
     m_index->sampled[key(type,result)]=pick;
@@ -336,6 +353,21 @@ QVector<PickResult> LegacyPickContext::resolve(const LegacyPickMap& data) const
     for (const auto& entry:data) for (const auto& value:entry.second) { const auto p=resolve(entry.first,value); if (p.isValid()) picks.append(p); }
     return picks;
 }
+
+QVector<PickResult> LegacyPickContext::resolvePickerFeedback(const LegacyPickMap& data) const
+{
+    QVector<PickResult> picks;
+    for (const auto& [type, values] : data) for (const auto& value : values) {
+        PickResult pick;
+        if (type == Type::Part) {
+            // 回填列表与高亮只用部件编号。实际坐标请求仍由 resolve 精确计算。
+            const int id = value.part_id > 0 ? value.part_id : value.result_id;
+            if (m_document.part(id)) pick.partId = id;
+        } else pick = resolve(type, value);
+        if (pick.isValid()) picks.append(pick);
+    }
+    return picks;
+}
 QVector3D LegacyPickContext::averageCoordinate(const LegacyPickMap& data) const
 {
     std::array<double,3> sum{}; int count=0;
@@ -409,7 +441,8 @@ void LegacyPickContext::begin(MechMainWindow::mPickWidgetController* controller,
     m_viewport->setProperty("legacyPickOwner",QVariant::fromValue(static_cast<QObject*>(this)));
     m_viewport->setPickHighlightColor(controller->widget()->colorBlockColor());
     m_viewport->setPickFeedbackVisible(!controller->isCloudChartMode());
-    m_viewport->beginPick(toKind(type),multiple,allowed,resolve(initial));
+    m_viewport->beginPick(toKind(type), multiple, allowed, resolvePickerFeedback(initial),
+                          OccViewport::PartPickResolution::IdOnly);
     emit allowedTypesChanged(); emit pickTypeChanged(type);
 }
 void LegacyPickContext::end(MechMainWindow::mPickWidgetController* controller)
@@ -423,7 +456,8 @@ void LegacyPickContext::end(MechMainWindow::mPickWidgetController* controller)
 }
 void LegacyPickContext::updateSelection(MechMainWindow::mPickWidgetController* controller,const LegacyPickMap& data)
 {
-    if (controller==m_controller && m_viewport) m_viewport->setPickSelection(resolve(data));
+    if (controller == m_controller && m_viewport)
+        m_viewport->setPickSelection(resolvePickerFeedback(data), OccViewport::PartPickResolution::IdOnly);
 }
 void LegacyPickContext::setPickFeedbackVisible(MechMainWindow::mPickWidgetController* controller,bool visible)
 {

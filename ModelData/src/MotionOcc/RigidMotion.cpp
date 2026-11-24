@@ -678,7 +678,7 @@ void syncNativeMotionModel(RigidModel& model)
             scenario.curveRequests = old->curveRequests;
         } else {
             const QMap<QString, QString> sources{
-                {"Body", "bodies"}, {"Joint", "joints"}, {"Marker", "markers"}, {"Drive", "drives"},
+                {"Body", "bodies"}, {"Joint", "joints"}, {"Marker", "markers"}, {"Drive", "drives"}, {"BodyDrive", "bodyDrives"},
                 {"Coupling", "couplings"}, {"Sensor", "sensors"}, {"Controller", "controllers"},
                 {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
                 {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},

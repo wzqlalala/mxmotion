@@ -1,7 +1,7 @@
 #include "ViewportContainer.h"
 #include "ViewportWidget.h"
 #include "ViewportLayoutEngine.h"
-#include "mViewBrowserWindow.h"
+#include "ViewportLayouts.h"
 #include <QPainter>
 #include <QMouseEvent>
 #include <QDebug>
@@ -346,8 +346,9 @@ void ViewportContainer::resizeEvent(QResizeEvent* event)
     QList<int> visibleIDs;
     for (int id : _laidOutViewportIDs) {
         //防御性过滤：布局后若有视口被删除（树会立即驱动新布局刷新，此处仅兜底）
-        auto* viewport = _viewports.value(id);
-        if (viewport && viewport->isVisible()) {
+        // The layout still owns this slot when an ancestor is hidden, for
+        // example while sizing a newly opened page or an inactive project.
+        if (_viewports.contains(id) && _layoutShownViewportIDs.contains(id)) {
             visibleIDs.append(id);
         }
     }
