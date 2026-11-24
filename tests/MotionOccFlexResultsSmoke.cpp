@@ -33,6 +33,7 @@ void contourSemantics()
     RigidFlexResult flex;
     flex.referenceNodes={0,0,0, 4,0,0, 0,1,0, 0,0,1};
     flex.tetrahedra={0,1,2,3};flex.densityKgMm3=.001;
+    flex.modalBasis.kind="MNF";
     flex.interfaceCount=1;flex.modeCount=2;
     // Nonzero boundary columns expose accidental inclusion of rigid/interface
     // motion. Different X/Y row contributions expose a wrong row stride.
@@ -54,6 +55,7 @@ void contourSemantics()
     for(int node=0;node<4;++node)expectNear(values[node],node*std::sqrt(.4),1e-14,"modal rows/columns");
     require(flexNodeScalars(flex,0,FlexContourKind::TotalDisplacement,values,error),error);
     expectNear(values[0],std::sqrt(509.0),1e-12,"total displacement includes rigid motion");
+    flex.modalBasis.kind="FixedInterface";
     require(flexNodeScalars(flex,0,FlexContourKind::LegacyFreeModeProjection,values,error),error);
     for(double value:values)expectNear(value,0,1e-14,"zero elastic mode must give zero legacy projection");
     require(flexNodeScalars(flex,1,FlexContourKind::LegacyFreeModeProjection,values,error),error);
@@ -61,6 +63,7 @@ void contourSemantics()
     for(double& q:flex.modalCoordinates[1])q*=3;
     require(flexNodeScalars(flex,1,FlexContourKind::LegacyFreeModeProjection,values,error),error);
     for(int node=0;node<4;++node)expectNear(values[node],3*baseline[node],1e-12,"legacy projection scaling");
+    flex.modalBasis.kind="MNF";
     flex.modalCoordinates[0]={-6,-9};
     require(flexNodeScalarsAt(flex,0,1,.5,FlexContourKind::ElasticDisplacement,values,error),error);
     for(double value:values)expectNear(value,0,0,"interpolated opposite signed modes must have zero magnitude");
@@ -108,6 +111,7 @@ void completePayloadAndPhysicalMotion()
     const auto& flex=result.flexBodies.front();
     require(flex.referenceNodes.size()==24&&flex.tetrahedra==input.geometry->flexBodies[0].tetrahedra,
         "original tetrahedral payload missing");
+    require(flex.contourMassFractions.size()==8,"AutoFlex output lacks cached cloud-fit nodal masses");
     require(flex.modeCount==2&&flex.interfaceCount==1&&flex.psiInternal.size()==24*8,
         "unique-interface modal matrix shape");
     require(flex.initialInterfacePoses.size()==7&&flex.initialInterfacePoses==flex.interfacePoses.front(),

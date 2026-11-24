@@ -1,4 +1,6 @@
 #include "NativeMotionDocument.h"
+#include "NativeMotionExchange.h"
+#include "NativeTopologyBinding.h"
 #include "CadDocument.h"
 
 #include <BRepGProp.hxx>
@@ -19,8 +21,11 @@
 #include <gp_Trsf.hxx>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -106,6 +111,96 @@ void change(NativeMotionDocument& doc, const QString& collection, const std::fun
     records[0] = record;
     data[collection] = records;
     doc.root["motionData"] = data;
+}
+
+void geometryExchange(const QTemporaryDir& temp)
+{
+    CadDocument source;
+    QString error;
+    int removed, first, second;
+    require(source.addPrimitive(Primitive::Box, 2, 2, 2, removed, error), error);
+    require(source.addPrimitive(Primitive::Box, 10, 20, 30, first, error), error);
+    require(source.addPrimitive(Primitive::Box, 10, 20, 30, second, error) && source.remove(removed), error);
+    // The two remaining parts coincide. Their explicit bindings must survive
+    // export even though geometry comparison alone cannot distinguish them.
+    NativeMotionDocument original;
+    const QJsonObject curve{{"id", 71}, {"name", "Curve"}, {"jointType", "PointOnCurve"}, {"actionBodyId", 0},
+        {"baseBodyId", 7}, {"origin", vector(0, 0, 0)}, {"curveEdgeIds", QJsonArray{4221}},
+        {"occCurveEdges", QJsonArray{nativeTopologyReference(source, first, 1, TopAbs_EDGE)}}};
+    const QJsonObject surface{{"id", 72}, {"name", "Surface"}, {"jointType", "PointOnSurface"}, {"actionBodyId", -1},
+        {"baseBodyId", 0}, {"origin", vector(0, 0, 0)}, {"surfaceFaceIds", QJsonArray{788}},
+        {"occSurfaceFaces", QJsonArray{nativeTopologyReference(source, second, 1, TopAbs_FACE)}}};
+    original.root = {{"formatVersion", 1}, {"motionData", QJsonObject{
+        {"bodies", QJsonArray{body(0, {91}, source.parts()[1]), body(7, {42}, source.parts()[0])}},
+        {"joints", QJsonArray{curve, surface}}}}};
+    original.bodyPartBindings = {{0, {second}}, {7, {first}}};
+    original.ownsTopologyCad = true;
+
+    const auto path = temp.filePath(QStringLiteral("相对几何.motion.json"));
+    require(writeNativeMotionExchange(path, source, original, error), error);
+    NativeMotionDocument packed;
+    require(readNativeMotionDocument(path, packed, error), error);
+    auto exchange = packed.root.value("geometryExchange").toObject();
+    require(exchange.value("version").toInt() == 1 && exchange.value("parts").toArray().size() == 2,
+        "Geometry exchange did not declare a version and two named occurrences");
+    const auto relative = exchange.value("stepFile").toString();
+    const auto looseStep = temp.filePath(relative);
+    QFile step(looseStep);
+    require(!relative.isEmpty() && QDir::isRelativePath(relative) && step.open(QIODevice::ReadOnly),
+        "Written geometry exchange did not reference a relative STEP companion");
+    const auto stepBytes = step.readAll();
+    step.close();
+    const auto hash = QString::fromLatin1(QCryptographicHash::hash(stepBytes, QCryptographicHash::Sha256).toHex());
+    require(exchange.value("sha256").toString() == hash && !packed.entity("joints", 71).contains("occCurveEdges")
+        && packed.entity("joints", 71).value("curveGeometry").toArray().size() == 1,
+        "Geometry exchange did not save the STEP hash and a geometry-based topology selection");
+
+    const QDir bundle(temp.path());
+    require(bundle.mkpath("relocated/motion") && bundle.mkpath("relocated/geometry"), "Could not create relocated bundle");
+    const auto movedStep = temp.filePath("relocated/geometry/model.step");
+    require(QFile::rename(looseStep, movedStep), "Could not relocate bundle geometry");
+    const QString movedRelative = "../geometry/model.step";
+    const auto movedPath = temp.filePath("relocated/motion/relative.motion.json");
+    exchange["stepFile"] = movedRelative;
+    packed.root["geometryExchange"] = exchange;
+    require(writeNativeMotionDocument(movedPath, packed, error), error);
+    require(readNativeMotionDocument(movedPath, packed, error), error);
+    CadDocument restored;
+    bool present = false;
+    require(readNativeMotionExchange(movedPath, packed, restored, present, error) && present, error);
+    require(packed.bodyPartBindings == original.bodyPartBindings && !restored.part(removed)
+        && restored.part(first) && restored.part(second) && restored.part(first)->name == source.part(first)->name
+        && restored.part(second)->name == source.part(second)->name
+        && packed.entity("bodies", 0).value("geoEntityIds").toArray() == QJsonArray{91},
+        "Relocated STEP changed logical part IDs, display names, or original geometry IDs");
+    require(packed.entity("joints", 71).value("occCurveEdges").toArray().first().toObject().value("partId").toInt() == first
+        && packed.entity("joints", 72).value("occSurfaceFaces").toArray().first().toObject().value("partId").toInt() == second,
+        "Relocated STEP lost the proven edge or face identity");
+
+    NativeMotionDocument legacy;
+    auto known = body(0, {91}, source.parts()[1]);
+    known["geoEntityNames"] = QJsonArray{restored.part(second)->sourceName};
+    legacy.root = {{"formatVersion", 1}, {"motionData", QJsonObject{{"bodies", QJsonArray{known}}}},
+        {"generatorNotes", QJsonObject{{"geometryBinding", QJsonObject{{"stepFile", movedRelative}, {"stepSHA256", hash}}}}}};
+    const auto legacyPath = temp.filePath("relocated/motion/legacy.motion.json");
+    require(writeNativeMotionDocument(legacyPath, legacy, error), error);
+    CadDocument restoredLegacy;
+    require(readNativeMotionDocument(legacyPath, legacy, error) &&
+        readNativeMotionExchange(legacyPath, legacy, restoredLegacy, present, error) && present, error);
+    require(legacy.bodyPartBindings.value(0).size() == 1 &&
+        restoredLegacy.part(legacy.bodyPartBindings.value(0).front())->sourceName == restored.part(second)->sourceName,
+        "Legacy path+hash did not use verified source part names for binding");
+
+    QFile modified(movedStep);
+    require(modified.open(QIODevice::Append) && modified.write("\n") == 1, "Could not tamper with the STEP bytes");
+    modified.close();
+    NativeMotionDocument broken;
+    require(readNativeMotionDocument(movedPath, broken, error), error);
+    const auto before = broken.root;
+    const auto priorShape = restored.part(first)->shape;
+    require(!readNativeMotionExchange(movedPath, broken, restored, present, error) && error.contains("SHA-256")
+        && broken.root == before && broken.bodyPartBindings.isEmpty() && restored.part(first)->shape.IsEqual(priorShape),
+        "Checksum mismatch was accepted or replaced the live CAD or document");
 }
 
 void sourceFrameBindings(const QTemporaryDir& temp)
@@ -517,6 +612,7 @@ int main(int argc, char** argv)
                 "Automatic binding overwrote the user's explicit part selection");
 
         sourceFrameBindings(temp);
+        geometryExchange(temp);
 
         int imported = 0;
         if (app.arguments().size() > 1) {
@@ -532,7 +628,7 @@ int main(int argc, char** argv)
             }
             require(imported > 0, "No native motion cases were discovered");
         }
-        output << "Native Motion JSON: lossless round trip, source IDs/ground, rich references, unilateral parameters, safe geometry binding passed";
+        output << "Native Motion JSON: lossless round trip, source IDs/ground, rich references, unilateral parameters, safe geometry binding and portable STEP exchange passed";
         if (imported) output << "; " << imported << " supplied case documents imported without field loss";
         output << '\n';
         return 0;

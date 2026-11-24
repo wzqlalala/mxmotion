@@ -102,21 +102,34 @@ void displayAndExport(){
 
 void fullFemContour(){
     RigidFlexResult result;result.reducedDynamics=false;result.interfaceCount=2;
-    result.referenceNodes={0,0,0,10,0,0,10,1,0};
-    result.initialInterfacePoses={0,0,0,1,0,0,0, 10,0,0,1,0,0,0};
-    const double c=std::sqrt(.5);
-    result.interfacePoses={{20,-5,3,c,0,0,c,20,5,3,c,0,0,c},{20,-5,3,c,0,0,c,18,5,3,c,0,0,c}};
-    result.nodePositions={{20,-5,3,20,5,3,19,5,3},{20,-5,3,18,5,3,17,5,3}};
+    result.referenceNodes={0,0,0, 1,0,0, 0,1,0, 0,0,1, -2,0,0};
+    result.tetrahedra={0,1,2,3, 0,4,2,3};
+    const auto frame=[&](double scale,double direction){
+        auto positions=result.referenceNodes;
+        for(std::size_t i=0;i<positions.size();i+=3){
+            positions[i]=20-direction*scale*result.referenceNodes[i+1];
+            positions[i+1]=direction*scale*result.referenceNodes[i]-5;
+            positions[i+2]=scale*result.referenceNodes[i+2]+3;
+        }
+        return positions;
+    };
+    result.nodePositions={frame(1,1),frame(1,-1),frame(1.2,1),frame(.8,-1)};
     QString error;std::vector<double> values;
     require(flexNodeScalars(result,0,FlexContourKind::ElasticDisplacement,values,error),error);
     for(double value:values)expectNear(value,0,1e-12,"full FEM rigid motion leaked into elastic contour");
     require(flexNodeScalarsAt(result,0,1,.5,FlexContourKind::ElasticDisplacement,values,error),error);
-    expectNear(values[0],0,1e-12,"first interface rigid motion");expectNear(values[1],1,1e-12,"independent second interface displacement omitted");
-    // The first stored frame may already be preloaded: referenceInterfacePoses
-    // remain the undeformed material frame, so the load deformation stays.
-    result.nodePositions.erase(result.nodePositions.begin());result.interfacePoses.erase(result.interfacePoses.begin());
+    for(double value:values)expectNear(value,0,1e-12,"interpolated rigid motion produced fake contraction");
+    prepareAutoFlexContour(result);
+    require(flexNodeScalarsAt(result,2,3,.5,FlexContourKind::ElasticDisplacement,values,error),error);
+    for(double value:values)expectNear(value,0,1e-12,"opposite signed stretch must cancel after rigid fit");
+    // The two tetrahedra have a 1:2 volume ratio. Their combined mass center
+    // is (-.25,.25,.25). A prestretched first frame uses the undeformed mesh.
+    result.nodePositions.erase(result.nodePositions.begin(),result.nodePositions.begin()+2);
     require(flexNodeScalars(result,0,FlexContourKind::ElasticDisplacement,values,error),error);
-    expectNear(values[1],2,1e-12,"preload was treated as new stress-free geometry");
+    for(std::size_t i=0;i<values.size();++i)
+        expectNear(values[i],.2*std::hypot(result.referenceNodes[3*i]+.25,
+            result.referenceNodes[3*i+1]-.25,result.referenceNodes[3*i+2]-.25),1e-12,
+            "contour must use the volume-weighted stress-free reference, not the preloaded frame");
 }
 }
 

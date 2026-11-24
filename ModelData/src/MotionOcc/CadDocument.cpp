@@ -9,6 +9,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -34,9 +35,11 @@
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <STEPCAFControl_Reader.hxx>
+#include <STEPCAFControl_Writer.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <TDocStd_Document.hxx>
 #include <TDataStd_Name.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <TDF_LabelSequence.hxx>
 #include <TDF_Tool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
@@ -56,6 +59,8 @@
 #include <XSControl_TransferWriter.hxx>
 #include <XSControl_WorkSession.hxx>
 #include <gp_Cylinder.hxx>
+#include <gp_Trsf.hxx>
+#include <gp_XYZ.hxx>
 
 #include <QBuffer>
 #include <QByteArray>
@@ -185,6 +190,17 @@ TopoDS_Shape transferRoots(XSControl_Reader& reader)
     return reader.OneShape();
 }
 
+TopoDS_Shape readStep(std::istream& input)
+{
+    STEPControl_Reader reader;
+    StepData_ConfParameters parameters;
+    parameters.ReadTessellated = StepData_ConfParameters::RWMode_Tessellated_Off;
+    if (reader.ReadStream("model.step", parameters, input) != IFSelect_RetDone || reader.StepModel().IsNull())
+        fail(QStringLiteral("无法读取有效的 STEP 文件。"));
+    reader.SetSystemLengthUnit(kMillimetre);
+    return transferRoots(reader);
+}
+
 TopoDS_Shape readShape(const QFileInfo& file, Format format)
 {
     const QByteArray utf8Path = file.absoluteFilePath().toUtf8();
@@ -209,15 +225,7 @@ TopoDS_Shape readShape(const QFileInfo& file, Format format)
     OSD_OpenStream(input, utf8Path.constData(), std::ios::in | std::ios::binary);
     if (!input)
         fail(QStringLiteral("无法打开文件，请检查路径和读取权限。"));
-    if (format == Format::Step) {
-        STEPControl_Reader reader;
-        StepData_ConfParameters parameters;
-        parameters.ReadTessellated = StepData_ConfParameters::RWMode_Tessellated_Off;
-        if (reader.ReadStream("model.step", parameters, input) != IFSelect_RetDone || reader.StepModel().IsNull())
-            fail(QStringLiteral("无法读取有效的 STEP 文件。"));
-        reader.SetSystemLengthUnit(kMillimetre);
-        return transferRoots(reader);
-    }
+    if (format == Format::Step) return readStep(input);
 
     TopoDS_Shape shape;
     BRepTools::Read(shape, input, BRep_Builder());
@@ -689,9 +697,9 @@ private:
     bool m_tooLarge = false;
 };
 
-class BrepInputBuffer final : public std::streambuf {
+class ProjectInputBuffer final : public std::streambuf {
 public:
-    explicit BrepInputBuffer(const QByteArray& bytes)
+    explicit ProjectInputBuffer(const QByteArray& bytes)
     {
         // std::streambuf's get area requires char*, but the input is never modified.
         auto* begin = const_cast<char*>(bytes.constData());
@@ -741,6 +749,70 @@ void checkProjectBrep(const QByteArray& bytes)
     if (nextTable != int(std::size(tables))) fail(QStringLiteral("BREP 缺少必需的数据表。"));
 }
 
+void checkProjectStep(const QByteArray& bytes)
+{
+    if (!bytes.startsWith("ISO-10303-21;"))
+        fail(QStringLiteral("缺少 ISO 10303-21 STEP 文件头。"));
+    constexpr char endMarker[] = "END-ISO-10303-21;";
+    int end = bytes.size();
+    while (end > 0) {
+        const char value = bytes[end - 1];
+        if (value != ' ' && value != '\t' && value != '\r' && value != '\n') break;
+        --end;
+    }
+    constexpr int markerSize = sizeof(endMarker) - 1;
+    if (end < markerSize || std::char_traits<char>::compare(bytes.constData() + end - markerSize,
+                                                            endMarker, markerSize) != 0)
+        fail(QStringLiteral("缺少完整的 STEP 文件结束标记。"));
+}
+
+void validateProjectPlacement(const std::array<double, 12>& placement)
+{
+    if (!std::all_of(placement.begin(), placement.end(), [](double value) { return std::isfinite(value); }))
+        fail(QStringLiteral("零件位置包含非有限数值。"));
+    constexpr double tolerance = 1e-10;
+    const gp_XYZ x(placement[0], placement[4], placement[8]);
+    const gp_XYZ y(placement[1], placement[5], placement[9]);
+    const gp_XYZ z(placement[2], placement[6], placement[10]);
+    if (std::abs(x.SquareModulus() - 1.0) > tolerance ||
+        std::abs(y.SquareModulus() - 1.0) > tolerance ||
+        std::abs(z.SquareModulus() - 1.0) > tolerance ||
+        std::abs(x.Dot(y)) > tolerance || std::abs(x.Dot(z)) > tolerance || std::abs(y.Dot(z)) > tolerance ||
+        std::abs(x.Crossed(y).Dot(z) - 1.0) > tolerance)
+        fail(QStringLiteral("零件位置必须是右手刚体变换。"));
+}
+
+TopLoc_Location projectLocation(const std::array<double, 12>& pose)
+{
+    validateProjectPlacement(pose);
+    constexpr std::array<double, 12> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    if (pose == identity) return {};
+    gp_Trsf transform;
+    transform.SetValues(pose[0], pose[1], pose[2], pose[3],
+                        pose[4], pose[5], pose[6], pose[7],
+                        pose[8], pose[9], pose[10], pose[11]);
+    return TopLoc_Location(transform);
+}
+
+TopoDS_Shape readProjectStep(std::istream& input, const TopLoc_Location& placement)
+{
+    auto shape = readStep(input);
+    if (shape.IsNull()) fail(QStringLiteral("STEP 零件没有可恢复的精确几何。"));
+    bool repaired = false;
+    shape = repairImportedShape(shape, repaired);
+    const auto transferLocation = shape.Location();
+    if (!transferLocation.IsIdentity()) {
+        // Keep a placement introduced by STEP translation inside the part's
+        // geometry so the stored root frame still supplies local coordinates.
+        BRepBuilderAPI_Transform bake(shape.Located(TopLoc_Location{}),
+                                     transferLocation.Transformation(), Standard_True);
+        if (!bake.IsDone() || bake.Shape().IsNull() || !bake.Shape().Location().IsIdentity())
+            fail(QStringLiteral("无法在保留项目坐标系的情况下恢复 STEP 零件位置。"));
+        shape = bake.Shape();
+    }
+    return shape.Located(placement);
+}
+
 bool writeShape(const TopoDS_Shape& shape, Format format, std::ostream& output)
 {
     switch (format) {
@@ -782,6 +854,27 @@ TopoDS_Shape copyForExport(const TopoDS_Shape& shape)
     const auto& result = copy.Shape();
     if (result.IsNull()) fail(QStringLiteral("导出用几何副本为空。"));
     return result;
+}
+
+template<class Writer>
+void writeCadFile(const QString& path, const Writer& write)
+{
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
+    SaveBuffer buffer(file);
+    std::ostream output(&buffer);
+    bool written;
+    {
+        const std::lock_guard<std::mutex> lock(exchangeMutex);
+        written = write(output);
+    }
+    output.flush();
+    if (buffer.tooLarge()) fail(QStringLiteral("文件超过 128 MiB 导出上限，请分批导出。"));
+    if (file.error() != QFileDevice::NoError) fail(file.errorString());
+    if (!written || !output || buffer.written() == 0)
+        fail(QStringLiteral("未能写入完整的几何文件。"));
+    if (!file.commit()) fail(file.errorString());
 }
 
 auto findPart(const std::vector<CadPart>& parts, int id) -> std::vector<CadPart>::const_iterator
@@ -946,50 +1039,114 @@ bool CadDocument::exportFile(const QString& path, int partId, QString& error) co
             shape = copyForExport(item->shape);
         }
 
-        QSaveFile file(path);
-        file.setDirectWriteFallback(false);
-        if (!file.open(QIODevice::WriteOnly)) fail(file.errorString());
-        SaveBuffer buffer(file);
-        std::ostream output(&buffer);
-        bool written;
-        {
-            const std::lock_guard<std::mutex> lock(exchangeMutex);
-            written = writeShape(shape, format, output);
-        }
-        output.flush();
-        if (buffer.tooLarge()) fail(QStringLiteral("文件超过 128 MiB 导出上限，请分批导出。"));
-        if (file.error() != QFileDevice::NoError) fail(file.errorString());
-        if (!written || !output || buffer.written() == 0)
-            fail(QStringLiteral("未能写入完整的几何文件。"));
-        if (!file.commit()) fail(file.errorString());
+        writeCadFile(path, [&](std::ostream& output) { return writeShape(shape, format, output); });
     });
 }
 
-bool CadDocument::encodeProjectPart(const CadPart& part, QByteArray& brep, int maxBytes, QString& error)
+bool CadDocument::exportNamedStep(const QString& path, const QMap<int, QString>& partNames, QString& error) const
+{
+    return runCad(QStringLiteral("带零件标识的 STEP 导出失败"), error, [&] {
+        if (formatFor(path) != Format::Step || m_parts.empty() || m_parts.size() != std::size_t(partNames.size()))
+            fail(QStringLiteral("每个 STEP 零件都需要一个标识。"));
+        writeCadFile(path, [&](std::ostream& output) {
+            Handle(TDocStd_Document) document = new TDocStd_Document("BinXCAF");
+            const auto shapes = XCAFDoc_DocumentTool::ShapeTool(document->Main());
+            BRep_Builder builder;
+            TopoDS_Compound compound;
+            builder.MakeCompound(compound);
+            const auto assembly = shapes->NewShape();
+            shapes->SetShape(assembly, compound);
+            TDataStd_Name::Set(assembly, "MxMotion Assembly");
+            std::set<QString> names;
+            for (const auto& part : m_parts) {
+                const auto name = partNames.value(part.id);
+                if (name.isEmpty() || !names.insert(name).second)
+                    fail(QStringLiteral("STEP 零件标识缺失或重复。"));
+                const TCollection_ExtendedString label(name.toUtf8().constData(), Standard_True);
+                const auto definition = shapes->AddShape(copyForExport(part.shape.Located(TopLoc_Location{})), Standard_False);
+                const auto instance = shapes->AddComponent(assembly, definition, part.shape.Location());
+                if (definition.IsNull() || instance.IsNull()) fail(QStringLiteral("无法创建 STEP 装配实例。"));
+                TDataStd_Name::Set(definition, label);
+                TDataStd_Name::Set(instance, label);
+            }
+            shapes->UpdateAssemblies();
+
+            STEPCAFControl_Writer writer;
+            auto& stepWriter = writer.ChangeWriter();
+            const auto model = stepWriter.Model();
+            model->SetLocalLengthUnit(kMillimetre);
+            model->SetWriteLengthUnit(kMillimetre);
+            auto parameters = model->InternalParameters;
+            parameters.WriteUnit = UnitsMethods_LengthUnit_Millimeter;
+            parameters.WriteAssembly = StepData_ConfParameters::WriteMode_Assembly_On;
+            parameters.WriteTessellated = StepData_ConfParameters::RWMode_Tessellated_Off;
+            writer.SetNameMode(Standard_True);
+            if (!writer.Transfer(document, parameters) ||
+                !stepWriter.WS()->TransferWriter()->FinderProcess()->CheckList(Standard_True).IsEmpty(Standard_True))
+                fail(QStringLiteral("STEP 装配转换失败。"));
+            return writer.WriteStream(output) == IFSelect_RetDone;
+        });
+    });
+}
+
+bool CadDocument::restoreNamedStepParts(const QMap<QString, std::pair<int, QString>>& parts, QString& error)
+{
+    return runCad(QStringLiteral("无法还原 STEP 零件标识"), error, [&] {
+        if (m_parts.size() != std::size_t(parts.size()))
+            fail(QStringLiteral("STEP 零件数量与 JSON 记录不一致。"));
+        std::set<int> ids;
+        std::vector<std::pair<int, QString>> restored;
+        restored.reserve(m_parts.size());
+        for (const auto& part : m_parts) {
+            const auto found = parts.constFind(part.sourceName);
+            if (found == parts.cend() || found->first <= 0 || !ids.insert(found->first).second)
+                fail(QStringLiteral("未找到唯一的 STEP 零件标识 %1。").arg(part.sourceName));
+            restored.push_back(*found);
+        }
+        for (std::size_t i = 0; i < restored.size(); ++i) {
+            m_parts[i].id = restored[i].first;
+            m_parts[i].name = std::move(restored[i].second);
+        }
+        std::sort(m_parts.begin(), m_parts.end(), [](const CadPart& left, const CadPart& right) { return left.id < right.id; });
+        if (!m_parts.empty()) m_nextId = (std::max)(m_nextId, std::uint64_t(m_parts.back().id) + 1);
+    });
+}
+
+bool CadDocument::encodeProjectStep(const CadPart& part, QByteArray& geometry,
+                                    std::array<double, 12>& placement, int maxBytes, QString& error)
 {
     return runCad(QStringLiteral("编码 CAD 零件 %1 失败").arg(part.id), error, [&] {
         if (part.shape.IsNull()) fail(QStringLiteral("零件没有精确几何。"));
-        if (maxBytes <= 0) fail(QStringLiteral("项目已达到 BREP 大小上限。"));
+        if (maxBytes <= 0) fail(QStringLiteral("项目已达到 STEP 大小上限。"));
+        const auto transform = part.shape.Location().Transformation();
+        std::array<double, 12> pose;
+        for (int row = 0; row < 3; ++row)
+            for (int column = 0; column < 4; ++column)
+                pose[row * 4 + column] = transform.Value(row + 1, column + 1);
+        validateProjectPlacement(pose);
+
         QByteArray bytes;
         QBuffer device(&bytes);
         if (!device.open(QIODevice::WriteOnly)) fail(device.errorString());
         SaveBuffer buffer(device, maxBytes);
         std::ostream output(&buffer);
         output.imbue(std::locale::classic());
+        bool written;
         {
             const std::lock_guard<std::mutex> lock(exchangeMutex);
-            // Pin the native version for project v1 and omit cached tessellation.
-            // The standalone stream preserves the part's location and orientation.
-            BRepTools::Write(part.shape, output, Standard_False, Standard_False, TopTools_FormatVersion_VERSION_3);
+            const auto localShape = copyForExport(part.shape.Located(TopLoc_Location{}));
+            written = writeShape(localShape, Format::Step, output);
         }
-        if (buffer.tooLarge()) fail(QStringLiteral("BREP 超过项目大小上限。"));
-        if (!output || bytes.isEmpty()) fail(QStringLiteral("未能写入完整的 BREP 数据。"));
-        checkProjectBrep(bytes);
-        brep.swap(bytes);
+        if (buffer.tooLarge()) fail(QStringLiteral("STEP 超过项目大小上限。"));
+        if (!written || !output || bytes.isEmpty()) fail(QStringLiteral("未能写入完整的 STEP 数据。"));
+        checkProjectStep(bytes);
+        geometry.swap(bytes);
+        placement = pose;
     });
 }
 
-bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error)
+bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error,
+                                      bool buildDisplay)
 {
     return runCad(QStringLiteral("恢复项目 CAD 几何失败"), error, [&] {
         if (parts.size() > kMaxParts || nextId == 0 || nextId > std::uint64_t((std::numeric_limits<int>::max)()) + 1)
@@ -1011,24 +1168,29 @@ bool CadDocument::restoreProjectParts(const std::vector<ProjectPart>& parts, std
         staged.reserve(parts.size());
         for (const auto* part : sorted) {
             try {
-                checkProjectBrep(part->brep);
-                BrepInputBuffer buffer(part->brep);
+                ProjectInputBuffer buffer(part->geometry);
                 std::istream input(&buffer);
                 input.imbue(std::locale::classic());
-                input.exceptions(std::ios::failbit | std::ios::badbit);
                 TopoDS_Shape shape;
-                {
+                if (part->encoding == ProjectPartEncoding::Step) {
+                    checkProjectStep(part->geometry);
+                    const auto placement = projectLocation(part->placement);
+                    const std::lock_guard<std::mutex> lock(exchangeMutex);
+                    shape = readProjectStep(input, placement);
+                } else {
+                    checkProjectBrep(part->geometry);
+                    input.exceptions(std::ios::failbit | std::ios::badbit);
                     const std::lock_guard<std::mutex> lock(exchangeMutex);
                     BRepTools::Read(shape, input, BRep_Builder());
+                    if (shape.IsNull() || (!input.eof() && !(input >> std::ws).eof()))
+                        fail(QStringLiteral("无法读取单个完整的 BREP 形状。"));
                 }
-                if (shape.IsNull() || (!input.eof() && !(input >> std::ws).eof()))
-                    fail(QStringLiteral("无法读取单个完整的 BREP 形状。"));
                 staged.push_back({part->id, part->name, shape, {}, part->sourceName, part->instancePath});
             } catch (const CadError& failure) {
                 fail(QStringLiteral("零件 %1：%2").arg(part->id).arg(failure.message));
             }
         }
-        makeAssemblyDisplays(staged, notes);
+        if (buildDisplay) makeAssemblyDisplays(staged, notes);
         m_parts.swap(staged);
         m_importNotes = std::move(notes);
         m_nextId = nextId;

@@ -85,6 +85,7 @@ set(model_dir "${CMAKE_CURRENT_SOURCE_DIR}/ModelData/src/MotionOcc")
 add_library(MotionOccData STATIC
     "${model_dir}/CadDocument.cpp"
     "${model_dir}/NativeMotionDocument.cpp"
+    "${model_dir}/NativeMotionExchange.cpp"
     "${model_dir}/NativeTopologyBinding.cpp"
     "${model_dir}/NativeBodyMass.cpp"
     "${model_dir}/OccTessellation.cpp"

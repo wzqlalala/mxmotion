@@ -4,9 +4,13 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMap>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <memory>
+
+class QTemporaryDir;
 
 namespace MotionOcc {
 
@@ -21,12 +25,16 @@ struct NativeMotionDocument {
     QJsonObject root;
     QMap<int, QVector<int>> bodyPartBindings;
     QString baseDirectory;
-    // Set only when the enclosing project supplied the original CAD BReps.
+    // Shared by document copies and background jobs that use the file-based MNF reader.
+    std::shared_ptr<QTemporaryDir> projectAssetDirectory;
+    QSet<QString> projectAssetNames;
+    // Set when the enclosing project provides CAD whose edge and face selections are resolved.
     // Bare OCC indices in a standalone JSON do not carry that identity proof.
     bool ownsTopologyCad = false;
 
     QJsonArray collection(const QString& name) const;
     QJsonObject entity(const QString& collectionName, int id) const;
+    QString assetPath(const QString& file) const;
 };
 
 struct NativeMotionBindingIssue {
@@ -46,7 +54,8 @@ bool validateNativeMotionDocument(const NativeMotionDocument& document, QString&
 bool parseNativeMotionDocument(const QByteArray& bytes, NativeMotionDocument& out, QString& error,
                                const QString& baseDirectory = {});
 bool readNativeMotionDocument(const QString& path, NativeMotionDocument& out, QString& error);
-bool writeNativeMotionDocument(const QString& path, const NativeMotionDocument& document, QString& error);
+bool writeNativeMotionDocument(const QString& path, const NativeMotionDocument& document, QString& error,
+                               bool copyExchangeAssets = false);
 
 // Automatic binding uses unique original STEP occurrence identities or a
 // verified centroid/inertia signature. Explicit source names allow custom mass

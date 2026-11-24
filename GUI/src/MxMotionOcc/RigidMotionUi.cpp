@@ -1109,6 +1109,7 @@ bool MotionWindow::openRigidProject(const QString& path)
     if (!loadRigidProject(path, cad, model, error)) { setNotice(error, true); return false; }
     closeEditor();
     clearResults();
+    m_original.reset();
     m_document = std::move(cad);
     m_model = std::move(model);
     m_meshes.clear();

@@ -168,6 +168,7 @@ struct RigidFlexResult {
     bool reducedDynamics = true; // false: real co-rotational tetra4 dynamics.
     FlexModalBasis modalBasis;
     std::vector<int> sourceNodeIds; // External node IDs, in referenceNodes row order.
+    std::vector<double> contourMassFractions; // Normalized lumped masses for AutoFlex.
 };
 
 struct FlexModeSample {
@@ -187,6 +188,7 @@ bool exportFlexModesCsv(const QString& path, const RigidFlexResult& result, QStr
 // The legacy free-mode option is a mass-weighted cosine projection used by the
 // original UI; it is not an exact free-free eigensolution or an NX/MNF result.
 enum class FlexContourKind { ElasticDisplacement, TotalDisplacement, LegacyFreeModeProjection };
+void prepareAutoFlexContour(RigidFlexResult& result);
 bool flexNodeScalars(const RigidFlexResult& result, std::size_t frame, FlexContourKind kind,
                      std::vector<double>& values, QString& error);
 // Interpolate vectors/modal coordinates first, then compute magnitudes; a

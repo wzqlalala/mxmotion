@@ -1,6 +1,7 @@
 #include "MotionWindow.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
+#include "NativeMotionExchange.h"
 #include "NativeMotionPresentation.h"
 #include "NativeTopologyBinding.h"
 #include "NativeMotionPickWidgets.h"
@@ -963,7 +964,8 @@ void MotionWindow::createNativeCommands()
         if (path.isEmpty()) return;
         if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".motion.json";
         QString error;
-        if (writeNativeMotionDocument(path, *m_model.nativeDocument, error)) setNotice(tr("已导出运动数据：%1").arg(QFileInfo(path).fileName()));
+        if (writeNativeMotionExchange(path, m_document, *m_model.nativeDocument, error))
+            setNotice(tr("已导出运动数据及配套几何：%1").arg(QFileInfo(path).fileName()));
         else setNotice(error, true);
     });
     struct Entry { Command command; const char* collection; const char* icon; };
@@ -1297,10 +1299,10 @@ bool MotionWindow::commitNativeDocument(NativeMotionDocument document, ModelNode
     commitRigid(std::move(model), selection); return true;
 }
 
-bool MotionWindow::resolveNativeBindings(NativeMotionDocument& document, bool interactive)
+bool MotionWindow::resolveNativeBindings(const CadDocument& cad, NativeMotionDocument& document, bool interactive)
 {
     QVector<NativeMotionBindingIssue> issues;
-    autoBindNativeMotionBodies(m_document, document, issues);
+    autoBindNativeMotionBodies(cad, document, issues);
     if (!issues.isEmpty() && !interactive) {
         QStringList messages; for (const auto& issue : issues) messages.append(issue.message);
         setNotice(messages.join(QLatin1Char('\n')), true); return false;
@@ -1312,7 +1314,7 @@ bool MotionWindow::resolveNativeBindings(NativeMotionDocument& document, bool in
         auto* help = new QLabel(tr("%1 [%2]\n%3\n请选择该运动体的全部几何零件。")
             .arg(body.value("name").toString()).arg(issue.bodyId).arg(issue.message)); help->setWordWrap(true); layout->addWidget(help);
         auto* filter = new QLineEdit; filter->setPlaceholderText(tr("搜索几何名称或编号")); layout->addWidget(filter);
-        auto* parts = partList(m_document, document, issue.bodyId); parts->setMaximumHeight(100000); layout->addWidget(parts, 1);
+        auto* parts = partList(cad, document, issue.bodyId); parts->setMaximumHeight(100000); layout->addWidget(parts, 1);
         connect(filter, &QLineEdit::textChanged, parts, [parts](const QString& text) {
             for (int i = 0; i < parts->count(); ++i) parts->item(i)->setHidden(!parts->item(i)->text().contains(text, Qt::CaseInsensitive)); });
         auto* problem = new QLabel; problem->setWordWrap(true); layout->addWidget(problem);
@@ -1320,22 +1322,22 @@ bool MotionWindow::resolveNativeBindings(NativeMotionDocument& document, bool in
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
             QString error;
-            if (setNativeMotionBodyBinding(m_document, document, issue.bodyId, selectedParts(parts), error)) dialog.accept();
+            if (setNativeMotionBodyBinding(cad, document, issue.bodyId, selectedParts(parts), error)) dialog.accept();
             else problem->setText(error);
         });
         if (dialog.exec() != QDialog::Accepted) return false;
     }
     QString error;
-    if (!validateNativeMotionBindings(m_document, document, error)) { setNotice(error, true); return false; }
+    if (!validateNativeMotionBindings(cad, document, error)) { setNotice(error, true); return false; }
     QVector<NativeTopologyBindingIssue> topologyIssues; QStringList topologyEvidence;
-    autoBindNativeMotionTopology(m_document, document, topologyIssues, &topologyEvidence);
+    autoBindNativeMotionTopology(cad, document, topologyIssues, &topologyEvidence);
     if (!topologyIssues.isEmpty() && !interactive) {
         QStringList messages; for (const auto& issue : topologyIssues) messages.append(issue.message);
         setNotice(messages.join(QLatin1Char('\n')), true); return false;
     }
     for (const auto& issue : topologyIssues) {
         auto joint = document.entity("joints", issue.jointId); auto selection = joint.value(issue.selectorField).toArray();
-        if (!selectConstraintTopology(this, m_document, document, joint, issue.selectorField, selection, issue.message)) return false;
+        if (!selectConstraintTopology(this, cad, document, joint, issue.selectorField, selection, issue.message)) return false;
         joint.insert(issue.selectorField, selection); put(document, "joints", joint);
     }
     if (!validateNativeMotionDocument(document, error)) { setNotice(error, true); return false; }
@@ -1345,14 +1347,54 @@ bool MotionWindow::resolveNativeBindings(NativeMotionDocument& document, bool in
 bool MotionWindow::importMotionJson(const QString& path, bool interactiveBinding)
 {
     if (motionBusy() || m_jobPart >= 0) return false;
-    if (m_document.parts().empty()) { setNotice(tr("请先导入与运动数据配套的几何文件。"), true); return false; }
     NativeMotionDocument document; QString error;
     if (!readNativeMotionDocument(path, document, error)) { setNotice(error, true); return false; }
-    if (!resolveNativeBindings(document, interactiveBinding)) return false;
+    CadDocument exchangeCad;
+    bool hasGeometry = false;
+    if (!readNativeMotionExchange(path, document, exchangeCad, hasGeometry, error)) {
+        setNotice(error, true);
+        return false;
+    }
+    if (!hasGeometry) {
+        if (m_document.parts().empty()) {
+            const auto directory = QFileInfo(path).absoluteDir();
+            const auto companions = directory.entryList({"*.stp", "*.step", "*.STP", "*.STEP"}, QDir::Files);
+            QString stepPath;
+            if (companions.size() == 1) stepPath = directory.filePath(companions.front());
+            else if (interactiveBinding)
+                stepPath = QFileDialog::getOpenFileName(this, tr("选择与旧版运动 JSON 配套的 STEP"), directory.absolutePath(),
+                    tr("STEP 几何 (*.stp *.step)"));
+            if (stepPath.isEmpty()) {
+                setNotice(tr("这份运动 JSON 没有几何路径，请指定配套 STEP。"), true);
+                return false;
+            }
+            std::vector<int> imported;
+            if (!exchangeCad.importFile(stepPath, imported, error)) { setNotice(error, true); return false; }
+            hasGeometry = true;
+        }
+        if (!resolveNativeBindings(hasGeometry ? exchangeCad : m_document, document, interactiveBinding)) return false;
+    }
     const int bodies = document.collection("bodies").size(), joints = document.collection("joints").size();
     RigidModel imported;
     imported.nativeDocument = std::make_shared<NativeMotionDocument>(std::move(document));
     syncNativeMotionModel(imported); // A new source must not inherit old scenario requests with the same ID.
+    if (hasGeometry) {
+        if (!validateRigidModel(exchangeCad, imported, error)) { setNotice(error, true); return false; }
+        if (!interactiveBinding && m_modified) {
+            setNotice(tr("当前工程有未保存更改，无法自动替换。"), true);
+            return false;
+        }
+        if (!confirmReplace()) return false;
+        closeEditor();
+        clearResults();
+        m_original.reset();
+        m_document = std::move(exchangeCad);
+        m_projectPath.clear();
+        m_meshes.clear();
+        m_hidden.clear();
+        m_meshForm->hide();
+        command(Command::ShadedEdges)->trigger();
+    }
     commitRigid(std::move(imported), {});
     restoreNativeFlexMeshes();
     syncViewport();
@@ -1440,7 +1482,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     QJsonObject row = document.entity(collection, id);
     if (collection == "importedMnfBodies") {
         if (!row.isEmpty())
-            importMnf(QDir(document.baseDirectory).absoluteFilePath(row.value("mnfFile").toString()), id);
+            importMnf(document.assetPath(row.value("mnfFile").toString()), id);
         return;
     }
     const bool creating=row.isEmpty();

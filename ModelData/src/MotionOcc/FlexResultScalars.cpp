@@ -2,6 +2,7 @@
 
 #include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
+#include <Eigen/SVD>
 
 #include <algorithm>
 #include <cmath>
@@ -21,14 +22,13 @@ Eigen::Vector3d point(const std::vector<double>& flat,std::size_t index)
     return {flat[3*index],flat[3*index+1],flat[3*index+2]};
 }
 
-std::vector<double> legacyProjection(const RigidFlexResult& result,const std::vector<double>& elastic)
+std::vector<double> tetrahedralMassFractions(const RigidFlexResult& result)
 {
     const auto count=result.referenceNodes.size()/3;
-    if(count<4||result.tetrahedra.empty()||result.tetrahedra.size()%4)
-        fail("自由基投影需要完整的四面体网格。");
-    if(!std::isfinite(result.densityKgMm3)||result.densityKgMm3<=0)
-        fail("自由基投影需要正的材料密度。");
-    std::vector<double> masses(count,0);
+    if(count<4 || result.referenceNodes.size()%3 || result.tetrahedra.empty() || result.tetrahedra.size()%4)
+        fail("自动柔性体弹性位移需要完整的四面体网格。");
+    std::vector<double> weights(count,0);
+    double total=0;
     for(std::size_t t=0;t<result.tetrahedra.size();t+=4){
         for(int k=0;k<4;++k)if(result.tetrahedra[t+k]<0||static_cast<std::size_t>(result.tetrahedra[t+k])>=count)
             fail("柔性体四面体节点索引越界。");
@@ -36,14 +36,72 @@ std::vector<double> legacyProjection(const RigidFlexResult& result,const std::ve
         const auto b=point(result.referenceNodes,result.tetrahedra[t+1]);
         const auto c=point(result.referenceNodes,result.tetrahedra[t+2]);
         const auto d=point(result.referenceNodes,result.tetrahedra[t+3]);
-        const double mass=result.densityKgMm3*std::abs((b-a).dot((c-a).cross(d-a)))/24.0;
-        if(!std::isfinite(mass))fail("柔性体单元质量不是有限值。");
-        for(int k=0;k<4;++k)masses[result.tetrahedra[t+k]]+=mass;
+        // Each node receives one quarter of the element mass. The material
+        // density is uniform within an AutoFlex body and cancels on normalization.
+        const double quarterVolume=std::abs((b-a).dot((c-a).cross(d-a)))/24.0;
+        for(int k=0;k<4;++k)weights[result.tetrahedra[t+k]]+=quarterVolume;
+        total+=4*quarterVolume;
     }
-    Eigen::Vector3d centroid=Eigen::Vector3d::Zero();double total=0;
-    for(std::size_t i=0;i<count;++i){centroid+=point(result.referenceNodes,i)*masses[i];total+=masses[i];}
-    if(!std::isfinite(total)||total<=0)fail("自由基投影网格没有正的体积质量。");
-    centroid/=total;
+    if(!std::isfinite(total)||total<=0)fail("柔性体网格没有有效的正体积质量。");
+    for(double& weight:weights)weight/=total;
+    return weights;
+}
+
+struct ContourReference {
+    Eigen::Vector3d center;
+    Eigen::Matrix3d toRest;
+};
+
+ContourReference fitRigidReference(const std::vector<double>& rest,const std::vector<double>& current,
+                                   const std::vector<double>& weights,const Eigen::Vector3d& restCenter)
+{
+    Eigen::Vector3d center=Eigen::Vector3d::Zero();
+    for(std::size_t i=0;i<weights.size();++i)center+=weights[i]*point(current,i);
+    Eigen::Matrix3d covariance=Eigen::Matrix3d::Zero();
+    for(std::size_t i=0;i<weights.size();++i)
+        covariance.noalias()+=weights[i]*(point(current,i)-center)*(point(rest,i)-restCenter).transpose();
+    if(!covariance.allFinite())fail("自动柔性体刚体参考含有无效值。");
+    const Eigen::JacobiSVD<Eigen::Matrix3d> fit(covariance,Eigen::ComputeFullU|Eigen::ComputeFullV);
+    if(fit.info()!=Eigen::Success)fail("自动柔性体刚体参考拟合失败。");
+    Eigen::Matrix3d correction=Eigen::Matrix3d::Identity();
+    correction(2,2)=(fit.matrixV()*fit.matrixU().transpose()).determinant()<0 ? -1.0 : 1.0;
+    return {center,fit.matrixV()*correction*fit.matrixU().transpose()};
+}
+
+void autoFlexElasticScalars(const RigidFlexResult& result,std::size_t left,std::size_t right,
+                            double fraction,std::vector<double>& values)
+{
+    std::vector<double> uncached;
+    if(result.contourMassFractions.empty())uncached=tetrahedralMassFractions(result);
+    const auto& weights=result.contourMassFractions.empty()?uncached:result.contourMassFractions;
+    if(weights.size()!=values.size())fail("自动柔性体云图的节点质量数目无效。");
+    const auto& rest=result.referenceNodes;
+    Eigen::Vector3d restCenter=Eigen::Vector3d::Zero();
+    for(std::size_t i=0;i<weights.size();++i)restCenter+=weights[i]*point(rest,i);
+
+    // Remove rigid motion at each accepted frame before interpolation. Blending
+    // the world coordinates of a rotating beam first would introduce strain.
+    const auto& first=result.nodePositions[fraction==1?right:left];
+    const auto& last=result.nodePositions[right];
+    const bool blend=left!=right && fraction>0 && fraction<1;
+    const auto firstFit=fitRigidReference(rest,first,weights,restCenter);
+    const auto lastFit=blend?fitRigidReference(rest,last,weights,restCenter):firstFit;
+    for(std::size_t i=0;i<values.size();++i){
+        Eigen::Vector3d aligned=firstFit.toRest*(point(first,i)-firstFit.center);
+        if(blend)
+            aligned=(1-fraction)*aligned+fraction*(lastFit.toRest*(point(last,i)-lastFit.center));
+        values[i]=(aligned-(point(rest,i)-restCenter)).norm();
+    }
+}
+
+std::vector<double> legacyProjection(const RigidFlexResult& result,const std::vector<double>& elastic)
+{
+    if(!std::isfinite(result.densityKgMm3)||result.densityKgMm3<=0)
+        fail("自由基投影需要正的材料密度。");
+    const auto masses=tetrahedralMassFractions(result);
+    const auto count=masses.size();
+    Eigen::Vector3d centroid=Eigen::Vector3d::Zero();
+    for(std::size_t i=0;i<count;++i)centroid+=point(result.referenceNodes,i)*masses[i];
     Eigen::Matrix3d covariance=Eigen::Matrix3d::Zero();
     for(std::size_t i=0;i<count;++i){const auto delta=(point(result.referenceNodes,i)-centroid).eval();covariance+=masses[i]*delta*delta.transpose();}
     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(covariance);
@@ -76,6 +134,11 @@ std::vector<double> legacyProjection(const RigidFlexResult& result,const std::ve
 
 } // namespace
 
+void prepareAutoFlexContour(RigidFlexResult& result)
+{
+    result.contourMassFractions=tetrahedralMassFractions(result);
+}
+
 bool flexNodeScalarsAt(const RigidFlexResult& result,std::size_t left,std::size_t right,double fraction,
                        FlexContourKind kind,std::vector<double>& values,QString& error)
 {
@@ -98,13 +161,11 @@ bool flexNodeScalarsAt(const RigidFlexResult& result,std::size_t left,std::size_
                 }
                 next[i]=std::hypot(displacement[0],displacement[1],displacement[2]);
             }
+        }else if(kind==FlexContourKind::ElasticDisplacement && result.modalBasis.kind!=QLatin1String("MNF")){
+            autoFlexElasticScalars(result,left,right,fraction,next);
         }else if(!result.reducedDynamics){
-            // Real full-FEM dynamics has no reduced q. Express each node's
-            // displacement in the first interface's material frame, removing
-            // its rigid translation/rotation. The other interfaces may move
-            // independently and their elastic contribution must be retained.
-            // Reference poses precede static preload, so preload deformation
-            // remains visible. Interpolate these vectors before their norm.
+            // The legacy projection uses the first interface's original
+            // material frame, including the deformation from any preload.
             if(result.interfaceCount<1 || result.initialInterfacePoses.size()!=std::size_t(7*result.interfaceCount)
                 || left>=result.interfacePoses.size() || right>=result.interfacePoses.size())
                 fail("全有限元弹性位移缺少参考接口位姿。");

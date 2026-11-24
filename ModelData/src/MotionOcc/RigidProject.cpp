@@ -1,16 +1,23 @@
 #include "RigidProject.h"
 #include "CadDocument.h"
+#include "FemMesh.h"
 #include "NativeMotionDocument.h"
 #include "NativeMotionSolver.h"
+#include "NativeTopologyBinding.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
+#include <QTemporaryDir>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -24,10 +31,14 @@
 namespace MotionOcc {
 namespace {
 
-constexpr int kVersion = 1;
+constexpr int kLegacyVersion = 1;
+constexpr int kStepVersion = 2;
+constexpr int kVersion = 3;
 constexpr qint64 kMaxProjectBytes = 128ll * 1024 * 1024;
 constexpr int kMaxPartBytes = 32 * 1024 * 1024;
-constexpr int kMaxBrepBytes = 80 * 1024 * 1024;
+constexpr int kMaxMnfBytes = 64 * 1024 * 1024;
+constexpr int kMaxEmbeddedBytes = 80 * 1024 * 1024;
+constexpr int kMaxAssets = 1024;
 constexpr int kMaxParts = 20000;
 constexpr int kMaxName = 1024; // UTF-16 code units, as in rigid model validation.
 // Bound collections before allocating. The solver's semantic checks still apply.
@@ -355,8 +366,7 @@ QJsonObject writeModel(const RigidModel& model)
         return {{QStringLiteral("bodies"), QJsonArray{}}, {QStringLiteral("joints"), QJsonArray{}},
             {QStringLiteral("drives"), QJsonArray{}}, {QStringLiteral("scenarios"), QJsonArray{}},
             {QStringLiteral("nativeMotion"), QJsonObject{{QStringLiteral("document"), model.nativeDocument->root},
-                {QStringLiteral("bindings"), bindings}, {QStringLiteral("curveRequests"), curves},
-                {QStringLiteral("baseDirectory"), model.nativeDocument->baseDirectory}}}};
+                {QStringLiteral("bindings"), bindings}, {QStringLiteral("curveRequests"), curves}}}};
     }
     QJsonArray bodies, joints, drives, scenarios;
     for (const auto& body : model.bodies) {
@@ -391,7 +401,118 @@ QJsonObject writeModel(const RigidModel& model)
             {QStringLiteral("drives"), drives}, {QStringLiteral("scenarios"), scenarios}};
 }
 
-RigidModel readModel(const QJsonValue& value)
+QByteArray readEmbeddedPayload(const QJsonValue& value, int maxBytes, int& remaining)
+{
+    require(value.isString(), QStringLiteral("Expected an embedded Base64 payload."));
+    const auto text = value.toString();
+    require(!text.isEmpty() && text.size() <= ((maxBytes + 2) / 3) * 4 && text.size() % 4 == 0,
+            QStringLiteral("Invalid or oversized embedded payload."));
+    const int size = (text.size() / 4) * 3 - (text.endsWith(QLatin1Char('=')) ? 1 : 0)
+        - (text.endsWith(QLatin1String("==")) ? 1 : 0);
+    require(size > 0 && size <= maxBytes && size <= remaining, QStringLiteral("Embedded payload exceeds project limits."));
+    const QByteArray encoded = text.toLatin1(); // Non-Latin-1 converts to '?' and is rejected by the decoder.
+    auto decoded = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
+    require(decoded && decoded.decoded.size() == size && decoded.decoded.toBase64() == encoded,
+            QStringLiteral("Invalid or noncanonical embedded Base64."));
+    remaining -= size;
+    return std::move(decoded.decoded);
+}
+
+QJsonArray writeProjectAssets(const NativeMotionDocument& document, QJsonObject& root, int& remaining)
+{
+    auto motion = root.value("motionData").toObject();
+    auto imports = motion.value("importedMnfBodies").toArray();
+    QJsonArray assets;
+    QMap<QString, QString> bySource;
+    for (int row = 0; row < imports.size(); ++row) {
+        auto definition = imports.at(row).toObject();
+        const auto source = document.assetPath(definition.value("mnfFile").toString());
+        const QFileInfo info(source);
+        require(info.isFile(), QStringLiteral("找不到 MNF 文件 %1，无法将其打包到工程。").arg(source));
+        const auto canonical = info.canonicalFilePath();
+        const auto sourceKey = canonical.isEmpty() ? info.absoluteFilePath() : canonical;
+        auto name = bySource.value(sourceKey);
+        if (name.isEmpty()) {
+            require(assets.size() < kMaxAssets, QStringLiteral("工程包含过多 MNF 文件。"));
+            const int maximum = (std::min)(remaining, kMaxMnfBytes);
+            require(info.size() > 0 && info.size() <= maximum,
+                QStringLiteral("MNF 文件 %1 为空或超过工程大小上限。").arg(info.fileName()));
+            QFile file(source);
+            if (!file.open(QIODevice::ReadOnly))
+                fail(QStringLiteral("无法读取 MNF 文件 %1：%2").arg(info.fileName(), file.errorString()));
+            const auto payload = file.read(maximum + 1);
+            require(file.error() == QFile::NoError && payload.size() == info.size() && file.atEnd(),
+                QStringLiteral("MNF 文件 %1 未完整读取或在保存期间发生变化。").arg(info.fileName()));
+            remaining -= payload.size();
+            name = QStringLiteral("mnf-%1.mnf").arg(assets.size() + 1);
+            bySource.insert(sourceKey, name);
+            assets.append(QJsonObject{{"name", name}, {"data", QString::fromLatin1(payload.toBase64())}});
+        }
+        definition["mnfFile"] = name;
+        imports[row] = definition;
+    }
+    if (!imports.isEmpty()) motion["importedMnfBodies"] = imports;
+
+    auto flexBodies = motion.value("autoFlexBodies").toArray();
+    for (int row = 0; row < flexBodies.size(); ++row) {
+        auto definition = flexBodies.at(row).toObject();
+        const auto source = definition.value("meshFile").toString();
+        if (!source.isEmpty()) {
+            FemMesh mesh;
+            QString detail;
+            if (!readNetgenMesh(document.assetPath(source), MeshKind::Volume, mesh, detail)) fail(detail);
+            auto embedded = definition.value("mesh").toObject();
+            const auto normalized = femMeshJson(mesh);
+            for (auto it = normalized.constBegin(); it != normalized.constEnd(); ++it)
+                embedded.insert(it.key(), it.value());
+            definition["mesh"] = embedded;
+            definition["meshFile"] = QString{};
+            definition["meshSourceFile"] = source;
+        }
+        auto provenance = definition.value("meshSourceFile").toString();
+        if (!provenance.isEmpty()) {
+            provenance.replace('\\', '/');
+            definition["meshSourceFile"] = provenance.section('/', -1);
+        }
+        flexBodies[row] = definition;
+    }
+    if (!flexBodies.isEmpty()) motion["autoFlexBodies"] = flexBodies;
+    root["motionData"] = motion;
+    return assets;
+}
+
+void readProjectAssets(const QJsonValue& value, NativeMotionDocument& document, int& remaining)
+{
+    const auto items = array(value, kMaxAssets, "project assets");
+    QSet<QString> required;
+    for (const auto& row : document.collection("importedMnfBodies"))
+        required.insert(row.toObject().value("mnfFile").toString());
+    for (const auto& row : document.collection("autoFlexBodies"))
+        require(row.toObject().value("meshFile").toString().isEmpty(),
+            QStringLiteral("Portable project has an external finite-element mesh."));
+    require(items.isEmpty() == required.isEmpty(), QStringLiteral("Project MNF attachments do not match the model."));
+    if (items.isEmpty()) return;
+    auto directory = std::make_shared<QTemporaryDir>();
+    if (!directory->isValid())
+        fail(QStringLiteral("无法创建 MNF 附件缓存：%1").arg(directory->errorString()));
+    static const QRegularExpression pattern(QStringLiteral("\\Amnf-[1-9][0-9]{0,5}\\.mnf\\z"));
+    for (const auto& item : items) {
+        const auto row = record(item, {"name", "data"}, "project asset");
+        const auto filename = row.value("name").toString();
+        require(pattern.match(filename).hasMatch() && required.remove(filename),
+            QStringLiteral("Invalid, duplicate or unreferenced project MNF attachment."));
+        const auto bytes = readEmbeddedPayload(row.value("data"), kMaxMnfBytes, remaining);
+        QSaveFile asset(directory->filePath(filename));
+        openOutput(asset);
+        writeBytes(asset, bytes);
+        if (!asset.commit()) fail(asset.errorString());
+        document.projectAssetNames.insert(filename);
+    }
+    require(required.isEmpty(), QStringLiteral("Project is missing an embedded MNF attachment."));
+    document.projectAssetDirectory = std::move(directory);
+}
+
+RigidModel readModel(const QJsonValue& value, bool portable, const QString& projectDirectory, int& remaining)
 {
     auto data = value.toObject();
     const auto native = data.take(QStringLiteral("nativeMotion"));
@@ -400,15 +521,18 @@ RigidModel readModel(const QJsonValue& value)
     if (!native.isUndefined()) {
         for (const auto* key : {"bodies", "joints", "drives", "scenarios"})
             require(array(object.value(QLatin1String(key)), 0, key).isEmpty(), QStringLiteral("Native project has duplicate model records."));
-        const auto row = record(native, {"document", "bindings", "curveRequests", "baseDirectory"}, "native motion");
+        const auto row = portable
+            ? record(native, {"document", "bindings", "curveRequests", "assets"}, "native motion")
+            : record(native, {"document", "bindings", "curveRequests", "baseDirectory"}, "native motion");
         auto document = std::make_shared<NativeMotionDocument>();
-        require(row.value(QStringLiteral("document")).isObject() && row.value(QStringLiteral("baseDirectory")).isString(),
+        require(row.value("document").isObject() && (portable || row.value("baseDirectory").isString()),
             QStringLiteral("Invalid native document."));
         document->root = row.value(QStringLiteral("document")).toObject();
-        document->baseDirectory = row.value(QStringLiteral("baseDirectory")).toString();
+        document->baseDirectory = portable ? projectDirectory : row.value("baseDirectory").toString();
         document->ownsTopologyCad = true;
         QString detail;
         if (!validateNativeMotionDocument(*document, detail)) fail(detail);
+        if (portable) readProjectAssets(row.value("assets"), *document, remaining);
         for (const auto& binding : array(row.value(QStringLiteral("bindings")), kMaxParts, "bindings")) {
             const auto item = record(binding, {"bodyId", "partIds"}, "native binding");
             const int body = id(item, "bodyId", 0);
@@ -463,21 +587,13 @@ RigidModel readModel(const QJsonValue& value)
     return model;
 }
 
-QByteArray readBrep(const QJsonValue& value, int& remaining)
+std::array<double, 12> readPlacement(const QJsonValue& value)
 {
-    require(value.isString(), QStringLiteral("Expected embedded Base64 BREP text."));
-    const auto text = value.toString();
-    require(!text.isEmpty() && text.size() <= ((kMaxPartBytes + 2) / 3) * 4 && text.size() % 4 == 0,
-            QStringLiteral("Invalid or oversized embedded BREP."));
-    const int size = (text.size() / 4) * 3 - (text.endsWith(QLatin1Char('=')) ? 1 : 0)
-        - (text.endsWith(QLatin1String("==")) ? 1 : 0);
-    require(size > 0 && size <= kMaxPartBytes && size <= remaining, QStringLiteral("Embedded BREP exceeds project limits."));
-    const QByteArray encoded = text.toLatin1(); // Non-Latin-1 converts to '?' and is rejected by the decoder.
-    auto decoded = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
-    require(decoded && decoded.decoded.size() == size && decoded.decoded.toBase64() == encoded,
-            QStringLiteral("Invalid or noncanonical Base64 BREP."));
-    remaining -= size;
-    return std::move(decoded.decoded);
+    const auto entries = array(value, 12, "part placement");
+    require(entries.size() == 12, QStringLiteral("Expected a 3×4 rigid part placement."));
+    std::array<double, 12> placement;
+    for (int i = 0; i < entries.size(); ++i) placement[i] = number(entries[i], "part placement");
+    return placement;
 }
 
 void checkModel(const CadDocument& cad, const RigidModel& model)
@@ -537,28 +653,58 @@ bool saveRigidProject(const QString& path, const CadDocument& cad, const RigidMo
     return run(QStringLiteral("Could not save rigid project"), error, [&] {
         checkProjectPath(path);
         checkModel(cad, model);
-        const auto modelObject = writeModel(model);
+        int remaining = kMaxEmbeddedBytes;
+        auto modelObject = writeModel(model);
+        QJsonObject projectDocument;
+        QSet<int> referencedParts;
+        if (model.nativeDocument) {
+            auto native = modelObject.value("nativeMotion").toObject();
+            projectDocument = model.nativeDocument->root;
+            native["assets"] = writeProjectAssets(*model.nativeDocument, projectDocument, remaining);
+            QString detail;
+            if (!encodeNativeProjectTopology(cad, projectDocument, detail, &referencedParts)) fail(detail);
+            native["document"] = projectDocument;
+            modelObject["nativeMotion"] = native;
+        }
         require(cad.parts().size() <= kMaxParts, QStringLiteral("Too many CAD parts."));
         QJsonArray parts;
-        int remaining = kMaxBrepBytes;
+        std::vector<CadDocument::ProjectPart> referenceShapes;
+        referenceShapes.reserve(referencedParts.size());
         for (const auto& part : cad.parts()) {
             const auto partName = checkedName(part.name);
-            QByteArray brep;
+            QByteArray step;
+            std::array<double, 12> placement;
             QString detail;
-            if (!CadDocument::encodeProjectPart(part, brep, (std::min)(remaining, kMaxPartBytes), detail)) fail(detail);
-            remaining -= brep.size();
-            const auto encoded = brep.toBase64();
+            if (!CadDocument::encodeProjectStep(part, step, placement, (std::min)(remaining, kMaxPartBytes), detail))
+                fail(QStringLiteral("Could not store STEP for part %1: %2").arg(partName, detail));
+            remaining -= step.size();
+            QJsonArray placementJson;
+            for (double value : placement) placementJson.append(value);
             QJsonObject row{{QStringLiteral("id"), part.id}, {QStringLiteral("name"), partName},
-                {QStringLiteral("brep"), QString::fromLatin1(encoded)}};
+                {"geometry", QJsonObject{{"format", "step"}, {"encoding", "base64"},
+                                         {"data", QString::fromLatin1(step.toBase64())}}},
+                {"placement", placementJson}};
             if (!part.sourceName.isEmpty()) row.insert(QStringLiteral("sourceName"), part.sourceName);
             if (!part.instancePath.isEmpty()) row.insert(QStringLiteral("instancePath"), part.instancePath);
             parts.append(row);
+            if (referencedParts.contains(part.id))
+                referenceShapes.push_back({part.id, partName, std::move(step), part.sourceName,
+                    part.instancePath, CadDocument::ProjectPartEncoding::Step, placement});
+        }
+        if (!referenceShapes.empty()) {
+            // Verify selections still resolve after STEP translation before replacing an existing file.
+            CadDocument restoredReferences;
+            QString detail;
+            if (!restoredReferences.restoreProjectParts(referenceShapes, cad.m_nextId, detail, false) ||
+                !decodeNativeProjectTopology(restoredReferences, projectDocument, detail))
+                fail(detail);
         }
         const QJsonObject root{{QStringLiteral("format"), QStringLiteral("mxmotion")}, {QStringLiteral("version"), kVersion},
-            {QStringLiteral("nextPartId"), static_cast<double>(cad.m_nextId)},
+            {"lengthUnit", "mm"}, {QStringLiteral("nextPartId"), static_cast<double>(cad.m_nextId)},
             {QStringLiteral("parts"), parts}, {QStringLiteral("model"), modelObject}};
         const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
         require(bytes.size() <= kMaxProjectBytes, QStringLiteral("Project exceeds 128 MiB."));
+        countSourceMembers(bytes);
         QSaveFile file(path);
         openOutput(file);
         writeBytes(file, bytes);
@@ -571,33 +717,55 @@ bool loadRigidProject(const QString& path, CadDocument& cad, RigidModel& model, 
     return run(QStringLiteral("Could not load rigid project"), error, [&] {
         RigidModel restoredModel;
         std::uint64_t nextId;
+        bool legacy = false;
         std::vector<CadDocument::ProjectPart> parts;
         {
             const auto root = readProject(path);
             require(root.value(QStringLiteral("format")).toString() == QStringLiteral("mxmotion"),
                     QStringLiteral("Not an MxMotion project."));
-            require(number(root.value(QStringLiteral("version")), "version") == kVersion,
+            const auto version = number(root.value(QStringLiteral("version")), "version");
+            legacy = version == kLegacyVersion;
+            require(legacy || version == kStepVersion || version == kVersion,
                     QStringLiteral("Unsupported MxMotion project version."));
-            record(root, {"format", "version", "nextPartId", "parts", "model"}, "project");
+            if (legacy) {
+                record(root, {"format", "version", "nextPartId", "parts", "model"}, "project");
+            } else {
+                record(root, {"format", "version", "lengthUnit", "nextPartId", "parts", "model"}, "project");
+                require(root.value("lengthUnit").toString() == "mm", QStringLiteral("Unsupported project length unit."));
+            }
             nextId = integer(root.value(QStringLiteral("nextPartId")), 1, kExhaustedPartId, "nextPartId");
-            restoredModel = readModel(root.value(QStringLiteral("model")));
+            int remaining = kMaxEmbeddedBytes;
+            restoredModel = readModel(root.value("model"), version == kVersion, QFileInfo(path).absolutePath(), remaining);
             const auto items = array(root.value(QStringLiteral("parts")), kMaxParts, "parts");
             parts.reserve(static_cast<std::size_t>(items.size()));
-            int remaining = kMaxBrepBytes;
             for (const auto& item : items) {
                 auto data = item.toObject();
                 const auto sourceName = data.take(QStringLiteral("sourceName"));
                 const auto instancePath = data.take(QStringLiteral("instancePath"));
                 require((sourceName.isUndefined() || sourceName.isString()) && (instancePath.isUndefined() || instancePath.isString()),
                     QStringLiteral("Invalid CAD instance metadata."));
-                const auto row = record(item.isObject() ? QJsonValue(data) : item, {"id", "name", "brep"}, "CAD part");
-                parts.push_back({id(row), name(row), readBrep(row.value(QStringLiteral("brep")), remaining),
-                    checkedName(sourceName.toString()), instancePath.toString()});
+                const auto value = item.isObject() ? QJsonValue(data) : item;
+                if (legacy) {
+                    const auto row = record(value, {"id", "name", "brep"}, "CAD part");
+                    parts.push_back({id(row), name(row), readEmbeddedPayload(row.value("brep"), kMaxPartBytes, remaining),
+                        checkedName(sourceName.toString()), instancePath.toString()});
+                } else {
+                    const auto row = record(value, {"id", "name", "geometry", "placement"}, "CAD part");
+                    const auto geometry = record(row.value("geometry"), {"format", "encoding", "data"}, "CAD geometry");
+                    require(geometry.value("format").toString() == "step" &&
+                            geometry.value("encoding").toString() == "base64",
+                            QStringLiteral("Unsupported embedded CAD format or encoding."));
+                    parts.push_back({id(row), name(row), readEmbeddedPayload(geometry.value("data"), kMaxPartBytes, remaining),
+                        checkedName(sourceName.toString()), instancePath.toString(), CadDocument::ProjectPartEncoding::Step,
+                        readPlacement(row.value("placement"))});
+                }
             }
         }
         CadDocument restoredCad;
         QString detail;
         if (!restoredCad.restoreProjectParts(parts, nextId, detail)) fail(detail);
+        if (!legacy && restoredModel.nativeDocument &&
+            !decodeNativeProjectTopology(restoredCad, restoredModel.nativeDocument->root, detail)) fail(detail);
         checkModel(restoredCad, restoredModel);
         // Both assignments move standard-allocator vectors and cannot allocate.
         cad = std::move(restoredCad);

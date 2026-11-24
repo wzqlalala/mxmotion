@@ -299,7 +299,15 @@ void checkProject(const CadDocument& cad, const RigidModel& model, int lastPartI
     const QByteArray bytes = readFile(path);
     const auto header = QJsonDocument::fromJson(bytes).object();
     require(header.value(QStringLiteral("format")).toString() == QStringLiteral("mxmotion") &&
-            header.value(QStringLiteral("version")).toInt() == 1, QStringLiteral("Missing project format or version"));
+            header.value(QStringLiteral("version")).toInt() == 3 &&
+            header.value(QStringLiteral("lengthUnit")).toString() == QStringLiteral("mm"),
+            QStringLiteral("The project did not use the portable version 3 format"));
+    const auto storedPart = header.value("parts").toArray().first().toObject();
+    const auto geometry = storedPart.value("geometry").toObject();
+    require(!storedPart.contains("brep") && storedPart.value("placement").toArray().size() == 12 &&
+            geometry.value("format").toString() == "step" && geometry.value("encoding").toString() == "base64" &&
+            QByteArray::fromBase64(geometry.value("data").toString().toLatin1()).startsWith("ISO-10303-21;"),
+            QStringLiteral("The project did not store standard STEP geometry and a separate placement"));
 
     CadDocument loaded;
     RigidModel restored;
@@ -312,7 +320,7 @@ void checkProject(const CadDocument& cad, const RigidModel& model, int lastPartI
     checkMass(prepare(loaded, restored).bodies[0].properties, 0.96);
     const CadPart before = *part;
 
-    // The BREP and JSON are valid, but the body refers to a missing CAD part.
+    // The STEP payload and JSON are valid, but a body refers to a missing part.
     // Change the CAD name too so a partial commit would be observable.
     auto corruptProject = header;
     auto parts = header.value(QStringLiteral("parts")).toArray();
@@ -342,7 +350,44 @@ void checkProject(const CadDocument& cad, const RigidModel& model, int lastPartI
             part->shape.IsEqual(before.shape) && part->display.vertices == before.display.vertices &&
             part->display.triangles == before.display.triangles && part->display.edges == before.display.edges,
             QStringLiteral("Loading corrupt data changed existing CAD"));
+
+    auto badPlacement = storedPart.value("placement").toArray();
+    badPlacement.replace(0, 2);
+    auto scaledPart = storedPart;
+    scaledPart["placement"] = badPlacement;
+    auto scaledProject = header;
+    scaledProject["parts"] = QJsonArray{scaledPart};
+    QFile scaled(temporary.filePath(QStringLiteral("scaled.mxmotion")));
+    const auto scaledBytes = QJsonDocument(scaledProject).toJson();
+    require(scaled.open(QIODevice::WriteOnly) && scaled.write(scaledBytes) == scaledBytes.size(),
+            QStringLiteral("Could not write a non-rigid placement fixture"));
+    scaled.close();
+    require(!loadRigidProject(scaled.fileName(), loaded, restored, error) &&
+            loaded.part(partId)->shape.IsEqual(before.shape),
+            QStringLiteral("A non-rigid placement was accepted or replaced the existing project"));
     require(addBox(loaded) == lastPartId + 1, QStringLiteral("Project did not preserve the next CAD part ID"));
+
+    std::ostringstream oldBrep;
+    BRepTools::Write(cad.part(partId)->shape, oldBrep, false, false, TopTools_FormatVersion_VERSION_3);
+    auto oldPart = storedPart;
+    oldPart.remove("geometry");
+    oldPart.remove("placement");
+    oldPart["brep"] = QString::fromLatin1(QByteArray::fromStdString(oldBrep.str()).toBase64());
+    auto oldProject = header;
+    oldProject.remove("lengthUnit");
+    oldProject["version"] = 1;
+    oldProject["parts"] = QJsonArray{oldPart};
+    QFile old(temporary.filePath(QStringLiteral("legacy.mxmotion")));
+    const auto oldBytes = QJsonDocument(oldProject).toJson();
+    require(old.open(QIODevice::WriteOnly) && old.write(oldBytes) == oldBytes.size(),
+            QStringLiteral("Could not create a legacy BREP project fixture"));
+    old.close();
+    checked(loadRigidProject(old.fileName(), loaded, restored, error), QStringLiteral("Read version 1 BREP project"), error);
+    sameModel(restored, model);
+    checked(saveRigidProject(path, loaded, restored, error), QStringLiteral("Save legacy project in the new format"), error);
+    require(QJsonDocument::fromJson(readFile(path)).object().value("version").toInt() == 3 &&
+            readFile(old.fileName()) == oldBytes,
+            QStringLiteral("Version 1 migration did not write a separate version 3 project"));
 }
 
 void checkCurvePersistence(const CadDocument& cad, const RigidModel& model, const QTemporaryDir& temporary)

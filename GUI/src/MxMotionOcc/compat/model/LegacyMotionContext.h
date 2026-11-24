@@ -26,6 +26,7 @@ public:
     void adoptExternalDocument(const NativeMotionDocument& document);
     void setExtensionFields(const QString& collection,int id,const QJsonObject& fields);
     const NativeMotionDocument& document() const { return document_; }
+    const CadDocument& cadDocument() const { return cad_; }
     std::function<void()> unedit;
     static QJsonValue applyFieldChanges(const QJsonValue& before,const QJsonValue& after,const QJsonValue& original);
 public slots:

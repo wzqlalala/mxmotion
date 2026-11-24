@@ -36,6 +36,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 
 namespace MotionOcc {
 namespace {
@@ -173,6 +174,167 @@ bool sameFingerprint(const QJsonObject& a, const QJsonObject& b)
         if (x.size() != y.size()) return false;
         for (int i = 0; i < x.size(); ++i) if (!close(x[i].toDouble(NAN), y[i].toDouble(NAN))) return false;
     }
+    return true;
+}
+
+QJsonObject projectFingerprint(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind)
+{
+    auto result = fingerprint(shape, kind);
+    if (result.isEmpty() || !(result.value("measure").toDouble() > 0)) return {};
+
+    // Entity classification, parameter direction and enumeration are not
+    // invariant across geometry translators. Use measured world geometry.
+    for (const auto* key : {"type", "edgeCount", "wireCount", "samples"}) result.remove(QLatin1String(key));
+    if (kind != TopAbs_EDGE) return result;
+
+    const BRepAdaptor_Curve curve(TopoDS::Edge(shape));
+    const auto first = curve.FirstParameter(), last = curve.LastParameter();
+    const auto start = curve.Value(first), end = curve.Value(last);
+    const bool closed = start.Distance(end) <= Precision::Confusion();
+    result["closed"] = closed;
+    if (!closed) {
+        // Samples spaced by arc length describe an open edge even if a STEP
+        // translator reverses it or changes its native parameter spacing.
+        QJsonArray points;
+        points.append(xyz(start));
+        const double length = result.value("measure").toDouble();
+        for (int i = 1; i < 4; ++i) {
+            const GCPnts_AbscissaPoint point(1e-8, curve, length * i / 4.0, first);
+            if (!point.IsDone()) return {};
+            points.append(xyz(curve.Value(point.Parameter())));
+        }
+        points.append(xyz(end));
+        result["arcPoints"] = points;
+    }
+    return result;
+}
+
+bool sameProjectFingerprint(const QJsonObject& a, const QJsonObject& b)
+{
+    if (!sameFingerprint(a, b) || a.value("closed") != b.value("closed")) return false;
+    const auto first = a.value("arcPoints").toArray(), second = b.value("arcPoints").toArray();
+    if (first.size() != second.size()) return false;
+    bool forward = true, reverse = true;
+    for (int i = 0; i < first.size() && (forward || reverse); ++i) {
+        const auto point = first[i].toArray();
+        const auto next = second[i].toArray(), previous = second[second.size()-1-i].toArray();
+        if (point.size() != 3 || next.size() != 3 || previous.size() != 3) return false;
+        for (int axis = 0; axis < 3; ++axis) {
+            const double v = point[axis].toDouble(NAN);
+            forward = forward && std::abs(v - next[axis].toDouble(NAN)) <= 1e-5;
+            reverse = reverse && std::abs(v - previous[axis].toDouble(NAN)) <= 1e-5;
+        }
+    }
+    return forward || reverse;
+}
+
+struct ProjectTopologyField {
+    const char* runtime;
+    const char* stored;
+    TopAbs_ShapeEnum kind;
+};
+
+const ProjectTopologyField projectFields[] = {
+    {"occCurveEdges", "curveGeometry", TopAbs_EDGE},
+    {"occSurfaceFaces", "surfaceGeometry", TopAbs_FACE},
+    {"occCurveIEdges", "curveIGeometry", TopAbs_EDGE},
+    {"occCurveJEdges", "curveJGeometry", TopAbs_EDGE},
+};
+
+struct PartTopology {
+    TopTools_IndexedMapOfShape shapes;
+    QVector<QJsonObject> signatures;
+};
+
+bool convertProjectTopology(const CadDocument& cad, QJsonObject& root, QString& error, bool encode,
+                            QSet<int>* referencedParts)
+{
+    error.clear();
+    auto data = root.value("motionData").toObject();
+    if (!data.value("joints").isArray()) {
+        if (referencedParts) referencedParts->clear();
+        return true;
+    }
+
+    auto joints = data.value("joints").toArray();
+    std::map<std::pair<int, TopAbs_ShapeEnum>, PartTopology> topology;
+    QSet<int> parts;
+    for (int row = 0; row < joints.size(); ++row) {
+        if (!joints[row].isObject()) continue; // The motion document validator reports this.
+        auto joint = joints[row].toObject();
+        for (const auto& field : projectFields) {
+            const QLatin1String from(encode ? field.runtime : field.stored);
+            const QLatin1String to(encode ? field.stored : field.runtime);
+            const auto issue = [&](const QString& reason) {
+                error = QStringLiteral("运动副 %1（%2）的几何引用 %3：%4")
+                    .arg(joint.value("id").toInt(-1)).arg(joint.value("name").toString(), from, reason);
+                return false;
+            };
+            if (joint.contains(to))
+                return issue(QStringLiteral("工程几何字段与运动文档字段冲突。"));
+            const auto stored = joint.value(from);
+            if (stored.isUndefined()) continue;
+            if (!stored.isArray())
+                return issue(QStringLiteral("几何选择应为数组。"));
+            QJsonArray converted;
+            try {
+                for (const auto& value : stored.toArray()) {
+                    auto ref = value.toObject();
+                    const int partId = ref.value("partId").toInt(-1);
+                    const auto* part = cad.part(partId);
+                    if (!part) return issue(QStringLiteral("找不到部件 %1。").arg(partId));
+
+                    auto [entry, inserted] = topology.try_emplace({partId, field.kind});
+                    auto& partTopology = entry->second;
+                    if (inserted) TopExp::MapShapes(part->shape, field.kind, partTopology.shapes);
+                    const auto& shapes = partTopology.shapes;
+                    if (encode) {
+                        const int index = ref.value("index").toInt(-1);
+                        if (index < 1 || index > shapes.Extent())
+                            return issue(QStringLiteral("部件 %1 的几何序号 %2 无效。").arg(partId).arg(index));
+                        const auto prior = ref.value("geometry").toObject();
+                        if (!prior.isEmpty() && !sameFingerprint(prior, fingerprint(shapes(index), field.kind)))
+                            return issue(QStringLiteral("部件 %1 所选边或面已变化，请重新选取。").arg(partId));
+                        const auto signature = projectFingerprint(shapes(index), field.kind);
+                        if (signature.isEmpty())
+                            return issue(QStringLiteral("无法记录部件 %1 的几何特征。").arg(partId));
+                        ref.remove("index");
+                        ref.insert("geometry", signature);
+                        parts.insert(partId);
+                    } else {
+                        if (ref.contains("index"))
+                            return issue(QStringLiteral("新版工程引用应由几何特征确定。"));
+                        if (inserted) {
+                            partTopology.signatures.reserve(shapes.Extent());
+                            for (int index = 1; index <= shapes.Extent(); ++index)
+                                partTopology.signatures.append(projectFingerprint(shapes(index), field.kind));
+                        }
+                        const auto signature = ref.value("geometry").toObject();
+                        int match = 0, count = 0;
+                        for (int index = 0; index < partTopology.signatures.size(); ++index) {
+                            if (sameProjectFingerprint(signature, partTopology.signatures[index])) {
+                                match = index+1;
+                                ++count;
+                            }
+                        }
+                        if (count != 1)
+                            return issue(QStringLiteral("部件 %1 匹配到 %2 个候选，无法唯一恢复边或面。").arg(partId).arg(count));
+                        ref.insert("index", match);
+                        ref.insert("geometry", fingerprint(shapes(match), field.kind));
+                    }
+                    converted.append(ref);
+                }
+            } catch (const Standard_Failure& failure) {
+                return issue(QStringLiteral("提取边或面的几何特征失败：%1").arg(QString::fromUtf8(failure.GetMessageString())));
+            }
+            joint.remove(from);
+            joint.insert(to, converted);
+        }
+        joints[row] = joint;
+    }
+    data["joints"] = joints;
+    root["motionData"] = data;
+    if (referencedParts) *referencedParts = std::move(parts);
     return true;
 }
 
@@ -362,6 +524,17 @@ QJsonObject nativeTopologyReference(const CadDocument& cad, int partId, int inde
     const auto signature = fingerprint(shapes(index), kind);
     if (!signature.isEmpty()) result["geometry"] = signature;
     return result;
+}
+
+bool encodeNativeProjectTopology(const CadDocument& cad, QJsonObject& root, QString& error,
+                                 QSet<int>* referencedParts)
+{
+    return convertProjectTopology(cad, root, error, true, referencedParts);
+}
+
+bool decodeNativeProjectTopology(const CadDocument& cad, QJsonObject& root, QString& error)
+{
+    return convertProjectTopology(cad, root, error, false, nullptr);
 }
 
 bool autoBindNativeMotionTopology(const CadDocument& cad, NativeMotionDocument& document,

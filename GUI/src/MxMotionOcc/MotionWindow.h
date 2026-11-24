@@ -167,7 +167,7 @@ private:
     void batchNativeBodies();
     void editNativeLoadExport(int scenarioId);
     bool commitNativeDocument(NativeMotionDocument document, ModelNode selection);
-    bool resolveNativeBindings(NativeMotionDocument& document, bool interactive);
+    bool resolveNativeBindings(const CadDocument& cad, NativeMotionDocument& document, bool interactive);
     void ensureNativeFlexMesh(int flexId);
     void inspectFlexModes(int flexId);
     void importMnf(const QString& path = {}, int bindingId = -1);

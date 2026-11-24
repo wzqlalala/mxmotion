@@ -76,7 +76,9 @@ void MotionWindow::ensureOriginalMotionContext() {
     ensureOriginalCurveHost();
     if(!m_model.nativeDocument)return;
     if(m_original && m_original->document().root==m_model.nativeDocument->root
-       && m_original->document().bodyPartBindings==m_model.nativeDocument->bodyPartBindings) {
+       && m_original->document().bodyPartBindings==m_model.nativeDocument->bodyPartBindings
+       && m_original->document().baseDirectory==m_model.nativeDocument->baseDirectory
+       && m_original->document().projectAssetDirectory==m_model.nativeDocument->projectAssetDirectory) {
         m_original->refreshMeshes();return;
     }
     m_original.reset();

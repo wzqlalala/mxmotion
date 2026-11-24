@@ -4,21 +4,12 @@
 
 namespace MotionOcc {
 
-// .mxmotion v1, UTF-8 JSON. All fields below are required; no other fields are defined.
-// Root: { format: "mxmotion", version: 1, nextPartId, parts: [...], model: {...} }.
-// Part: { id, name, brep }; brep is standard padded Base64 of an OCCT V3 text BREP
-// stream (exact topology including placement, in mm, with no polygon/triangle data).
-// Model collections use these record fields:
-//   bodies:    { id, name, partId, fixed, massKg, densityKgM3 }
-//   joints:    { id, name, kind, movingBodyId, baseBodyId, originMm, axis }
-//   drives:    { id, name, jointId, kind, value }
-//   scenarios: { id, name, duration, step, gravityMS2 }
-// Joint kinds are "revolute", "prismatic", "fixed"; drive kinds are "speed", "displacement".
-// Vectors are arrays of three numbers. Units and references follow RigidMotion.h.
-// nextPartId is greater than every part ID (including previously allocated IDs).
-// Limits: 128 MiB JSON, 32 MiB decoded BREP per part, 80 MiB decoded BREP total,
-// at most 20,000 parts and 1,024 UTF-16 code units per name.
-// Neither meshes, analysis results nor external geometry paths are stored.
+// .mxmotion v3 is UTF-8 JSON with lengthUnit "mm". Each part stores standard
+// Base64 STEP of its local geometry and a row-major 3×4 local-to-world rigid placement.
+// Persistent geometric selections use part IDs and geometric signatures.
+// Motion definitions, AutoFlex meshes, imported MNF and curve requests persist.
+// Result frames stay outside the project. The reader also accepts v1 (OCCT BREP)
+// and v2 (STEP, with legacy external asset references).
 // A failed load changes neither output. Save atomically replaces the destination.
 bool saveRigidProject(const QString& path, const CadDocument& cad, const RigidModel& model, QString& error);
 bool loadRigidProject(const QString& path, CadDocument& cad, RigidModel& model, QString& error);

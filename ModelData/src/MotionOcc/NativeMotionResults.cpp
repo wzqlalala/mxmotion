@@ -186,6 +186,7 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
         output.psiInternal=runtime.result.psi_internal;
         output.reducedDynamics=runtime.reducedDynamics;
         output.modalBasis=runtime.modalBasis;
+        if(!runtime.importedBody)prepareAutoFlexContour(output);
         if(runtime.interfacePoses.empty())throw std::runtime_error("柔性体没有初始接口位姿。");
         output.initialInterfacePoses=runtime.referenceInterfacePoses.empty()?runtime.interfacePoses.front():runtime.referenceInterfacePoses;
         if(output.reducedDynamics && output.psiInternal.size()!=output.referenceNodes.size()*static_cast<std::size_t>(6*output.interfaceCount+output.modeCount))

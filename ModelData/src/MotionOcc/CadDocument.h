@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QVector3D>
@@ -8,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace MotionOcc {
@@ -54,21 +56,29 @@ public:
     bool addPrimitive(Primitive primitive, double x, double y, double z, int& id, QString& error);
     // A positive ID exports that part; -1 exports all parts as a compound.
     bool exportFile(const QString& path, int partId, QString& error) const;
+    bool exportNamedStep(const QString& path, const QMap<int, QString>& partNames, QString& error) const;
+    // Restore logical IDs and display names after importing a named exchange assembly.
+    bool restoreNamedStepParts(const QMap<QString, std::pair<int, QString>>& parts, QString& error);
 
 private:
-    // Project-only access: native placed shapes, no CAD interchange or ID reallocation.
+    // Project-only access preserves the part IDs and local coordinate frames.
     friend bool saveRigidProject(const QString&, const CadDocument&, const RigidModel&, QString&);
     friend bool loadRigidProject(const QString&, CadDocument&, RigidModel&, QString&);
 
+    enum class ProjectPartEncoding { LegacyBrep, Step };
     struct ProjectPart {
         int id;
         QString name;
-        QByteArray brep;
+        QByteArray geometry;
         QString sourceName;
         QString instancePath;
+        ProjectPartEncoding encoding = ProjectPartEncoding::LegacyBrep;
+        std::array<double, 12> placement{};
     };
-    static bool encodeProjectPart(const CadPart&, QByteArray& brep, int maxBytes, QString& error);
-    bool restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error);
+    static bool encodeProjectStep(const CadPart&, QByteArray& geometry, std::array<double, 12>& placement,
+                                  int maxBytes, QString& error);
+    bool restoreProjectParts(const std::vector<ProjectPart>& parts, std::uint64_t nextId, QString& error,
+                             bool buildDisplay = true);
 
     std::vector<CadPart> m_parts;
     std::uint64_t m_nextId = 1;

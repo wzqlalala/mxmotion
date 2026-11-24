@@ -20,6 +20,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QTemporaryDir>
 #include <QVariant>
 
 #include <algorithm>
@@ -770,6 +771,13 @@ QJsonObject NativeMotionDocument::entity(const QString& collectionName, int id) 
     return {};
 }
 
+QString NativeMotionDocument::assetPath(const QString& file) const
+{
+    if (projectAssetDirectory && projectAssetNames.contains(file))
+        return projectAssetDirectory->filePath(file);
+    return QDir(baseDirectory).absoluteFilePath(file);
+}
+
 bool validateNativeMotionDocument(const NativeMotionDocument& document, QStringList& issues)
 {
     Validator(document, issues).run();
@@ -809,16 +817,74 @@ bool readNativeMotionDocument(const QString& path, NativeMotionDocument& out, QS
     return parseNativeMotionDocument(file.readAll(), out, error, QFileInfo(path).absolutePath());
 }
 
-bool writeNativeMotionDocument(const QString& path, const NativeMotionDocument& document, QString& error)
+bool writeNativeMotionDocument(const QString& path, const NativeMotionDocument& document, QString& error,
+                               bool copyExchangeAssets)
 {
     if (!validateNativeMotionDocument(document, error)) return false;
-    const auto bytes = QJsonDocument(document.root).toJson(QJsonDocument::Indented);
+    auto root = document.root;
+    std::unique_ptr<QTemporaryDir> exportedAssets;
+    if (copyExchangeAssets || !document.projectAssetNames.isEmpty()) {
+        const QDir parent(QFileInfo(path).absolutePath());
+        const QDir canonicalParent(parent.canonicalPath());
+        QMap<QString, QString> attached;
+        auto motion = root.value("motionData").toObject();
+        const auto rewrite = [&](const QString& collection, const QString& field, const QString& extension) {
+            const auto source = motion.value(collection);
+            if (!source.isArray()) return true;
+            auto definitions = source.toArray();
+            for (int row = 0; row < definitions.size(); ++row) {
+                auto definition = definitions.at(row).toObject();
+                const auto reference = definition.value(field).toString();
+                const bool packed = collection == "importedMnfBodies" && document.projectAssetNames.contains(reference);
+                if (reference.isEmpty() || (!packed && !copyExchangeAssets)) continue;
+                const QFileInfo input(document.assetPath(reference));
+                const auto sourcePath = input.canonicalFilePath();
+                if (!input.isFile() || sourcePath.isEmpty()) {
+                    error = QStringLiteral("找不到运动数据附件：%1").arg(input.absoluteFilePath());
+                    return false;
+                }
+                const auto existingRelative = canonicalParent.relativeFilePath(sourcePath);
+                QString relative;
+                if (!packed && QDir::isRelativePath(existingRelative) && !existingRelative.startsWith("../")) {
+                    relative = existingRelative;
+                } else {
+                    const auto key = sourcePath + '|' + extension;
+                    relative = attached.value(key);
+                    if (relative.isEmpty()) {
+                        if (!exportedAssets) {
+                            exportedAssets = std::make_unique<QTemporaryDir>(parent.filePath("mxmotion-assets-XXXXXX"));
+                            if (!exportedAssets->isValid()) {
+                                error = QStringLiteral("无法创建运动数据附件目录：%1").arg(exportedAssets->errorString());
+                                return false;
+                            }
+                        }
+                        const auto filename = QStringLiteral("asset-%1.%2").arg(attached.size() + 1).arg(extension);
+                        if (!QFile::copy(sourcePath, exportedAssets->filePath(filename))) {
+                            error = QStringLiteral("无法导出运动数据附件：%1").arg(input.fileName());
+                            return false;
+                        }
+                        relative = QFileInfo(exportedAssets->path()).fileName() + '/' + filename;
+                        attached.insert(key, relative);
+                    }
+                }
+                definition[field] = relative;
+                definitions[row] = definition;
+            }
+            motion[collection] = definitions;
+            return true;
+        };
+        if (!rewrite("importedMnfBodies", "mnfFile", "mnf")
+            || !rewrite("autoFlexBodies", "meshFile", "vol")) return false;
+        root["motionData"] = motion;
+    }
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
     if (bytes.size() > MaxDocumentBytes) { error = QStringLiteral("Motion JSON 超过 64 MiB。"); return false; }
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
         error = QStringLiteral("保存 Motion JSON 失败：%1").arg(file.errorString()); return false;
     }
+    if (exportedAssets) exportedAssets->setAutoRemove(false);
     error.clear();
     return true;
 }

@@ -83,7 +83,10 @@ void staticAxialAndPortIdentity()
         expectNear(flex.nodePositions[0][3*i]-x,.001*x,3e-6,"tetrahedral axial patch displacement");
     }
     std::vector<double> elastic;QString error;require(flexNodeScalars(flex,0,FlexContourKind::ElasticDisplacement,elastic,error),error);
-    expectNear(*std::max_element(elastic.begin(),elastic.end()),.04,3e-6,"full FEM elastic contour lost static preload");
+    // For a 0.1% axial stretch about (20, 5, 5), the lumped nodal covariance has
+    // diagonal (150, 25, 25) and off-diagonal 25/3 mm². The fit tilts slightly.
+    expectNear(*std::max_element(elastic.begin(),elastic.end()),.0204945132,3e-6,
+        "full FEM contour must retain axial preload measured about the fitted mass center");
     qInfo()<<"independent static beam: tip extension"<<flex.interfacePoses[0][7]-flex.initialInterfacePoses[7]<<"mm, analytic 0.04 mm";
 }
 void gravityMassOnlyOnce()

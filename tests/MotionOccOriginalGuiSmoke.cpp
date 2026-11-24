@@ -2,6 +2,7 @@
 #include "OccViewport.h"
 #include "RigidProject.h"
 #include "NativeBodyMass.h"
+#include "NativeMotionExchange.h"
 #include "UiPalette.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "compat/mViewportModelManager.h"
@@ -47,6 +48,7 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QTextStream>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -547,6 +549,37 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
             select(tree,ModelNode::Native,23,"joints");
             verifyToolbarPickerSources(reopened,*active<mMotionJointPanel>(reopened));
             log<<"PASS original joint toolbar filters, mixed point sources, face/edge directions, and start-to-end geometry\n";log.flush();
+        }
+        {
+            QTemporaryDir authored, relocated;
+            require(authored.isValid() && relocated.isValid(), "Could not create exchange test directories");
+            CadDocument cad;
+            RigidModel model;
+            QString error;
+            require(loadRigidProject(savedProject, cad, model, error), error);
+            const auto original = authored.filePath("工程交换.motion.json");
+            require(writeNativeMotionExchange(original, cad, *model.nativeDocument, error), error);
+            NativeMotionDocument manifest;
+            require(readNativeMotionDocument(original, manifest, error), error);
+            const auto step = manifest.root.value("geometryExchange").toObject().value("stepFile").toString();
+            require(!step.isEmpty() && QDir::isRelativePath(step)
+                && QFile::rename(authored.filePath(step), relocated.filePath(step))
+                && QFile::rename(original, relocated.filePath("工程交换.motion.json")),
+                "Could not relocate the exchanged motion JSON and STEP");
+            MotionWindow window;
+            window.resize(1440,960);
+            window.show();
+            require(window.importMotionJson(relocated.filePath("工程交换.motion.json"), false),
+                "Public motion JSON import did not load STEP into a fresh document");
+            auto* tree = window.findChild<QTreeWidget*>("mTreeView");
+            require(tree, "Missing exchange model tree");
+            select(tree, ModelNode::Native, 11, "markers");
+            require(active<mMotionMarkerPanel>(window)->findChild<mPointPickerWidget*>() != nullptr,
+                "Relocated exchange did not restore the original marker panel");
+            require(context()->document().bodyPartBindings == model.nativeDocument->bodyPartBindings,
+                "Relocating JSON and STEP changed motion body binding");
+            log << "PASS relocated motion JSON opened STEP and original motion panels in a fresh window\n";
+            log.flush();
         }
         extern int runMotionOccOriginalAutoFlexSmoke(QApplication&,const QString&);
         require(runMotionOccOriginalAutoFlexSmoke(app,output.filePath("autoflex"))==0,"Original AutoFlex workflow failed; see autoflex/original-autoflex-smoke.txt");

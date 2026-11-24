@@ -11,7 +11,6 @@
 #include "motion/physics/LinkPointSpline.h"
 #include "motion/timestepper/TimestepperHHT.h"
 
-#include <QDir>
 #include <QJsonArray>
 #include <QQuaternion>
 #include <QRegularExpression>
@@ -239,7 +238,7 @@ private:
                 const auto& definition = imported->second;
                 const auto file = definition.value("mnfFile").toString();
                 if (file.trimmed().isEmpty()) fail(QStringLiteral("MNF 柔性体 %1 缺少文件路径。").arg(b.id));
-                const auto path = QDir(in.document.baseDirectory).absoluteFilePath(file);
+                const auto path = in.document.assetPath(file);
                 const auto translation = vector(definition.value("referenceTranslationMm"));
                 const auto euler = vector(definition.value("referenceEuler321Deg")) * d2r;
                 const auto rotation = motion::Q_from_AngZ(euler.z()) * motion::Q_from_AngY(euler.y()) * motion::Q_from_AngX(euler.x());

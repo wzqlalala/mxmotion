@@ -107,7 +107,12 @@ void MotionWindow::importMnf(const QString& requestedPath, int bindingId)
         : requestedPath;
     if (chosen.isEmpty()) return;
     const auto path = QFileInfo(chosen).absoluteFilePath();
-    auto* progress = new QProgressDialog(tr("正在读取 %1 的振型和表面…").arg(QFileInfo(path).fileName()),
+    const auto document = m_model.nativeDocument;
+    const auto definition = document && bindingId >= 0
+        ? document->entity("importedMnfBodies", bindingId) : QJsonObject{};
+    const auto name = definition.value("name").toString(QFileInfo(path).fileName());
+    const auto assetDirectory = document && bindingId >= 0 ? document->projectAssetDirectory : nullptr;
+    auto* progress = new QProgressDialog(tr("正在读取 %1 的振型和表面…").arg(name),
                                          QString{}, 0, 0, this);
     progress->setObjectName(QStringLiteral("mnfImportProgress"));
     progress->setWindowTitle(tr("导入 MNF"));
@@ -116,7 +121,7 @@ void MotionWindow::importMnf(const QString& requestedPath, int bindingId)
     progress->setMinimumDuration(0);
     progress->setWindowFlag(Qt::WindowCloseButtonHint, false);
     auto* watcher = new QFutureWatcher<std::shared_ptr<LoadedMnf>>(progress);
-    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, progress, path, bindingId] {
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, progress, path, name, bindingId] {
         auto imported = watcher->result();
         progress->close();
         progress->deleteLater();
@@ -131,12 +136,12 @@ void MotionWindow::importMnf(const QString& requestedPath, int bindingId)
                 configureImportedMnf(path, imported->preview, bindingId);
             };
         }
-        const auto name = QFileInfo(path).fileName();
         openImportedMnfModeInspector(this, preview, name, std::move(bind));
         setNotice(tr("已读入 %1 的 %2 个节点和 %3 阶弹性振型。")
             .arg(name).arg(preview.sourceNodeIds.size()).arg(preview.modeCount));
     });
-    watcher->setFuture(QtConcurrent::run([path] {
+    watcher->setFuture(QtConcurrent::run([path, assetDirectory] {
+        Q_UNUSED(assetDirectory); // Keep the extracted project asset alive during parsing.
         auto imported = std::make_shared<LoadedMnf>();
         readMnfModePreview(path, imported->preview, imported->error);
         return imported;
@@ -150,13 +155,13 @@ void MotionWindow::configureImportedMnf(const QString& path, const RigidFlexResu
     if (m_original) m_original->flush();
     auto document = *m_model.nativeDocument;
     const auto previous = document.entity("importedMnfBodies", bindingId);
-    if (bindingId >= 0 && (previous.isEmpty() || QFileInfo(QDir(document.baseDirectory)
-        .absoluteFilePath(previous.value("mnfFile").toString())).absoluteFilePath() != path)) {
+    if (bindingId >= 0 && (previous.isEmpty() || QFileInfo(document.assetPath(previous.value("mnfFile").toString()))
+        .absoluteFilePath() != path)) {
         setNotice(tr("当前项目中的 MNF 绑定已变化，请从柔性体树重新打开。"), true);
         return;
     }
     const auto storedBindings = previous.value("jointBindings").toObject();
-    const auto filename = QFileInfo(path).fileName();
+    const auto filename = previous.value("name").toString(QFileInfo(path).fileName());
     QSet<int> unavailable;
     QSet<int> otherMnfBodies;
     for (const auto& item : document.collection("autoFlexBodies")) {
@@ -426,14 +431,21 @@ void MotionWindow::configureImportedMnf(const QString& path, const RigidFlexResu
             newId = 0;
             for (const auto& item : imports) newId = std::max(newId, item.toObject().value("id").toInt() + 1);
         }
-        QString storedPath = path;
-        if (!document.baseDirectory.isEmpty()) {
+        QString storedPath = previous.value("mnfFile").toString(path);
+        if (previous.isEmpty() && !document.baseDirectory.isEmpty()) {
             const auto relative = QDir(document.baseDirectory).relativeFilePath(path);
-            if (QDir::isRelativePath(relative) && !relative.startsWith(QStringLiteral("../"))) storedPath = relative;
+            if (QDir::isRelativePath(relative) && !relative.startsWith(QStringLiteral("../"))
+                && !document.projectAssetNames.contains(relative))
+                storedPath = relative;
         }
-        const QJsonObject definition{{"id", newId}, {"name", filename}, {"targetBodyId", body->currentData().toInt()},
-            {"mnfFile", storedPath}, {"jointBindings", mapping}, {"referenceTranslationMm", pointJson(referenceValues(origin))},
-            {"referenceEuler321Deg", pointJson(referenceValues(euler))}};
+        auto definition = previous;
+        definition["id"] = newId;
+        definition["name"] = filename;
+        definition["targetBodyId"] = body->currentData().toInt();
+        definition["mnfFile"] = storedPath;
+        definition["jointBindings"] = mapping;
+        definition["referenceTranslationMm"] = pointJson(referenceValues(origin));
+        definition["referenceEuler321Deg"] = pointJson(referenceValues(euler));
         bool replaced = false;
         for (int i = 0; i < imports.size(); ++i) {
             if (imports.at(i).toObject().value("id").toInt(-1) != newId) continue;
