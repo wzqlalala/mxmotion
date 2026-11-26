@@ -345,6 +345,64 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         arrow(symbol,sub(tip,mul(tang,scale*0.25)),tang,scale*0.35);
         append(std::move(symbol));
     }
+    const QColor electricColor(46,164,108);
+    for(const auto& value:document.collection("electricMotors")){
+        const auto row=value.toObject();if(!visible(row))continue;
+        const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
+        if(joint.isEmpty())continue;
+        const auto [origin,axis]=jointFrame(joint,joint.value("actionBodyId").toInt(-1));
+        if(norm(axis)<0.5)continue;
+        auto symbol=make("electricMotors",row,origin,electricColor);
+        cylinder(symbol,origin,axis,scale*0.88);
+        ring(symbol,origin,axis,scale*1.02);
+        const auto [u,v]=basis(axis);
+        const double endAng=pi*1.5;
+        ring(symbol,add(origin,mul(axis,scale*0.88)),axis,scale*0.68,0,endAng);
+        const auto tip=add(add(origin,mul(axis,scale*0.88)),
+                           add(mul(u,scale*0.68*std::cos(endAng)),mul(v,scale*0.68*std::sin(endAng))));
+        const auto tang=add(mul(u,-std::sin(endAng)),mul(v,std::cos(endAng)));
+        arrow(symbol,sub(tip,mul(tang,scale*0.22)),tang,scale*0.32);
+        append(std::move(symbol));
+    }
+    const QColor integratedColor(142,92,205);
+    const auto drawLinearServoSymbol=[&](const char* colName,const QJsonObject& row,bool hasSidePumpPod){
+        if(!visible(row))return;
+        Point a{},b{};
+        if(row.value("mountMode").toString()=="Joint"){
+            const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
+            if(joint.isEmpty())return;
+            const int act=joint.value("actionBodyId").toInt(-1),bas=joint.value("baseBodyId").toInt(-1);
+            const auto raw=vector(joint,"origin",{0,0,0});
+            const auto axisRaw=unit(vector(joint,"axis",vector(joint,"baseSpin")));
+            const double len=std::max(50.0,row.value("stroke").toDouble(300.0))+row.value("initialStroke").toDouble(150.0);
+            b=transform(bas,raw);
+            a=transform(act,add(raw,mul(axisRaw,len)));
+        }else{
+            a=transform(row.value("bodyIId").toInt(-1),vector(row,"localI",{0,0,0}));
+            b=transform(row.value("bodyJId").toInt(-1),vector(row,"localJ",{0,0,0}));
+        }
+        const auto delta=sub(a,b);const double len=norm(delta);
+        if(len<=1e-9)return;
+        const auto axis=mul(delta,1.0/len);const auto [u,v]=basis(axis);
+        const double bodyR=scale*0.52;const double rodR=bodyR*0.42;
+        const auto mid=add(b,mul(delta,0.60));
+        auto symbol=make(colName,row,mul(add(a,b),0.5),integratedColor);
+        ring(symbol,b,axis,bodyR);ring(symbol,mid,axis,bodyR);
+        for(const auto& d:{u,mul(u,-1),v,mul(v,-1)})line(symbol,add(b,mul(d,bodyR)),add(mid,mul(d,bodyR)));
+        if(hasSidePumpPod){
+            const auto podBase=add(add(b,mul(delta,0.22)),mul(u,bodyR*1.45));
+            const auto podTop=add(add(b,mul(delta,0.46)),mul(u,bodyR*1.45));
+            ring(symbol,podBase,axis,bodyR*0.45);ring(symbol,podTop,axis,bodyR*0.45);
+            line(symbol,podBase,podTop);
+        }else{
+            ring(symbol,add(b,mul(delta,0.25)),axis,bodyR*1.12);
+        }
+        ring(symbol,mid,axis,rodR);ring(symbol,a,axis,rodR);line(symbol,mid,a);
+        crosshair(symbol,a,scale*0.18);crosshair(symbol,b,scale*0.18);
+        append(std::move(symbol));
+    };
+    for(const auto& value:document.collection("ehaActuators"))drawLinearServoSymbol("ehaActuators",value.toObject(),true);
+    for(const auto& value:document.collection("emaActuators"))drawLinearServoSymbol("emaActuators",value.toObject(),false);
     return output;
 }
 

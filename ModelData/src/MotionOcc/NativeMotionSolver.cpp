@@ -340,7 +340,8 @@ bool isRigidPositionDriven(const NativeMotionInput& input, const NativeMotionSys
     for (const auto* category : {"autoFlexBodies", "springs", "contacts", "controllers", "couplings",
                                  "scalarForces", "scalarTorques", "threePointForces", "threePointTorques",
                                  "vectorForces", "tensionCables", "softStops", "hydraulicCylinders",
-                                 "hydraulicMotors", "hydraulicNodes", "hydraulicComponents"})
+                                 "hydraulicMotors", "hydraulicNodes", "hydraulicComponents",
+                                 "powerSupplies", "inverters", "electricMotors", "ehaActuators", "emaActuators"})
         if (!input.document.collection(QLatin1String(category)).isEmpty()) return false;
     return std::all_of(system.motions_map.begin(), system.motions_map.end(), [](const auto& drive) {
         return drive.second.is_position;
@@ -951,6 +952,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         createNativeHydraulicCylinders(system,input);
         createNativeHydraulicMotors(system,input);
         createNativeHydraulicCircuit(system,input);
+        createNativeElectricAndIntegratedActuators(system,input);
         for(const auto& joint:system.joints_map){
             bool created=false;for(const auto& link:system.Get_linklist())if(!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)&&link->GetNameString()==joint.first){created=true;system.nativeJoints.emplace(joint.first,link);break;}
             if(!created)fail(QStringLiteral("引擎没有创建运动副 %1 (%2)，已中止，避免约束被静默丢弃。").arg(QString::fromStdString(joint.first),QString::fromStdString(joint.second->type)));

@@ -46,7 +46,9 @@ QStringList collectionNames()
         QStringLiteral("sensors"), QStringLiteral("controllers"), QStringLiteral("controlInputs"),
         QStringLiteral("autoFlexBodies"), QStringLiteral("importedMnfBodies"), QStringLiteral("scenarios"), QStringLiteral("tensionCables"),
         QStringLiteral("softStops"), QStringLiteral("hydraulicCylinders"), QStringLiteral("hydraulicMotors"),
-        QStringLiteral("hydraulicNodes"), QStringLiteral("hydraulicComponents")};
+        QStringLiteral("hydraulicNodes"), QStringLiteral("hydraulicComponents"),
+        QStringLiteral("powerSupplies"), QStringLiteral("inverters"), QStringLiteral("electricMotors"),
+        QStringLiteral("ehaActuators"), QStringLiteral("emaActuators")};
 }
 
 bool integer(const QJsonValue& value, int minimum, int* result = nullptr)
@@ -194,9 +196,10 @@ public:
         for (const auto& key : booleans)
             if (object.contains(key) && !object.value(key).isBool()) issue(where + QLatin1Char('.') + key, QStringLiteral("需要布尔值"));
         const QStringList strings = {"name", "expression", "forceFunction", "torqueFunction", "dampingFunction",
-            "commandExpression", "pressureExpression", "speedExpression", "flowExpression"};
+            "commandExpression", "pressureExpression", "speedExpression", "flowExpression", "voltageExpression"};
         for (const auto& key : strings)
             if (object.contains(key) && !object.value(key).isString()) issue(where + QLatin1Char('.') + key, QStringLiteral("需要文本"));
+        for (const auto* coord : {"schemX", "schemY"}) number(object, coord, where);
     }
 
     void bodyPair(const QJsonObject& object, const QString& where, bool required = false)
@@ -228,7 +231,9 @@ public:
             {"VectorForce", "vectorForces"}, {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
             {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"},
             {"ImportedMnfBody", "importedMnfBodies"}, {"Contact", "contacts"}, {"HydraulicCylinder", "hydraulicCylinders"},
-            {"HydraulicMotor", "hydraulicMotors"}, {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"}};
+            {"HydraulicMotor", "hydraulicMotors"}, {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"},
+            {"PowerSupply", "powerSupplies"}, {"Inverter", "inverters"}, {"ElectricMotor", "electricMotors"},
+            {"EhaActuator", "ehaActuators"}, {"EmaActuator", "emaActuators"}};
         // Original files use PascalCase enum aliases. New native curves use
         // the exact collection keys so every recorded force/flexible channel
         // survives .motion.json export without narrowing to the legacy enum.
@@ -682,6 +687,104 @@ public:
                 positive(object, "conductanceLpm", where);
             }
             table(object, "commandTableX", "commandTableY", where);
+        } else if (kind == "powerSupplies") {
+            positive(object, "nominalVoltage", where, true);
+            positive(object, "internalResistance", where, true);
+            positive(object, "capacitanceMf", where, true);
+            positive(object, "maxCurrent", where, true);
+            number(object, "chopperVoltage", where, 0.0);
+            positive(object, "chopperResistance", where);
+            table(object, "voltageTableX", "voltageTableY", where);
+        } else if (kind == "inverters") {
+            ref(object, "supplyId", "powerSupplies", where, true);
+            positive(object, "nominalBusVoltage", where, true);
+            enumeration(object, "controlMode", {"DutyCommand", "CurrentClosedLoop", "SpeedClosedLoop", "PositionClosedLoop"}, where, true);
+            positive(object, "efficiency", where, true);
+            if (object.value("efficiency").isDouble() && object.value("efficiency").toDouble() > 1.0)
+                issue(where, QStringLiteral("逆变器效率不能大于 1"));
+            positive(object, "maxCurrent", where, true);
+            for (const auto* g : {"kpPosition", "kpSpeed", "kiSpeed", "kpCurrent"}) number(object, g, where, 0.0);
+            table(object, "commandTableX", "commandTableY", where);
+        } else if (kind == "electricMotors") {
+            ref(object, "targetJointId", "joints", where, false, true);
+            const auto jointType = doc.entity("joints", object.value("targetJointId").toInt(-1)).value("jointType").toString();
+            if (!jointType.isEmpty() && jointType != "Revolute" && jointType != "Cylindrical")
+                issue(where, QStringLiteral("电机仅支持关联旋转副或圆柱副"));
+            positive(object, "resistance", where, true);
+            number(object, "inductanceMh", where, 0.0, true);
+            positive(object, "torqueConstant", where, true);
+            number(object, "backEmfConstant", where, 0.0, true);
+            number(object, "gearRatio", where, -1.0e9, true);
+            if (std::abs(object.value("gearRatio").toDouble(1.0)) <= 1.0e-9)
+                issue(where, QStringLiteral("减速比不能为零"));
+            positive(object, "gearEfficiency", where);
+            if (object.value("gearEfficiency").toDouble(0.96) > 1.0)
+                issue(where, QStringLiteral("传动效率不能大于 1"));
+            number(object, "viscousDamping", where, 0.0);
+            positive(object, "busVoltage", where);
+            positive(object, "maxCurrent", where);
+            enumeration(object, "controlMode", {"SpeedClosedLoop", "PositionClosedLoop", "CurrentClosedLoop", "VoltageCommand", "ExternalInverter"}, where, true);
+            ref(object, "inverterId", "inverters", where, true);
+            for (const auto* g : {"kpPosition", "kpSpeed", "kiSpeed", "kpCurrent"}) number(object, g, where, 0.0);
+            table(object, "commandTableX", "commandTableY", where);
+        } else if (kind == "ehaActuators" || kind == "emaActuators") {
+            enumeration(object, "mountMode", {"Points", "Joint"}, where, true);
+            const QString mountMode = object.value("mountMode").toString();
+            if (mountMode == "Joint") {
+                ref(object, "targetJointId", "joints", where, false, true);
+                const auto jointType = doc.entity("joints", object.value("targetJointId").toInt(-1)).value("jointType").toString();
+                if (!jointType.isEmpty() && jointType != "Translational" && jointType != "Cylindrical")
+                    issue(where, QStringLiteral("关联运动副模式需要移动副或柱面副"));
+            } else if (mountMode == "Points") {
+                bodyPair(object, where, true);
+                if (object.value("localI").isObject() && object.value("localJ").isObject()) {
+                    const auto pi = object.value("localI").toObject(), pj = object.value("localJ").toObject();
+                    const double dx = pi.value("x").toDouble() - pj.value("x").toDouble();
+                    const double dy = pi.value("y").toDouble() - pj.value("y").toDouble();
+                    const double dz = pi.value("z").toDouble() - pj.value("z").toDouble();
+                    if (std::hypot(dx, std::hypot(dy, dz)) <= 1e-6)
+                        issue(where, QStringLiteral("作动器两端安装点不能重合"));
+                }
+            }
+            positive(object, "stroke", where, true);
+            number(object, "initialStroke", where, 0.0, true);
+            if (object.value("stroke").isDouble() && object.value("initialStroke").isDouble()
+                && object.value("initialStroke").toDouble() > object.value("stroke").toDouble())
+                issue(where, QStringLiteral("初始行程不能超过总行程"));
+            positive(object, "resistance", where, true);
+            positive(object, "torqueConstant", where, true);
+            number(object, "backEmfConstant", where, 0.0, true);
+            positive(object, "busVoltage", where);
+            positive(object, "maxCurrent", where);
+            number(object, "viscousFriction", where, 0.0);
+            ref(object, "inverterId", "inverters", where, true);
+            for (const auto* g : {"kpPosition", "kpSpeed", "kiSpeed", "kpCurrent"}) number(object, g, where, 0.0);
+            table(object, "commandTableX", "commandTableY", where);
+            if (kind == "ehaActuators") {
+                positive(object, "pistonDiameter", where, true);
+                number(object, "rodDiameter", where, 0.0, true);
+                if (object.value("pistonDiameter").isDouble() && object.value("rodDiameter").isDouble()
+                    && object.value("rodDiameter").toDouble() >= object.value("pistonDiameter").toDouble())
+                    issue(where, QStringLiteral("EHA 杆径必须小于缸径"));
+                positive(object, "deadVolume", where);
+                positive(object, "pumpDisplacementCcRev", where, true);
+                number(object, "boostPressureMPa", where, 0.0);
+                positive(object, "maxReliefPressureMPa", where);
+                number(object, "internalLeakage", where, 0.0);
+                positive(object, "pumpEfficiency", where);
+                if (object.value("pumpEfficiency").toDouble(0.92) > 1.0)
+                    issue(where, QStringLiteral("EHA 泵效率不能大于 1"));
+                positive(object, "rotorInertia", where);
+                enumeration(object, "controlMode", {"PositionServo", "SpeedCommand", "VoltageCommand", "ExternalInverter"}, where, true);
+            } else {
+                positive(object, "screwLead", where, true);
+                positive(object, "gearRatio", where, true);
+                number(object, "inductanceMh", where, 0.0);
+                positive(object, "mechanicalEfficiency", where);
+                if (object.value("mechanicalEfficiency").toDouble(0.90) > 1.0)
+                    issue(where, QStringLiteral("EMA 机械效率不能大于 1"));
+                enumeration(object, "controlMode", {"PositionServo", "VelocityServo", "VoltageCommand", "ExternalInverter"}, where, true);
+            }
         }
     }
 

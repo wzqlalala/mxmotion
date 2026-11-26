@@ -77,7 +77,8 @@ enum class Command {
     AddVectorForce, AddScalarForce, AddScalarTorque, AddThreePointForce, AddThreePointTorque,
     AddContact, AddMarker, AddSensor, AddController, AddControlInput, AddAutoFlex,
     AddSoftStop, AddTensionCable, AddHydraulicCylinder, AddHydraulicMotor,
-    EditHydraulicFluid, HydraulicCircuitCheck,
+    AddElectricMotor, AddPowerSupply, AddInverter, AddEhaActuator, AddEmaActuator,
+    EditHydraulicFluid, HydraulicCircuitCheck, ShowMultiphysicsSchematic,
     ModelCheck, ConstraintDiagnostics,
     ResetLayout, ManageLayout, QuickShot, About, Exit
 };
@@ -97,6 +98,7 @@ public:
     bool geometryImportInProgress() const { return m_importingGeometry; }
     void cancelGeometryImport();
     void showModelDiagnostics(bool focusConstraints = false, bool focusHydraulics = false);
+    void showMultiphysicsSchematic();
     void editHydraulicFluid();
     void dispatchOriginalMotionAction(const QString& action, const QVariant& argument = {});
 

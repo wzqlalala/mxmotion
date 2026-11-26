@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MultiphysicsSchematicDialog.h"
 #include "OccViewport.h"
 #include "NativeMotionDocument.h"
 #include "NativeBodyMass.h"
@@ -23,6 +24,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
+#include <QToolButton>
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeWidget>
@@ -204,9 +206,12 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
         rootActions.removeAt(bodyDriveAction);
 #endif
         for (const auto& hydTitle : {QStringLiteral("新建液压缸"), QStringLiteral("新建液压马达"),
-                                     QStringLiteral("新建液压节点"), QStringLiteral("新建液压元件")}) {
+                                     QStringLiteral("新建液压节点"), QStringLiteral("新建液压元件"),
+                                     QStringLiteral("新建电机"), QStringLiteral("新建电源"),
+                                     QStringLiteral("新建逆变器"), QStringLiteral("新建EHA"),
+                                     QStringLiteral("新建EMA")}) {
             const int hydraulicAction = rootActions.indexOf(hydTitle);
-            require(hydraulicAction > 0, "Hydraulic creation action is missing from the root context menu: " + hydTitle);
+            require(hydraulicAction > 0, "Multiphysics creation action is missing from the root context menu: " + hydTitle);
             rootActions.removeAt(hydraulicAction);
         }
         require(rootActions.size()==11&&rootActions.first()=="新建运动体"&&rootActions.last()=="删除运动数据","Original root context menu changed");
@@ -286,14 +291,53 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
 
         require(node(tree, "hydraulicMotors", -1, true) && node(tree, "hydraulicNodes", -1, true)
             && node(tree, "hydraulicComponents", -1, true), "Stage 3 hydraulic groups did not appear in model tree");
+
+        for (const auto& pair : {qMakePair(QStringLiteral("createPowerSupply"), QStringLiteral("powerSupplies")),
+                                 qMakePair(QStringLiteral("createInverter"), QStringLiteral("inverters")),
+                                 qMakePair(QStringLiteral("createElectricMotor"), QStringLiteral("electricMotors")),
+                                 qMakePair(QStringLiteral("createEhaActuator"), QStringLiteral("ehaActuators")),
+                                 qMakePair(QStringLiteral("createEmaActuator"), QStringLiteral("emaActuators"))}) {
+            window.dispatchOriginalMotionAction(pair.first);
+            auto* ed = window.findChild<QWidget*>(QStringLiteral("nativeEditor_") + pair.second);
+            require(ed && !ed->findChild<QWidget*>("native_name") && !ed->findChild<QWidget*>("native_enabled"),
+                "Stage 4 multiphysics editor missing or leaked name/enabled controls: " + pair.second);
+            auto* ap = ed->findChild<QPushButton*>("motionApplyButton");
+            require(ap != nullptr, "Stage 4 editor missing apply button: " + pair.second);
+            ap->click();
+            require(node(tree, pair.second, -1, true) != nullptr, "Stage 4 group missing in model tree: " + pair.second);
+        }
+
+        window.dispatchOriginalMotionAction("openMultiphysicsSchematic");
+        auto* schem = window.findChild<MultiphysicsSchematicDialog*>("multiphysicsSchematicDialog");
+        require(schem && schem->isVisible(), "Multiphysics 2D circuit schematic dialog did not open");
+        if (auto* addChm = schem->findChild<QToolButton*>("schemAddChamberBtn")) addChm->click();
+        if (auto* autoLay = schem->findChild<QToolButton*>("schemAutoLayoutButton")) autoLay->click();
+        if (auto* chkBtn = schem->findChild<QToolButton*>("schemCheckButton")) chkBtn->click();
+        require(context()->document().collection("hydraulicNodes").size() == 2,
+            "Quick-add chamber inside 2D schematic did not commit back to document");
+        require(schem->exportPng(output.filePath("multiphysics-schematic.png")),
+            "Could not export 2D multiphysics schematic PNG");
+        schem->close();
+        QApplication::processEvents();
+
         window.dispatchOriginalMotionAction("checkHydraulicCircuit");
+        menu(tree, node(tree, "emaActuators", -1, true), "删除所有EMA");
+        menu(tree, node(tree, "ehaActuators", -1, true), "删除所有EHA");
+        menu(tree, node(tree, "electricMotors", -1, true), "删除所有电机");
+        menu(tree, node(tree, "inverters", -1, true), "删除所有逆变器");
+        menu(tree, node(tree, "powerSupplies", -1, true), "删除所有电源");
         menu(tree, node(tree, "hydraulicComponents", -1, true), "删除所有液压元件");
         menu(tree, node(tree, "hydraulicNodes", -1, true), "删除所有液压节点");
         menu(tree, node(tree, "hydraulicMotors", -1, true), "删除所有液压马达");
         require(context()->document().collection("hydraulicMotors").isEmpty()
             && context()->document().collection("hydraulicNodes").isEmpty()
-            && context()->document().collection("hydraulicComponents").isEmpty(),
-            "Group delete did not clear Stage 3 hydraulic collections");
+            && context()->document().collection("hydraulicComponents").isEmpty()
+            && context()->document().collection("electricMotors").isEmpty()
+            && context()->document().collection("powerSupplies").isEmpty()
+            && context()->document().collection("inverters").isEmpty()
+            && context()->document().collection("ehaActuators").isEmpty()
+            && context()->document().collection("emaActuators").isEmpty(),
+            "Group delete did not clear Stage 3-4 multiphysics collections");
 
         menu(tree,node(tree,"markers",-1,true),"删除所有标记点");
         auto* markerGroup=node(tree,"markers",-1,true);require(markerGroup&&markerGroup->childCount()==0,"Empty fixed original group was removed");

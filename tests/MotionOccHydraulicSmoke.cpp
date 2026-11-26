@@ -672,6 +672,189 @@ void testNewlyWiredEngineCapabilities()
     expectNear(zPos.back(), 190.0, 0.05, "Nonlinear spring lookup table static equilibrium position");
 }
 
+// Stage 4 Case 1: Full Electrical Drive Chain (DC PowerSupply + Bus Capacitor + PWM Servo Inverter -> PMSM ElectricMotor)
+void testElectricDriveBusInverterAndServoMotor()
+{
+    CadDocument cad;
+    NativeMotionDocument doc;
+    QString error;
+    int part = 0;
+    require(cad.addPrimitive(Primitive::Cylinder, 40, 20, 20, part, error), error);
+    doc.root = {{"formatVersion", 1}, {"motionData", QJsonObject{}}};
+    doc.bodyPartBindings.insert(0, {part});
+    setCollection(doc, "bodies", {QJsonObject{
+        {"id", 0}, {"name", "servo_rotor"}, {"geoEntityIds", QJsonArray{part}},
+        {"mass", 8.0}, {"isCustomMassProps", true}, {"centerOfMass", xyz(0, 0, 0)},
+        {"inertia", QJsonArray{5.0e4, 5.0e4, 8.0e4, 0, 0, 0}}, // Izz = 0.08 kg*m^2
+        {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
+    }});
+    setCollection(doc, "joints", {QJsonObject{
+        {"id", 0}, {"name", "motor_shaft"}, {"jointType", "Revolute"},
+        {"actionBodyId", 0}, {"baseBodyId", -1},
+        {"origin", xyz(0, 0, 0)}, {"axis", xyz(0, 0, 1)}
+    }});
+    // Opposing load torque of -12 N*m = -12,000 N*mm
+    setCollection(doc, "vectorForces", {QJsonObject{
+        {"id", 1}, {"name", "shaft_load"}, {"enabled", true},
+        {"loadType", "Torque"}, {"bodyId", 0},
+        {"actionPoint", xyz(0, 0, 0)}, {"direction", xyz(0, 0, 1)},
+        {"directionMode", "GlobalFixed"}, {"magnitudeMode", "Constant"},
+        {"magnitude", -12000.0}
+    }});
+    setCollection(doc, "scenarios", {QJsonObject{
+        {"id", 0}, {"name", "electric_drive_case"},
+        {"endTime", 0.25}, {"stepSize", 0.001},
+        {"gravity", xyz(0, 0, 0)}, {"usePreset", true}, {"presetMode", "ROBUST"},
+        {"analysisType", "Dynamic"}, {"hydraulicSteadyInit", true}
+    }});
+
+    setCollection(doc, "powerSupplies", {QJsonObject{
+        {"id", 1}, {"name", "高压直流电源"}, {"enabled", true},
+        {"nominalVoltage", 120.0}, {"voltageExpression", "120"},
+        {"internalResistance", 0.15}, {"capacitanceMf", 2.2},
+        {"maxCurrent", 100.0}, {"chopperVoltage", 145.0}, {"chopperResistance", 6.0}
+    }});
+    setCollection(doc, "inverters", {QJsonObject{
+        {"id", 1}, {"name", "伺服逆变器"}, {"enabled", true},
+        {"supplyId", 1}, {"nominalBusVoltage", 120.0},
+        {"controlMode", "SpeedClosedLoop"},
+        {"efficiency", 0.96}, {"maxCurrent", 60.0},
+        {"kpPosition", 8.0}, {"kpSpeed", 0.45}, {"kiSpeed", 6.0}, {"kpCurrent", 6.0},
+        {"commandExpression", "300"} // Target 300 rpm
+    }});
+    setCollection(doc, "electricMotors", {QJsonObject{
+        {"id", 1}, {"name", "永磁同步电机"}, {"enabled", true},
+        {"targetJointId", 0},
+        {"resistance", 0.35}, {"inductanceMh", 2.0},
+        {"torqueConstant", 0.90}, {"backEmfConstant", 0.90},
+        {"gearRatio", 2.0}, {"gearEfficiency", 0.95}, {"viscousDamping", 5.0},
+        {"busVoltage", 120.0}, {"maxCurrent", 60.0},
+        {"controlMode", "ExternalInverter"}, {"inverterId", 1},
+        {"commandExpression", "0"}
+    }});
+
+    const auto diag = diagnoseNativeMotion(cad, doc, 0);
+    require(diag.errorCount == 0 && diag.warningCount == 0, "Clean electric drive chain reported unexpected diagnostic issues");
+    require(diag.electricActuators == 1 && diag.electricPowerDevices == 2, "Unexpected electric device counts in diagnostics");
+
+    require(validateNativeMotionDocument(doc, error), "electric drive doc invalid: " + error);
+    NativeMotionInput input;
+    require(prepareNativeMotion(cad, doc, 0, input, error), "electric drive prepare failed: " + error);
+    RigidResult res;
+    require(solveNativeMotion(input, res, error) == SolveStatus::Completed, "electric drive solve failed: " + error);
+
+    const auto& speed = channel(res, "electricMotors", 1, "Speed").values;
+    const auto& torque = channel(res, "electricMotors", 1, "Torque").values;
+    const auto& busV = channel(res, "powerSupplies", 1, "BusVoltage").values;
+    const auto& srcI = channel(res, "powerSupplies", 1, "SourceCurrent").values;
+
+    // t=0 steady load torque balance against 12,000 N*mm
+    expectNear(torque.front(), 12000.0, 25.0, "Electric motor t=0 steady load torque balance");
+    // Closed-loop speed settles near 300 rpm
+    expectNear(speed.back(), 300.0, 8.0, "Closed-loop inverter+motor speed tracking to 300 rpm");
+    // Bus voltage sags slightly below 120 V under load current draw I * R_s
+    const double minBusV = *std::min_element(busV.begin(), busV.end());
+    require(minBusV < 119.8 && minBusV > 105.0 && *std::max_element(srcI.begin(), srcI.end()) > 2.0,
+            QStringLiteral("Expected realistic DC bus voltage droop and positive supply current: minBusV=%1 V").arg(minBusV));
+}
+
+// Stage 4 Case 2: Integrated EHA and EMA Position Servo Actuators under heavy gravity load
+void testIntegratedEhaAndEmaServoActuators()
+{
+    // 1. EHA Position Servo: hold at s=150 mm (t in [0, 0.05]), then step target stroke to 175 mm
+    {
+        SliderFixture f(80.0);
+        f.setScenarioField("gravity", xyz(0, 0, -9810.0)); // 784.8 N downward load
+        f.setScenarioField("hydraulicSteadyInit", true);
+        f.setScenarioField("endTime", 0.50);
+        f.setScenarioField("stepSize", 0.001);
+
+        setCollection(f.document, "ehaActuators", {QJsonObject{
+            {"id", 1}, {"name", "机翼主飞控EHA"}, {"enabled", true},
+            {"mountMode", "Points"}, {"bodyIId", 0}, {"bodyJId", -1},
+            {"localI", xyz(0, 0, 200)}, {"localJ", xyz(0, 0, 0)},
+            {"pistonDiameter", 70.0}, {"rodDiameter", 40.0},
+            {"stroke", 300.0}, {"initialStroke", 150.0}, {"deadVolume", 40000.0},
+            {"pumpDisplacementCcRev", 12.0}, {"boostPressureMPa", 1.5}, {"maxReliefPressureMPa", 28.0},
+            {"internalLeakage", 0.0}, {"pumpEfficiency", 0.94},
+            {"resistance", 0.30}, {"torqueConstant", 0.65}, {"backEmfConstant", 0.50},
+            {"rotorInertia", 400.0}, {"busVoltage", 270.0}, {"maxCurrent", 65.0},
+            {"viscousFriction", 4.0},
+            {"controlMode", "PositionServo"}, {"inverterId", -1},
+            {"kpPosition", 160.0}, {"kpSpeed", 0.35}, {"kiSpeed", 4.0}, {"kpCurrent", 5.0},
+            {"commandExpression", "150"},
+            {"commandTableX", QJsonArray{0.0, 0.05, 0.08, 0.50}},
+            {"commandTableY", QJsonArray{150.0, 150.0, 175.0, 175.0}}
+        }});
+
+        const auto res = f.solve();
+        const auto& stroke = channel(res, "ehaActuators", 1, "Stroke").values;
+        const auto& force = channel(res, "ehaActuators", 1, "Force").values;
+        const auto& pumpRpm = channel(res, "ehaActuators", 1, "PumpSpeed").values;
+
+        expectNear(force.front(), 80.0 * 9.81, 1e-2, "EHA t=0 steady force balance");
+        expectNear(stroke[45], 150.0, 0.08, "EHA holds initial stroke without sag under 80 kg load");
+        require(*std::max_element(pumpRpm.begin(), pumpRpm.end()) > 300.0, "EHA micro-pump must spin up to pump oil into cap chamber");
+        expectNear(stroke.back(), 175.0, 1.5, "EHA closed-loop stroke tracking to 175 mm");
+    }
+
+    // 2. EMA Position Servo: ball-screw actuator lifting 60 kg load from 120 mm to 145 mm
+    {
+        SliderFixture f(60.0);
+        f.setScenarioField("gravity", xyz(0, 0, -9810.0)); // 588.6 N downward load
+        f.setScenarioField("hydraulicSteadyInit", true);
+        f.setScenarioField("endTime", 0.30);
+        f.setScenarioField("stepSize", 0.001);
+
+        setCollection(f.document, "emaActuators", {QJsonObject{
+            {"id", 1}, {"name", "起落架舱门EMA"}, {"enabled", true},
+            {"mountMode", "Points"}, {"bodyIId", 0}, {"bodyJId", -1},
+            {"localI", xyz(0, 0, 200)}, {"localJ", xyz(0, 0, 0)},
+            {"screwLead", 10.0}, {"gearRatio", 2.5},
+            {"stroke", 300.0}, {"initialStroke", 120.0},
+            {"mechanicalEfficiency", 0.90}, {"viscousFriction", 3.0},
+            {"resistance", 0.35}, {"inductanceMh", 2.0},
+            {"torqueConstant", 0.70}, {"backEmfConstant", 0.70},
+            {"busVoltage", 270.0}, {"maxCurrent", 50.0},
+            {"controlMode", "PositionServo"}, {"inverterId", -1},
+            {"kpPosition", 18.0}, {"kpSpeed", 0.50}, {"kiSpeed", 4.0}, {"kpCurrent", 6.0},
+            {"commandExpression", "120"},
+            {"commandTableX", QJsonArray{0.0, 0.04, 0.07, 0.30}},
+            {"commandTableY", QJsonArray{120.0, 120.0, 145.0, 145.0}}
+        }});
+
+        const auto res = f.solve();
+        const auto& stroke = channel(res, "emaActuators", 1, "Stroke").values;
+        const auto& force = channel(res, "emaActuators", 1, "Force").values;
+        const auto& motRpm = channel(res, "emaActuators", 1, "MotorSpeed").values;
+
+        expectNear(force.front(), 60.0 * 9.81, 0.5, "EMA t=0 steady holding thrust balance");
+        expectNear(stroke[35], 120.0, 0.08, "EMA holds initial stroke without sag");
+        require(*std::max_element(motRpm.begin(), motRpm.end()) > 200.0, "EMA motor shaft spins up to drive ball screw");
+        expectNear(stroke.back(), 145.0, 1.0, "EMA closed-loop stroke tracking to 145 mm");
+    }
+
+    // 3. Stage 4 Electrical & Integrated Diagnostics check
+    {
+        SliderFixture f(20.0);
+        setCollection(f.document, "powerSupplies", {QJsonObject{
+            {"id", 1}, {"name", "异常斩波电源"}, {"enabled", true},
+            {"nominalVoltage", 270.0}, {"internalResistance", 0.05}, {"capacitanceMf", 4.7},
+            {"maxCurrent", 100.0}, {"chopperVoltage", 250.0}, {"chopperResistance", 8.0} // chopper <= nominal -> Warning!
+        }});
+        setCollection(f.document, "emaActuators", {QJsonObject{
+            {"id", 1}, {"name", "悬空外接EMA"}, {"enabled", true},
+            {"mountMode", "Joint"}, {"targetJointId", 0},
+            {"screwLead", 10.0}, {"gearRatio", 2.0}, {"stroke", 200.0}, {"initialStroke", 100.0},
+            {"resistance", 0.4}, {"torqueConstant", 0.6}, {"backEmfConstant", 0.6},
+            {"controlMode", "ExternalInverter"}, {"inverterId", -1} // Unbound ExternalInverter -> Error!
+        }});
+        const auto rep = diagnoseNativeMotion(f.cad, f.document, 0);
+        require(rep.errorCount >= 1 && rep.warningCount >= 2,
+                "Expected unbound ExternalInverter Error and chopper/unused-supply Warnings");
+    }
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -687,7 +870,9 @@ int main(int argc, char* argv[])
         testRotaryHydraulicMotorAndReducingPipeBranch();
         testHydraulicCircuitDiagnostics();
         testNewlyWiredEngineCapabilities();
-        qInfo().noquote() << "PASS MotionOccHydraulicSmoke (Stage 1-3 hydraulics + newly wired MotionEngine capabilities)";
+        testElectricDriveBusInverterAndServoMotor();
+        testIntegratedEhaAndEmaServoActuators();
+        qInfo().noquote() << "PASS MotionOccHydraulicSmoke (Stage 1-4 multiphysics: hydraulics + electric drives + EHA/EMA + engine extensions)";
         return 0;
     } catch (const std::exception& e) {
         qCritical().noquote() << "FAIL MotionOccHydraulicSmoke:" << e.what();

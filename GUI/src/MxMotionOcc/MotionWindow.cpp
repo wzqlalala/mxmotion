@@ -898,6 +898,8 @@ void MotionWindow::updateTree()
         {"bodyDrives", tr("运动体驱动")}, {"hydraulicCylinders", tr("液压缸")},
         {"hydraulicMotors", tr("液压马达")}, {"hydraulicNodes", tr("液压节点")},
         {"hydraulicComponents", tr("液压元件")},
+        {"electricMotors", tr("电机")}, {"powerSupplies", tr("电源")}, {"inverters", tr("逆变器")},
+        {"ehaActuators", tr("EHA")}, {"emaActuators", tr("EMA")},
         {"springs", tr("弹簧")}, {"forceElements", tr("力元")}, {"sensors", tr("传感器")},
         {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")},
         {"controlInputs", tr("控制输入")}
@@ -906,7 +908,9 @@ void MotionWindow::updateTree()
     for (const auto& entry : groups) {
         if ((entry.first == "bodyDrives" || entry.first == "hydraulicCylinders"
              || entry.first == "hydraulicMotors" || entry.first == "hydraulicNodes"
-             || entry.first == "hydraulicComponents")
+             || entry.first == "hydraulicComponents"
+             || entry.first == "electricMotors" || entry.first == "powerSupplies"
+             || entry.first == "inverters" || entry.first == "ehaActuators" || entry.first == "emaActuators")
             && (!m_model.nativeDocument || m_model.nativeDocument->collection(entry.first).isEmpty())) continue;
         auto* group = new QTreeWidgetItem(root, { entry.second });
         groupItems.emplace(entry.second, group);

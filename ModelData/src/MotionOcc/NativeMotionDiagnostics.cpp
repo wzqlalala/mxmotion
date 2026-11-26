@@ -303,9 +303,107 @@ void checkHydraulicCircuit(const NativeMotionDocument& document, MotionDiagnosti
     if ((report.hydraulicActuators > 0 || report.hydraulicNodes > 0 || report.hydraulicComponents > 0)
         && (report.errorCount + report.warningCount == hydIssuesBefore)) {
         addItem(report, MotionDiagnosticItem::Severity::Pass,
-                QStringLiteral("液压回路"), {}, -1, QStringLiteral("机电液拓扑"),
+                QStringLiteral("液压回路"), {}, -1, QStringLiteral("液压拓扑"),
                 QStringLiteral("液压回路拓扑与元件参数检查通过（执行器 %1，节点 %2，回路元件 %3）。")
                     .arg(report.hydraulicActuators).arg(report.hydraulicNodes).arg(report.hydraulicComponents));
+    }
+
+    // Electrical Drive & Integrated EHA/EMA Diagnostics (also included in 回路检查)
+    const int elecIssuesBefore = report.errorCount + report.warningCount;
+    QMap<int, QJsonObject> activeSupplies;
+    QSet<int> touchedSupplies;
+    for (const auto& v : document.collection("powerSupplies")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        ++report.electricPowerDevices;
+        const int sid = o.value("id").toInt(-1);
+        activeSupplies.insert(sid, o);
+        const double nomV = o.value("nominalVoltage").toDouble(270.0);
+        const double chopV = o.value("chopperVoltage").toDouble(0.0);
+        if (chopV > 0.0 && chopV <= nomV) {
+            addItem(report, MotionDiagnosticItem::Severity::Warning,
+                    QStringLiteral("液压回路"), QStringLiteral("powerSupplies"),
+                    sid, o.value("name").toString(),
+                    QStringLiteral("制动斩波开启电压（%1 V）不高于额定母线电压（%2 V），稳态时将持续泄放功率。")
+                        .arg(chopV, 0, 'g', 5).arg(nomV, 0, 'g', 5));
+        }
+    }
+
+    QMap<int, QJsonObject> activeInverters;
+    QMap<int, QString> inverterOwners;
+    for (const auto& v : document.collection("inverters")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        ++report.electricPowerDevices;
+        const int iid = o.value("id").toInt(-1);
+        activeInverters.insert(iid, o);
+        const int sid = o.value("supplyId").toInt(-1);
+        if (sid >= 0) {
+            if (!activeSupplies.contains(sid)) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("inverters"),
+                        iid, o.value("name").toString(),
+                        QStringLiteral("逆变器关联的直流电源（ID=%1）未启用或不存在。").arg(sid));
+            } else {
+                touchedSupplies.insert(sid);
+            }
+        }
+    }
+
+    const auto checkInverterBinding = [&](const char* col, const QJsonObject& o, const QString& typeTitle) {
+        if (!active(o)) return;
+        ++report.electricActuators;
+        const int aid = o.value("id").toInt(-1);
+        const QString aname = o.value("name").toString();
+        if (o.value("controlMode").toString() == QLatin1String("ExternalInverter")) {
+            const int iid = o.value("inverterId").toInt(-1);
+            if (iid < 0 || !activeInverters.contains(iid)) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QLatin1String(col),
+                        aid, aname,
+                        QStringLiteral("%1 设为“外部逆变器”模式，但未绑定已启用的伺服逆变器。").arg(typeTitle));
+            } else if (inverterOwners.contains(iid)) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QLatin1String(col),
+                        aid, aname,
+                        QStringLiteral("伺服逆变器（ID=%1）已被“%2”占用，单台逆变器不能并联驱动多个伺服执行器。")
+                            .arg(iid).arg(inverterOwners.value(iid)));
+            } else {
+                inverterOwners.insert(iid, aname);
+            }
+        }
+    };
+
+    for (const auto& v : document.collection("electricMotors"))
+        checkInverterBinding("electricMotors", v.toObject(), QStringLiteral("伺服电机"));
+    for (const auto& v : document.collection("ehaActuators"))
+        checkInverterBinding("ehaActuators", v.toObject(), QStringLiteral("EHA 作动器"));
+    for (const auto& v : document.collection("emaActuators"))
+        checkInverterBinding("emaActuators", v.toObject(), QStringLiteral("EMA 作动器"));
+
+    for (auto it = activeInverters.cbegin(); it != activeInverters.cend(); ++it) {
+        if (!inverterOwners.contains(it.key())) {
+            addItem(report, MotionDiagnosticItem::Severity::Warning,
+                    QStringLiteral("液压回路"), QStringLiteral("inverters"),
+                    it.key(), it.value().value("name").toString(),
+                    QStringLiteral("伺服逆变器尚未绑定任何电机、EHA 或 EMA 作动器。"));
+        }
+    }
+    for (auto it = activeSupplies.cbegin(); it != activeSupplies.cend(); ++it) {
+        if (!touchedSupplies.contains(it.key())) {
+            addItem(report, MotionDiagnosticItem::Severity::Warning,
+                    QStringLiteral("液压回路"), QStringLiteral("powerSupplies"),
+                    it.key(), it.value().value("name").toString(),
+                    QStringLiteral("直流电源未向任何启用的伺服逆变器供电。"));
+        }
+    }
+
+    if ((report.electricActuators > 0 || report.electricPowerDevices > 0)
+        && (report.errorCount + report.warningCount == elecIssuesBefore)) {
+        addItem(report, MotionDiagnosticItem::Severity::Pass,
+                QStringLiteral("液压回路"), {}, -1, QStringLiteral("电气与集成作动拓扑"),
+                QStringLiteral("电驱与 EHA/EMA 作动拓扑检查通过（电驱执行器 %1，电源/逆变单元 %2）。")
+                    .arg(report.electricActuators).arg(report.electricPowerDevices));
     }
 }
 
@@ -362,7 +460,8 @@ MotionDiagnosticReport diagnoseNativeMotion(const CadDocument& cad,
     }
     for (const auto* col : {"springs", "tensionCables", "softStops", "vectorForces",
                             "scalarForces", "scalarTorques", "threePointForces",
-                            "threePointTorques", "contacts", "hydraulicCylinders", "hydraulicMotors"}) {
+                            "threePointTorques", "contacts", "hydraulicCylinders", "hydraulicMotors",
+                            "electricMotors", "ehaActuators", "emaActuators"}) {
         for (const auto& v : document.collection(QLatin1String(col))) {
             const auto o = v.toObject();
             if (!active(o)) continue;

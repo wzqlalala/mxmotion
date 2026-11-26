@@ -20,6 +20,7 @@ add_executable(MxMotion WIN32
     NativeMotionPickWidgets.cpp NativeMotionPickWidgets.h
     NativeFunctionEditor.cpp NativeFunctionEditor.h
     NativeMotionSymbols.cpp NativeMotionSymbols.h
+    MultiphysicsSchematicDialog.cpp MultiphysicsSchematicDialog.h
     NativeLoadExportUi.cpp
     RigidPlot.cpp RigidPlot.h
     RigidResultSeries.cpp RigidResultSeries.h

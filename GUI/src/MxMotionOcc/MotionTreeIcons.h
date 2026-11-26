@@ -29,6 +29,11 @@ inline QIcon item(const QString& type)
         {"hydraulicMotors", "Motion/mech_hydraulic.png"},
         {"hydraulicNodes", "Motion/mech_hydraulic.png"},
         {"hydraulicComponents", "Motion/mech_hydraulic.png"},
+        {"electricMotors", "Motion/electromechanicalCoupling.png"},
+        {"powerSupplies", "Motion/electromechanicalCoupling.png"},
+        {"inverters", "Motion/electromechanicalCoupling.png"},
+        {"ehaActuators", "Motion/mech_elec_hyd.png"},
+        {"emaActuators", "Motion/mech_elec_hyd.png"},
         {"springs", "Motion/force_spring.png"},
         {"forceElements", "BrowserTree/motion_liYuanParentItem.png"},
         {"sensors", "Motion/sensor.png"},
@@ -133,6 +138,10 @@ inline QIcon entity(const QString& collection, const QJsonObject& row)
     if (collection == "hydraulicCylinders" || collection == "hydraulicMotors"
         || collection == "hydraulicNodes" || collection == "hydraulicComponents")
         return resource("Motion/mech_hydraulic.png");
+    if (collection == "electricMotors" || collection == "powerSupplies" || collection == "inverters")
+        return resource("Motion/electromechanicalCoupling.png");
+    if (collection == "ehaActuators" || collection == "emaActuators")
+        return resource("Motion/mech_elec_hyd.png");
     return item(collection);
 }
 

@@ -31,6 +31,8 @@ struct MotionDiagnosticReport {
     int hydraulicActuators = 0;
     int hydraulicNodes = 0;
     int hydraulicComponents = 0;
+    int electricActuators = 0;
+    int electricPowerDevices = 0;
 
     bool hasJacobianAnalysis = false;
     int velocityDofs = 0;

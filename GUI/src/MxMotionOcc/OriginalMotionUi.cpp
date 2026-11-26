@@ -267,6 +267,12 @@ void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVar
     if(action=="createHydraulicMotor") { if(ensureNativeModel())editNativeEntity("hydraulicMotors");return; }
     if(action=="createHydraulicNode") { if(ensureNativeModel())editNativeEntity("hydraulicNodes",-1,argument.toString());return; }
     if(action=="createHydraulicComponent") { if(ensureNativeModel())editNativeEntity("hydraulicComponents",-1,argument.toString());return; }
+    if(action=="createElectricMotor") { if(ensureNativeModel())editNativeEntity("electricMotors");return; }
+    if(action=="createPowerSupply") { if(ensureNativeModel())editNativeEntity("powerSupplies");return; }
+    if(action=="createInverter") { if(ensureNativeModel())editNativeEntity("inverters");return; }
+    if(action=="createEhaActuator") { if(ensureNativeModel())editNativeEntity("ehaActuators");return; }
+    if(action=="createEmaActuator") { if(ensureNativeModel())editNativeEntity("emaActuators");return; }
+    if(action=="openMultiphysicsSchematic") { showMultiphysicsSchematic();return; }
     if(action=="checkHydraulicCircuit") { showModelDiagnostics(false,true);return; }
     if(action=="editHydraulicFluid") { editHydraulicFluid();return; }
     if(dispatchOriginalWorkspaceAction(action,argument))return;

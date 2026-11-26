@@ -221,7 +221,8 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
     };
     std::vector<ForceHistory> forces;
     for(const auto& item:system.force_results){
-        if(item.second.id.rfind("HC_",0)==0 || item.second.id.rfind("HM_",0)==0)continue;
+        if(item.second.id.rfind("HC_",0)==0 || item.second.id.rfind("HM_",0)==0
+           || item.second.id.rfind("EM_",0)==0 || item.second.id.rfind("EHA_",0)==0 || item.second.id.rfind("EMA_",0)==0)continue;
         const auto collection=forceCollections.find(item.second.type);
         if(collection==forceCollections.end())throw std::runtime_error("未知引擎力元结果类型："+item.second.type);
         const bool torsion=item.second.type=="TORSION_SPRING";
@@ -425,6 +426,93 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
                         channels.scalar(src,id,QStringLiteral("FlowB"),QStringLiteral("L/min"),value.flowBLpm);
                     }
                 }
+            }
+        }
+        for(const auto& entry:system.electricMotors){
+            const int id=entry.first;
+            const auto& history=entry.second->history;
+            if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                throw std::runtime_error("伺服电机采样与结果帧时间轴不同步。");
+            const auto& v=history[fi];
+            const QString src=QStringLiteral("electricMotors");
+            channels.scalar(src,id,QStringLiteral("Current"),QStringLiteral("A"),v.currentA);
+            channels.scalar(src,id,QStringLiteral("Voltage"),QStringLiteral("V"),v.voltageV);
+            channels.scalar(src,id,QStringLiteral("BackEmf"),QStringLiteral("V"),v.backEmfV);
+            channels.scalar(src,id,QStringLiteral("Torque"),QStringLiteral("N·mm"),v.torqueNmm);
+            channels.scalar(src,id,QStringLiteral("Angle"),QStringLiteral("°"),v.angleDeg);
+            channels.scalar(src,id,QStringLiteral("Speed"),QStringLiteral("rpm"),v.speedRpm);
+            channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),v.command);
+            channels.scalar(src,id,QStringLiteral("ElectricalPower"),QStringLiteral("W"),v.elecPowerW);
+            channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),v.mechPowerW);
+            channels.scalar(src,id,QStringLiteral("CopperLoss"),QStringLiteral("W"),v.copperLossW);
+        }
+        for(const auto& entry:system.ehaActuators){
+            const int id=entry.first;
+            const auto& history=entry.second->history;
+            if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                throw std::runtime_error("EHA 作动器采样与结果帧时间轴不同步。");
+            const auto& v=history[fi];
+            const QString src=QStringLiteral("ehaActuators");
+            channels.scalar(src,id,QStringLiteral("Stroke"),QStringLiteral("mm"),v.strokeMm);
+            channels.scalar(src,id,QStringLiteral("Velocity"),QStringLiteral("mm/s"),v.velocityMmS);
+            channels.scalar(src,id,QStringLiteral("Force"),QStringLiteral("N"),v.forceN);
+            channels.scalar(src,id,QStringLiteral("PressureA"),QStringLiteral("MPa"),v.pressureA);
+            channels.scalar(src,id,QStringLiteral("PressureB"),QStringLiteral("MPa"),v.pressureB);
+            channels.scalar(src,id,QStringLiteral("PumpSpeed"),QStringLiteral("rpm"),v.pumpSpeedRpm);
+            channels.scalar(src,id,QStringLiteral("Current"),QStringLiteral("A"),v.currentA);
+            channels.scalar(src,id,QStringLiteral("Voltage"),QStringLiteral("V"),v.voltageV);
+            channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),v.command);
+            channels.scalar(src,id,QStringLiteral("ElectricalPower"),QStringLiteral("W"),v.elecPowerW);
+            channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),v.mechPowerW);
+        }
+        for(const auto& entry:system.emaActuators){
+            const int id=entry.first;
+            const auto& history=entry.second->history;
+            if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                throw std::runtime_error("EMA 作动器采样与结果帧时间轴不同步。");
+            const auto& v=history[fi];
+            const QString src=QStringLiteral("emaActuators");
+            channels.scalar(src,id,QStringLiteral("Stroke"),QStringLiteral("mm"),v.strokeMm);
+            channels.scalar(src,id,QStringLiteral("Velocity"),QStringLiteral("mm/s"),v.velocityMmS);
+            channels.scalar(src,id,QStringLiteral("Force"),QStringLiteral("N"),v.forceN);
+            channels.scalar(src,id,QStringLiteral("MotorSpeed"),QStringLiteral("rpm"),v.motorSpeedRpm);
+            channels.scalar(src,id,QStringLiteral("Current"),QStringLiteral("A"),v.currentA);
+            channels.scalar(src,id,QStringLiteral("Voltage"),QStringLiteral("V"),v.voltageV);
+            channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),v.command);
+            channels.scalar(src,id,QStringLiteral("ElectricalPower"),QStringLiteral("W"),v.elecPowerW);
+            channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),v.mechPowerW);
+        }
+        if(system.electricDrive){
+            const auto& drv=*system.electricDrive;
+            for(const auto& entry:drv.supplyHistories){
+                const int id=entry.first;
+                const auto& history=entry.second;
+                if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                    throw std::runtime_error("直流电源采样与结果帧时间轴不同步。");
+                const auto& v=history[fi];
+                const QString src=QStringLiteral("powerSupplies");
+                channels.scalar(src,id,QStringLiteral("BusVoltage"),QStringLiteral("V"),v.busVoltageV);
+                channels.scalar(src,id,QStringLiteral("SourceCurrent"),QStringLiteral("A"),v.sourceCurrentA);
+                channels.scalar(src,id,QStringLiteral("LoadCurrent"),QStringLiteral("A"),v.loadCurrentA);
+                channels.scalar(src,id,QStringLiteral("ChopperCurrent"),QStringLiteral("A"),v.chopperCurrentA);
+                channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),v.powerW);
+                channels.scalar(src,id,QStringLiteral("StoredEnergy"),QStringLiteral("J"),v.storedEnergyJ);
+            }
+            for(const auto& entry:drv.inverterHistories){
+                const int id=entry.first;
+                const auto& history=entry.second;
+                if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                    throw std::runtime_error("伺服逆变器采样与结果帧时间轴不同步。");
+                const auto& v=history[fi];
+                const QString src=QStringLiteral("inverters");
+                channels.scalar(src,id,QStringLiteral("BusVoltage"),QStringLiteral("V"),v.busVoltageV);
+                channels.scalar(src,id,QStringLiteral("OutputVoltage"),QStringLiteral("V"),v.outputVoltageV);
+                channels.scalar(src,id,QStringLiteral("PhaseCurrent"),QStringLiteral("A"),v.phaseCurrentA);
+                channels.scalar(src,id,QStringLiteral("DcCurrent"),QStringLiteral("A"),v.dcCurrentA);
+                channels.scalar(src,id,QStringLiteral("ModulationIndex"),QStringLiteral(""),v.modulationIndex);
+                channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),v.outputPowerW);
+                channels.scalar(src,id,QStringLiteral("LossPower"),QStringLiteral("W"),v.lossW);
+                channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),v.command);
             }
         }
         result.frames.push_back(std::move(frame));

@@ -629,12 +629,18 @@ void buildMultiphysics(RibbonPage* page, MotionWindow& window)
     originalButton(aux, window, {"过滤器", "Motion/mech_hydraulic.png", "createHydraulicComponent", "Filter"}, 0, 1, false);
     originalButton(aux, window, {"液压容腔", "Motion/mech_hydraulic.png", "createHydraulicNode", "Chamber"}, 1, 1, false);
 
-    plannedGroup(page, window, "电气驱动", "Motion/electromechanicalCoupling.png", {"电机", "电源", "逆变器"});
-    plannedGroup(page, window, "集成作动", "Motion/mech_elec_hyd.png", {"EHA", "EMA"});
+    auto* elec = group(page, "电气驱动");
+    actionButton(elec, window, Command::AddElectricMotor, false, 0, 0, "Motion/electromechanicalCoupling.png");
+    actionButton(elec, window, Command::AddPowerSupply, false, 1, 0, "Motion/electromechanicalCoupling.png");
+    actionButton(elec, window, Command::AddInverter, false, 0, 1, "Motion/electromechanicalCoupling.png");
+
+    auto* integrated = group(page, "集成作动");
+    actionButton(integrated, window, Command::AddEhaActuator, false, 0, 0, "Motion/mech_elec_hyd.png");
+    actionButton(integrated, window, Command::AddEmaActuator, false, 1, 0, "Motion/mech_elec_hyd.png");
 
     auto* tools = group(page, "回路工具");
     originalButton(tools, window, {"端口连接", "Motion/controlCalculation.png", "createHydraulicComponent", "PortConnection"}, 0, 0, false);
-    plannedButton(tools, window, "回路图", "Motion/controlCalculation.png", 1, 0);
+    actionButton(tools, window, Command::ShowMultiphysicsSchematic, false, 1, 0, "Motion/controlCalculation.png");
     actionButton(tools, window, Command::HydraulicCircuitCheck, false, 0, 1, "Motion/controlCalculation.png");
 
     auto* settings = group(page, "设置");

@@ -18,7 +18,9 @@ inline void removeNativeEntityCurves(RigidModel& model, const QString& collectio
         {"VectorForce", "vectorForces"}, {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
         {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"},
         {"HydraulicCylinder", "hydraulicCylinders"}, {"HydraulicMotor", "hydraulicMotors"},
-        {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"}};
+        {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"},
+        {"PowerSupply", "powerSupplies"}, {"Inverter", "inverters"}, {"ElectricMotor", "electricMotors"},
+        {"EhaActuator", "ehaActuators"}, {"EmaActuator", "emaActuators"}};
     const auto canonical = [&](const QString& source) { return aliases.value(source, source); };
     for (auto& scenario : model.scenarios) {
         auto& requests = scenario.curveRequests;

@@ -75,7 +75,9 @@ QString rigidChannelSourceType(const QString& sourceType)
         {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"},
         {"VectorForce", "vectorForces"}, {"AutoFlexBody", "autoFlexBodies"}, {"Contact", "contacts"},
         {"HydraulicCylinder", "hydraulicCylinders"}, {"HydraulicMotor", "hydraulicMotors"},
-        {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"}};
+        {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"},
+        {"PowerSupply", "powerSupplies"}, {"Inverter", "inverters"}, {"ElectricMotor", "electricMotors"},
+        {"EhaActuator", "ehaActuators"}, {"EmaActuator", "emaActuators"}};
     return collections.value(sourceType, sourceType);
 }
 
@@ -89,7 +91,9 @@ QString rigidChannelSourceLabel(const QString& sourceType)
         {"threePointForces", "三点力"}, {"threePointTorques", "三点力矩"},
         {"vectorForces", "矢量载荷"}, {"autoFlexBodies", "柔性体"}, {"contacts", "接触"},
         {"hydraulicCylinders", "液压缸"}, {"hydraulicMotors", "液压马达"},
-        {"hydraulicNodes", "液压节点"}, {"hydraulicComponents", "液压元件"}};
+        {"hydraulicNodes", "液压节点"}, {"hydraulicComponents", "液压元件"},
+        {"powerSupplies", "直流电源"}, {"inverters", "伺服逆变器"}, {"electricMotors", "伺服电机"},
+        {"ehaActuators", "EHA作动器"}, {"emaActuators", "EMA作动器"}};
     const auto it = names.constFind(rigidChannelSourceType(sourceType));
     return it == names.cend() ? sourceType : label(it.value());
 }
@@ -137,7 +141,14 @@ QString rigidChannelVariableLabel(const QString& variable)
         {"FlowA", "A口流量"}, {"FlowB", "B口流量"}, {"ControlSignal", "控制指令"}, {"FluidPower", "流体功率"},
         {"Pressure", "节点压力"}, {"NetFlow", "净流入流量"}, {"Flow", "支路流量"},
         {"DeltaPressure", "元件压差"}, {"SpoolPosition", "阀芯位移/状态"},
-        {"GasPressure", "气腔压力"}, {"GasVolume", "气腔体积"}, {"OilVolume", "储油体积"}};
+        {"GasPressure", "气腔压力"}, {"GasVolume", "气腔体积"}, {"OilVolume", "储油体积"},
+        {"Current", "电枢/相电流"}, {"Voltage", "端电压"}, {"BackEmf", "反电动势"},
+        {"ElectricalPower", "电功率"}, {"CopperLoss", "铜耗功率"},
+        {"PumpSpeed", "电液泵转速"}, {"MotorSpeed", "电机转速"},
+        {"BusVoltage", "母线电压"}, {"SourceCurrent", "电源输出电流"}, {"LoadCurrent", "母线负载电流"},
+        {"ChopperCurrent", "制动斩波电流"}, {"StoredEnergy", "母线电容储能"},
+        {"OutputVoltage", "逆变输出电压"}, {"PhaseCurrent", "输出相电流"}, {"DcCurrent", "母线直流电流"},
+        {"ModulationIndex", "调制比"}, {"LossPower", "逆变损耗功率"}};
     const auto it = names.constFind(variable);
     if (it != names.cend()) return label(it.value());
     if (variable.endsWith(QLatin1Char('J'))) {

@@ -176,6 +176,7 @@ void MotionWindow::createRigidCommands()
     add(Command::ModelCheck, tr("模型检查"), "joint_fixed.png", [this] { showModelDiagnostics(false, false); });
     add(Command::ConstraintDiagnostics, tr("约束诊断"), "joint_fixed.png", [this] { showModelDiagnostics(true, false); });
     add(Command::HydraulicCircuitCheck, tr("回路检查"), "controlCalculation.png", [this] { showModelDiagnostics(false, true); });
+    add(Command::ShowMultiphysicsSchematic, tr("回路图"), "controlCalculation.png", [this] { showMultiphysicsSchematic(); });
     add(Command::LoadRigidExample, tr("刚体示例"), "movingBody.png", [this] { loadRigidExample(); });
     const auto addResult = [this](Command id, const QString& text, const char* icon, ModelNode::Kind kind) {
         auto* action = new QAction(TreeIcons::item(QString::fromLatin1(icon)), text, this);

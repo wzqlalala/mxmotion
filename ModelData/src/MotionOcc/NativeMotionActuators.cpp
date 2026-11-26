@@ -6,6 +6,9 @@
 #include "motion/physics/HydraulicCircuit.h"
 #include "motion/physics/HydraulicCylinder.h"
 #include "motion/physics/HydraulicMotor.h"
+#include "motion/physics/ElectricMotor.h"
+#include "motion/physics/IntegratedActuators.h"
+#include "motion/physics/ElectricDrive.h"
 #include "motion/physics/LinkMotorLinearForce.h"
 #include "motion/physics/LinkMotorRotationTorque.h"
 #include "motion/physics/FlexBodyAuxRef.h"
@@ -654,23 +657,372 @@ void createNativeHydraulicCircuit(NativeMotionSystem& system, const NativeMotion
     system.hydraulicCircuit = std::move(netRuntime);
 }
 
+void createNativeElectricAndIntegratedActuators(NativeMotionSystem& system, const NativeMotionInput& input)
+{
+    const auto fluid = input.document.root.value("motionData").toObject().value("hydraulicFluid").toObject();
+    const double bulkModulus = fluid.value("bulkModulus").toDouble(1400.0);
+
+    const auto resolveLinearEndpoints = [&](const QJsonObject& row, const QString& label,
+                                            double stroke, double initialStroke,
+                                            std::shared_ptr<motion::MotionBody>& bodyI,
+                                            std::shared_ptr<motion::MotionBody>& bodyJ,
+                                            motion::MotionVector<>& worldI,
+                                            motion::MotionVector<>& worldJ) {
+        if (row.value("mountMode").toString("Points") == QLatin1String("Joint")) {
+            const int jointId = row.value("targetJointId").toInt(-1);
+            const auto jointRow = input.document.entity("joints", jointId);
+            if (jointRow.isEmpty()) fail(QStringLiteral("%1 关联的运动副不存在。").arg(label));
+            const auto jType = jointRow.value("jointType").toString();
+            if (jType != QLatin1String("Translational") && jType != QLatin1String("Cylindrical"))
+                fail(QStringLiteral("%1 仅支持关联移动副或柱面副。").arg(label));
+            bodyI = findSystemBody(system, jointRow.value("actionBodyId").toInt(-1));
+            bodyJ = findSystemBody(system, jointRow.value("baseBodyId").toInt(-1));
+            const auto origin = jsonVec(jointRow.value("origin"));
+            auto axis = jsonVec(jointRow.value("axis"), motion::VECT_Z);
+            if (axis.Length() < 1e-12) fail(QStringLiteral("%1 关联运动副轴向为零。").arg(label));
+            axis.Normalize();
+            const double baseLen = std::max(50.0, stroke);
+            worldJ = origin;
+            worldI = origin + axis * (baseLen + initialStroke);
+        } else {
+            bodyI = findSystemBody(system, row.value("bodyIId").toInt(-1));
+            bodyJ = findSystemBody(system, row.value("bodyJId").toInt(-1));
+            worldI = jsonVec(row.value("localI"));
+            worldJ = jsonVec(row.value("localJ"));
+        }
+        if (!bodyI || !bodyJ || bodyI == bodyJ)
+            fail(QStringLiteral("%1 端点运动体不存在或连接到同一运动体。").arg(label));
+        if ((worldI - worldJ).Length() <= 1e-6)
+            fail(QStringLiteral("%1 初始两端点距离为零。").arg(label));
+    };
+
+    std::map<int, int> motorInverterBindings; // motorId -> inverterId
+    std::map<int, int> ehaInverterBindings;   // ehaId -> inverterId
+    std::map<int, int> emaInverterBindings;   // emaId -> inverterId
+    std::set<int> usedInverters;
+
+    // 1. Rotary Electric Servo Motors
+    for (const auto& value : input.document.collection("electricMotors")) {
+        const auto row = value.toObject();
+        if (!row.value("enabled").toBool(true)) continue;
+        const int id = row.value("id").toInt();
+        const int jointId = row.value("targetJointId").toInt(-1);
+        const auto jointRow = input.document.entity("joints", jointId);
+        if (jointRow.isEmpty()) fail(QStringLiteral("伺服电机 %1 关联的运动副不存在。").arg(id));
+        const QString jType = jointRow.value("jointType").toString();
+        if (jType != QLatin1String("Revolute") && jType != QLatin1String("Cylindrical"))
+            fail(QStringLiteral("伺服电机 %1 仅支持关联旋转副或圆柱副。").arg(id));
+
+        const auto jointIt = system.joints_map.find(std::to_string(jointId));
+        if (jointIt == system.joints_map.end())
+            fail(QStringLiteral("伺服电机 %1 关联的运动副 %2 未启用。").arg(id).arg(jointId));
+        const auto markerI = system.SearchMarker(jointIt->second->marker_I.c_str());
+        const auto markerJ = system.SearchMarker(jointIt->second->marker_J.c_str());
+        if (!markerI || !markerJ)
+            fail(QStringLiteral("伺服电机 %1 目标运动副 Marker 不存在。").arg(id));
+        auto bodyI = system.SearchBody(markerI->GetBody()->GetName());
+        auto bodyJ = system.SearchBody(markerJ->GetBody()->GetName());
+        if (!bodyI || !bodyJ || bodyI == bodyJ)
+            fail(QStringLiteral("伺服电机 %1 需要连接两个不同的刚体。").arg(id));
+
+        auto motor = std::make_shared<motion::MotionElectricMotor>();
+        motor->SetNameString("EM_" + std::to_string(id));
+        motor->SetTorqueFromNmmScale(1000.0);
+        motor->SetElectricalParameters(row.value("resistance").toDouble(0.45),
+                                       row.value("inductanceMh").toDouble(3.0) * 1.0e-3,
+                                       row.value("torqueConstant").toDouble(0.85),
+                                       row.value("backEmfConstant").toDouble(0.85));
+        motor->SetMechanicalParameters(row.value("gearRatio").toDouble(1.0),
+                                       row.value("gearEfficiency").toDouble(0.96),
+                                       row.value("viscousDamping").toDouble(10.0),
+                                       row.value("maxCurrent").toDouble(60.0));
+        motor->SetBusVoltageV(row.value("busVoltage").toDouble(48.0));
+        motor->SetServoGains(row.value("kpPosition").toDouble(8.0),
+                             row.value("kpSpeed").toDouble(0.25),
+                             row.value("kiSpeed").toDouble(2.5),
+                             row.value("kpCurrent").toDouble(6.0));
+
+        const QString cm = row.value("controlMode").toString("SpeedClosedLoop");
+        if (cm == QLatin1String("VoltageCommand"))
+            motor->SetControlMode(motion::MotionElectricMotor::ControlMode::VoltageCommand);
+        else if (cm == QLatin1String("CurrentClosedLoop"))
+            motor->SetControlMode(motion::MotionElectricMotor::ControlMode::CurrentClosedLoop);
+        else if (cm == QLatin1String("PositionClosedLoop"))
+            motor->SetControlMode(motion::MotionElectricMotor::ControlMode::PositionClosedLoop);
+        else if (cm == QLatin1String("ExternalInverter")) {
+            motor->SetControlMode(motion::MotionElectricMotor::ControlMode::ExternalInverter);
+            const int invId = row.value("inverterId").toInt(-1);
+            if (invId < 0) fail(QStringLiteral("伺服电机 %1 设为外部逆变器驱动，但未选择逆变器。").arg(id));
+            if (!usedInverters.insert(invId).second)
+                fail(QStringLiteral("逆变器 %1 被多个执行器重复绑定。").arg(invId));
+            motorInverterBindings[id] = invId;
+        } else {
+            motor->SetControlMode(motion::MotionElectricMotor::ControlMode::SpeedClosedLoop);
+        }
+
+        double constCmd = 0.0;
+        auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                            QStringLiteral("0"), QStringLiteral("伺服电机 %1").arg(id), constCmd, true);
+        motor->SetCommandFunction(cmdFn);
+        motor->Initialize(bodyI, bodyJ, false, markerI->GetAbsCoord(), markerJ->GetAbsCoord());
+        system.AddLink(motor);
+
+        auto rt = std::make_shared<NativeElectricMotorRuntime>();
+        rt->motorId = id;
+        rt->definition = row;
+        rt->motor = motor;
+        system.electricMotors.emplace(id, std::move(rt));
+    }
+
+    // 2. Integrated EHA Actuators
+    for (const auto& value : input.document.collection("ehaActuators")) {
+        const auto row = value.toObject();
+        if (!row.value("enabled").toBool(true)) continue;
+        const int id = row.value("id").toInt();
+        const double stroke = row.value("stroke").toDouble(300.0);
+        const double initialStroke = row.value("initialStroke").toDouble(150.0);
+
+        std::shared_ptr<motion::MotionBody> bodyI, bodyJ;
+        motion::MotionVector<> worldI, worldJ;
+        resolveLinearEndpoints(row, QStringLiteral("EHA 作动器 %1").arg(id), stroke, initialStroke,
+                               bodyI, bodyJ, worldI, worldJ);
+
+        auto eha = std::make_shared<motion::MotionElectroHydraulicActuator>();
+        eha->SetNameString("EHA_" + std::to_string(id));
+        eha->SetUnitScales(1.0, 1000.0);
+        eha->SetCylinderGeometry(row.value("pistonDiameter").toDouble(70.0),
+                                 row.value("rodDiameter").toDouble(40.0),
+                                 stroke, initialStroke,
+                                 row.value("deadVolume").toDouble(50000.0));
+        eha->SetPumpAndFluidParameters(row.value("pumpDisplacementCcRev").toDouble(4.5),
+                                       bulkModulus,
+                                       row.value("boostPressureMPa").toDouble(1.5),
+                                       row.value("maxReliefPressureMPa").toDouble(28.0),
+                                       row.value("internalLeakage").toDouble(0.02),
+                                       row.value("pumpEfficiency").toDouble(0.92));
+        eha->SetServoMotorParameters(row.value("resistance").toDouble(0.35),
+                                     row.value("torqueConstant").toDouble(0.55),
+                                     row.value("backEmfConstant").toDouble(0.55),
+                                     row.value("rotorInertia").toDouble(800.0),
+                                     row.value("busVoltage").toDouble(270.0),
+                                     row.value("maxCurrent").toDouble(55.0));
+        eha->SetViscousFriction(row.value("viscousFriction").toDouble(3.0));
+        eha->SetServoGains(row.value("kpPosition").toDouble(60.0),
+                           row.value("kpSpeed").toDouble(0.25),
+                           row.value("kiSpeed").toDouble(3.0));
+
+        const QString cm = row.value("controlMode").toString("PositionServo");
+        if (cm == QLatin1String("SpeedCommand"))
+            eha->SetControlMode(motion::MotionElectroHydraulicActuator::ControlMode::SpeedCommand);
+        else if (cm == QLatin1String("VoltageCommand"))
+            eha->SetControlMode(motion::MotionElectroHydraulicActuator::ControlMode::VoltageCommand);
+        else if (cm == QLatin1String("ExternalInverter")) {
+            eha->SetControlMode(motion::MotionElectroHydraulicActuator::ControlMode::ExternalInverter);
+            const int invId = row.value("inverterId").toInt(-1);
+            if (invId < 0) fail(QStringLiteral("EHA 作动器 %1 设为外部逆变器驱动，但未选择逆变器。").arg(id));
+            if (!usedInverters.insert(invId).second)
+                fail(QStringLiteral("逆变器 %1 被多个执行器重复绑定。").arg(invId));
+            ehaInverterBindings[id] = invId;
+        } else {
+            eha->SetControlMode(motion::MotionElectroHydraulicActuator::ControlMode::PositionServo);
+        }
+
+        double constCmd = 0.0;
+        auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                            QString::number(initialStroke, 'g', 12),
+                                            QStringLiteral("EHA 作动器 %1").arg(id), constCmd, true);
+        eha->SetCommandFunction(cmdFn);
+        eha->Initialize(bodyI, bodyJ, false, worldI, worldJ);
+        system.AddLink(eha);
+
+        auto rt = std::make_shared<NativeEhaRuntime>();
+        rt->actuatorId = id;
+        rt->definition = row;
+        rt->actuator = eha;
+        system.ehaActuators.emplace(id, std::move(rt));
+    }
+
+    // 3. Integrated EMA Actuators
+    for (const auto& value : input.document.collection("emaActuators")) {
+        const auto row = value.toObject();
+        if (!row.value("enabled").toBool(true)) continue;
+        const int id = row.value("id").toInt();
+        const double stroke = row.value("stroke").toDouble(300.0);
+        const double initialStroke = row.value("initialStroke").toDouble(150.0);
+
+        std::shared_ptr<motion::MotionBody> bodyI, bodyJ;
+        motion::MotionVector<> worldI, worldJ;
+        resolveLinearEndpoints(row, QStringLiteral("EMA 作动器 %1").arg(id), stroke, initialStroke,
+                               bodyI, bodyJ, worldI, worldJ);
+
+        auto ema = std::make_shared<motion::MotionElectroMechanicalActuator>();
+        ema->SetNameString("EMA_" + std::to_string(id));
+        ema->SetUnitScales(1.0, 1000.0);
+        ema->SetGeometry(row.value("screwLead").toDouble(10.0),
+                         row.value("gearRatio").toDouble(2.0),
+                         stroke, initialStroke);
+        ema->SetMotorParameters(row.value("resistance").toDouble(0.40),
+                                row.value("inductanceMh").toDouble(2.5) * 1.0e-3,
+                                row.value("torqueConstant").toDouble(0.65),
+                                row.value("backEmfConstant").toDouble(0.65),
+                                row.value("busVoltage").toDouble(270.0),
+                                row.value("maxCurrent").toDouble(45.0));
+        ema->SetMechanicalLoss(row.value("mechanicalEfficiency").toDouble(0.90),
+                               row.value("viscousFriction").toDouble(2.5));
+        ema->SetServoGains(row.value("kpPosition").toDouble(12.0),
+                           row.value("kpSpeed").toDouble(0.35),
+                           row.value("kiSpeed").toDouble(2.0),
+                           row.value("kpCurrent").toDouble(5.0));
+
+        const QString cm = row.value("controlMode").toString("PositionServo");
+        if (cm == QLatin1String("VelocityServo"))
+            ema->SetControlMode(motion::MotionElectroMechanicalActuator::ControlMode::VelocityServo);
+        else if (cm == QLatin1String("VoltageCommand"))
+            ema->SetControlMode(motion::MotionElectroMechanicalActuator::ControlMode::VoltageCommand);
+        else if (cm == QLatin1String("ExternalInverter")) {
+            ema->SetControlMode(motion::MotionElectroMechanicalActuator::ControlMode::ExternalInverter);
+            const int invId = row.value("inverterId").toInt(-1);
+            if (invId < 0) fail(QStringLiteral("EMA 作动器 %1 设为外部逆变器驱动，但未选择逆变器。").arg(id));
+            if (!usedInverters.insert(invId).second)
+                fail(QStringLiteral("逆变器 %1 被多个执行器重复绑定。").arg(invId));
+            emaInverterBindings[id] = invId;
+        } else {
+            ema->SetControlMode(motion::MotionElectroMechanicalActuator::ControlMode::PositionServo);
+        }
+
+        double constCmd = 0.0;
+        auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                            QString::number(initialStroke, 'g', 12),
+                                            QStringLiteral("EMA 作动器 %1").arg(id), constCmd, true);
+        ema->SetCommandFunction(cmdFn);
+        ema->Initialize(bodyI, bodyJ, false, worldI, worldJ);
+        system.AddLink(ema);
+
+        auto rt = std::make_shared<NativeEmaRuntime>();
+        rt->actuatorId = id;
+        rt->definition = row;
+        rt->actuator = ema;
+        system.emaActuators.emplace(id, std::move(rt));
+    }
+
+    // 4. Electric Power Supplies & Servo Inverters Network
+    std::vector<QJsonObject> activeSupplies;
+    for (const auto& v : input.document.collection("powerSupplies")) {
+        const auto row = v.toObject();
+        if (row.value("enabled").toBool(true)) activeSupplies.push_back(row);
+    }
+    std::vector<QJsonObject> activeInverters;
+    for (const auto& v : input.document.collection("inverters")) {
+        const auto row = v.toObject();
+        if (row.value("enabled").toBool(true)) activeInverters.push_back(row);
+    }
+
+    if (!activeSupplies.empty() || !activeInverters.empty() || !usedInverters.empty()) {
+        auto drvRt = std::make_shared<NativeElectricDriveRuntime>();
+        auto net = std::make_shared<motion::MotionElectricDriveNetwork>();
+        net->SetNameString("ELECTRIC_DRIVE_NETWORK");
+
+        for (const auto& row : activeSupplies) {
+            const int sid = row.value("id").toInt();
+            const double nomV = row.value("nominalVoltage").toDouble(270.0);
+            double constV = nomV;
+            auto vFn = parseHydraulicFunction(row, "voltageExpression", "voltageTableX", "voltageTableY",
+                                              QString::number(nomV, 'g', 12),
+                                              QStringLiteral("直流电源 %1").arg(sid), constV);
+            net->AddPowerSupply(sid, nomV, vFn,
+                                row.value("internalResistance").toDouble(0.05),
+                                row.value("capacitanceMf").toDouble(4.7) * 1.0e-3,
+                                row.value("maxCurrent").toDouble(120.0),
+                                row.value("chopperVoltage").toDouble(0.0),
+                                row.value("chopperResistance").toDouble(8.0));
+            drvRt->supplyHistories[sid];
+        }
+
+        for (const auto& row : activeInverters) {
+            const int iid = row.value("id").toInt();
+            const int sid = row.value("supplyId").toInt(-1);
+            if (sid >= 0 && !net->HasPowerSupply(sid))
+                fail(QStringLiteral("伺服逆变器 %1 关联的直流电源 %2 未启用或不存在。").arg(iid).arg(sid));
+            const QString cmStr = row.value("controlMode").toString("SpeedClosedLoop");
+            auto imode = motion::MotionElectricDriveNetwork::InverterMode::SpeedClosedLoop;
+            if (cmStr == QLatin1String("DutyCommand"))
+                imode = motion::MotionElectricDriveNetwork::InverterMode::DutyCommand;
+            else if (cmStr == QLatin1String("CurrentClosedLoop"))
+                imode = motion::MotionElectricDriveNetwork::InverterMode::CurrentClosedLoop;
+            else if (cmStr == QLatin1String("PositionClosedLoop"))
+                imode = motion::MotionElectricDriveNetwork::InverterMode::PositionClosedLoop;
+
+            double constCmd = 0.0;
+            auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                                QStringLiteral("0"),
+                                                QStringLiteral("伺服逆变器 %1").arg(iid), constCmd);
+            net->AddInverter(iid, sid,
+                             row.value("nominalBusVoltage").toDouble(270.0),
+                             imode,
+                             row.value("efficiency").toDouble(0.96),
+                             row.value("maxCurrent").toDouble(60.0),
+                             row.value("kpPosition").toDouble(8.0),
+                             row.value("kpSpeed").toDouble(0.30),
+                             row.value("kiSpeed").toDouble(2.5),
+                             row.value("kpCurrent").toDouble(5.0),
+                             constCmd, cmdFn);
+            drvRt->inverterHistories[iid];
+        }
+
+        for (const auto& kv : motorInverterBindings) {
+            if (!net->HasInverter(kv.second))
+                fail(QStringLiteral("伺服电机 %1 关联的逆变器 %2 未启用。").arg(kv.first).arg(kv.second));
+            net->BindElectricMotor(kv.second, system.electricMotors.at(kv.first)->motor);
+        }
+        for (const auto& kv : ehaInverterBindings) {
+            if (!net->HasInverter(kv.second))
+                fail(QStringLiteral("EHA 作动器 %1 关联的逆变器 %2 未启用。").arg(kv.first).arg(kv.second));
+            net->BindEha(kv.second, system.ehaActuators.at(kv.first)->actuator);
+        }
+        for (const auto& kv : emaInverterBindings) {
+            if (!net->HasInverter(kv.second))
+                fail(QStringLiteral("EMA 作动器 %1 关联的逆变器 %2 未启用。").arg(kv.first).arg(kv.second));
+            net->BindEma(kv.second, system.emaActuators.at(kv.first)->actuator);
+        }
+
+        net->Finalize();
+        system.AddOtherPhysicsItem(net);
+        drvRt->network = std::move(net);
+        system.electricDrive = std::move(drvRt);
+    }
+}
+
 QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJsonObject& scenario)
 {
     if (!scenario.value("hydraulicSteadyInit").toBool(false)
-        || (system.hydraulicCylinders.empty() && system.hydraulicMotors.empty()))
+        || (system.hydraulicCylinders.empty() && system.hydraulicMotors.empty()
+            && system.electricMotors.empty() && system.ehaActuators.empty() && system.emaActuators.empty()))
         return {};
 
     std::vector<NativeHydraulicRuntime*> cylRuntimes;
-    cylRuntimes.reserve(system.hydraulicCylinders.size());
     for (auto& entry : system.hydraulicCylinders) {
         cylRuntimes.push_back(entry.second.get());
         entry.second->cylinder->SetDisabled(true);
     }
     std::vector<NativeHydraulicMotorRuntime*> motRuntimes;
-    motRuntimes.reserve(system.hydraulicMotors.size());
     for (auto& entry : system.hydraulicMotors) {
         motRuntimes.push_back(entry.second.get());
         entry.second->motor->SetDisabled(true);
+    }
+    std::vector<NativeElectricMotorRuntime*> emRuntimes;
+    for (auto& entry : system.electricMotors) {
+        emRuntimes.push_back(entry.second.get());
+        entry.second->motor->SetDisabled(true);
+    }
+    std::vector<NativeEhaRuntime*> ehaRuntimes;
+    for (auto& entry : system.ehaActuators) {
+        ehaRuntimes.push_back(entry.second.get());
+        entry.second->actuator->SetDisabled(true);
+    }
+    std::vector<NativeEmaRuntime*> emaRuntimes;
+    for (auto& entry : system.emaActuators) {
+        emaRuntimes.push_back(entry.second.get());
+        entry.second->actuator->SetDisabled(true);
     }
 
     system.Setup();
@@ -682,7 +1034,10 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
     const int m = system.GetNconstr();
     const int kCyl = static_cast<int>(cylRuntimes.size());
     const int kMot = static_cast<int>(motRuntimes.size());
-    const int kTot = kCyl + kMot;
+    const int kEm = static_cast<int>(emRuntimes.size());
+    const int kEha = static_cast<int>(ehaRuntimes.size());
+    const int kEma = static_cast<int>(emaRuntimes.size());
+    const int kTot = kCyl + kMot + kEm + kEha + kEma;
 
     if (n > 0 && kTot > 0) {
         motion::MotionVectorDynamic<> force(n);
@@ -697,32 +1052,29 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
                 A.leftCols(m) = Eigen::MatrixXd(cq.transpose());
             }
         }
-        for (int r = 0; r < kCyl; ++r) {
-            auto& cyl = *cylRuntimes[r]->cylinder;
-            auto* b1 = static_cast<motion::MotionBody*>(cyl.GetBody1());
-            auto* b2 = static_cast<motion::MotionBody*>(cyl.GetBody2());
-            const auto p1 = b1->TransformPointLocalToParent(cyl.GetPoint1Rel());
-            const auto p2 = b2->TransformPointLocalToParent(cyl.GetPoint2Rel());
+        const auto addLinearColumn = [&](motion::MotionLinkTSDA& link, int col) {
+            auto* b1 = static_cast<motion::MotionBody*>(link.GetBody1());
+            auto* b2 = static_cast<motion::MotionBody*>(link.GetBody2());
+            const auto p1 = b1->TransformPointLocalToParent(link.GetPoint1Rel());
+            const auto p2 = b2->TransformPointLocalToParent(link.GetPoint2Rel());
             const auto dir = (p1 - p2).GetNormalized();
             if (b1->Variables().IsActive()) {
                 const int off1 = static_cast<int>(b1->GetOffset_w());
                 const auto lt1 = b1->TransformDirectionParentToLocal(motion::Vcross(p1 - b1->GetCoord().pos, dir));
-                A.block<3, 1>(off1, m + r) = dir.eigen();
-                A.block<3, 1>(off1 + 3, m + r) = lt1.eigen();
+                A.block<3, 1>(off1, col) = dir.eigen();
+                A.block<3, 1>(off1 + 3, col) = lt1.eigen();
             }
             if (b2->Variables().IsActive()) {
                 const int off2 = static_cast<int>(b2->GetOffset_w());
                 const auto lt2 = b2->TransformDirectionParentToLocal(motion::Vcross(p2 - b2->GetCoord().pos, -dir));
-                A.block<3, 1>(off2, m + r) = (-dir).eigen();
-                A.block<3, 1>(off2 + 3, m + r) = lt2.eigen();
+                A.block<3, 1>(off2, col) = (-dir).eigen();
+                A.block<3, 1>(off2 + 3, col) = lt2.eigen();
             }
-        }
-        for (int j = 0; j < kMot; ++j) {
-            auto& mot = *motRuntimes[j]->motor;
-            auto* b1 = static_cast<motion::MotionBody*>(mot.GetBody1());
-            auto* b2 = static_cast<motion::MotionBody*>(mot.GetBody2());
-            const auto nz = b2->TransformDirectionLocalToParent(mot.GetLinkRelativeCoords().rot.GetZaxis()).GetNormalized();
-            const int col = m + kCyl + j;
+        };
+        const auto addRotaryColumn = [&](motion::MotionLink& link, int col) {
+            auto* b1 = static_cast<motion::MotionBody*>(link.GetBody1());
+            auto* b2 = static_cast<motion::MotionBody*>(link.GetBody2());
+            const auto nz = b2->TransformDirectionLocalToParent(link.GetLinkRelativeCoords().rot.GetZaxis()).GetNormalized();
             if (b1->Variables().IsActive()) {
                 const int off1 = static_cast<int>(b1->GetOffset_w());
                 A.block<3, 1>(off1 + 3, col) = b1->TransformDirectionParentToLocal(nz).eigen();
@@ -731,37 +1083,68 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
                 const int off2 = static_cast<int>(b2->GetOffset_w());
                 A.block<3, 1>(off2 + 3, col) = b2->TransformDirectionParentToLocal(-nz).eigen();
             }
-        }
+        };
+
+        int curCol = m;
+        for (int r = 0; r < kCyl; ++r) addLinearColumn(*cylRuntimes[r]->cylinder, curCol++);
+        for (int j = 0; j < kMot; ++j) addRotaryColumn(*motRuntimes[j]->motor, curCol++);
+        for (int j = 0; j < kEm; ++j) addRotaryColumn(*emRuntimes[j]->motor, curCol++);
+        for (int r = 0; r < kEha; ++r) addLinearColumn(*ehaRuntimes[r]->actuator, curCol++);
+        for (int r = 0; r < kEma; ++r) addLinearColumn(*emaRuntimes[r]->actuator, curCol++);
 
         const Eigen::VectorXd sol = A.completeOrthogonalDecomposition().solve(-force);
-        for (int r = 0; r < kCyl; ++r) {
+        curCol = m;
+        for (int r = 0; r < kCyl; ++r, ++curCol) {
             auto& rt = *cylRuntimes[r];
             rt.cylinder->SetDisabled(false);
-            const double fReqN = (sol.size() > m + r && std::isfinite(sol(m + r))) ? sol(m + r) * 0.001 : 0.0;
+            const double fReqN = (sol.size() > curCol && std::isfinite(sol(curCol))) ? sol(curCol) * 0.001 : 0.0;
             const double preload = std::max(rt.cylinder->GetTankPressureMPa(),
                 std::min(rt.definition.value("initialPressureA").toDouble(1.0),
                          rt.definition.value("initialPressureB").toDouble(1.0)));
             rt.cylinder->ApplySteadyInitialPressures(fReqN, preload);
         }
-        for (int j = 0; j < kMot; ++j) {
+        for (int j = 0; j < kMot; ++j, ++curCol) {
             auto& rt = *motRuntimes[j];
             rt.motor->SetDisabled(false);
-            const int col = m + kCyl + j;
-            const double tauReqNmm = (sol.size() > col && std::isfinite(sol(col))) ? sol(col) * 0.001 : 0.0;
+            const double tauReqNmm = (sol.size() > curCol && std::isfinite(sol(curCol))) ? sol(curCol) * 0.001 : 0.0;
             const double preload = std::max(rt.motor->GetTankPressureMPa(),
                 std::min(rt.definition.value("initialPressureA").toDouble(1.0),
                          rt.definition.value("initialPressureB").toDouble(1.0)));
             rt.motor->ApplySteadyInitialPressures(tauReqNmm, preload);
         }
+        for (int j = 0; j < kEm; ++j, ++curCol) {
+            auto& rt = *emRuntimes[j];
+            rt.motor->SetDisabled(false);
+            const double tauReqNmm = (sol.size() > curCol && std::isfinite(sol(curCol))) ? sol(curCol) * 0.001 : 0.0;
+            rt.motor->ApplySteadyInitialLoadTorque(tauReqNmm);
+        }
+        for (int r = 0; r < kEha; ++r, ++curCol) {
+            auto& rt = *ehaRuntimes[r];
+            rt.actuator->SetDisabled(false);
+            const double fReqN = (sol.size() > curCol && std::isfinite(sol(curCol))) ? sol(curCol) * 0.001 : 0.0;
+            rt.actuator->ApplySteadyInitialLoad(fReqN);
+        }
+        for (int r = 0; r < kEma; ++r, ++curCol) {
+            auto& rt = *emaRuntimes[r];
+            rt.actuator->SetDisabled(false);
+            const double fReqN = (sol.size() > curCol && std::isfinite(sol(curCol))) ? sol(curCol) * 0.001 : 0.0;
+            rt.actuator->ApplySteadyInitialLoad(fReqN);
+        }
+        if (system.electricDrive && system.electricDrive->network) {
+            system.electricDrive->network->Finalize();
+        }
     } else {
         for (auto* rt : cylRuntimes) rt->cylinder->SetDisabled(false);
         for (auto* rt : motRuntimes) rt->motor->SetDisabled(false);
+        for (auto* rt : emRuntimes) rt->motor->SetDisabled(false);
+        for (auto* rt : ehaRuntimes) rt->actuator->SetDisabled(false);
+        for (auto* rt : emaRuntimes) rt->actuator->SetDisabled(false);
     }
 
     system.Setup();
     system.Update(0.0, true);
-    return QStringLiteral("液压稳态初始化已完成：%1 个液压缸、%2 个液压马达按 t=0 静载平衡初始腔压。")
-        .arg(kCyl).arg(kMot);
+    return QStringLiteral("液压稳态初始化已完成：按 t=0 静载平衡 %1 个机电液执行器初始腔压/电流。")
+        .arg(kTot);
 }
 
 void recordNativeHydraulicCylinders(NativeMotionSystem& system)
@@ -864,6 +1247,90 @@ void recordNativeHydraulics(NativeMotionSystem& system)
                 }
             }
             hist.push_back(sample);
+        }
+    }
+    for (auto& entry : system.electricMotors) {
+        auto& rt = *entry.second;
+        if (!rt.history.empty() && rt.history.back().time >= time) continue;
+        const auto& m = *rt.motor;
+        NativeElectricMotorSample s;
+        s.time = time;
+        s.currentA = m.GetCurrentA();
+        s.voltageV = m.GetTerminalVoltageV();
+        s.backEmfV = m.GetBackEmfV();
+        s.torqueNmm = m.GetTotalTorqueNmm();
+        s.angleDeg = m.GetAngleDeg();
+        s.speedRpm = m.GetJointSpeedRpm();
+        s.command = m.GetCommandValue(time);
+        s.elecPowerW = m.GetElectricalPowerW();
+        s.mechPowerW = m.GetMechanicalPowerW();
+        s.copperLossW = m.GetCopperLossW();
+        rt.history.push_back(s);
+    }
+    for (auto& entry : system.ehaActuators) {
+        auto& rt = *entry.second;
+        if (!rt.history.empty() && rt.history.back().time >= time) continue;
+        const auto& a = *rt.actuator;
+        NativeEhaSample s;
+        s.time = time;
+        s.pressureA = a.GetPressureAMPa();
+        s.pressureB = a.GetPressureBMPa();
+        s.pumpSpeedRpm = a.GetPumpSpeedRpm();
+        s.currentA = a.GetCurrentA();
+        s.voltageV = a.GetVoltageV();
+        s.forceN = a.GetTotalForceN();
+        s.strokeMm = a.GetStrokeMm();
+        s.velocityMmS = a.GetVelocityMmS();
+        s.command = a.GetCommandValue(time);
+        s.elecPowerW = a.GetElectricalPowerW();
+        s.mechPowerW = a.GetMechanicalPowerW();
+        rt.history.push_back(s);
+    }
+    for (auto& entry : system.emaActuators) {
+        auto& rt = *entry.second;
+        if (!rt.history.empty() && rt.history.back().time >= time) continue;
+        const auto& a = *rt.actuator;
+        NativeEmaSample s;
+        s.time = time;
+        s.strokeMm = a.GetStrokeMm();
+        s.velocityMmS = a.GetVelocityMmS();
+        s.motorSpeedRpm = a.GetMotorSpeedRpm();
+        s.currentA = a.GetCurrentA();
+        s.voltageV = a.GetVoltageV();
+        s.forceN = a.GetTotalForceN();
+        s.command = a.GetCommandValue(time);
+        s.elecPowerW = a.GetElectricalPowerW();
+        s.mechPowerW = a.GetMechanicalPowerW();
+        rt.history.push_back(s);
+    }
+    if (system.electricDrive && system.electricDrive->network) {
+        auto& drv = *system.electricDrive;
+        const auto& net = *drv.network;
+        for (auto& [sid, hist] : drv.supplyHistories) {
+            if (!hist.empty() && hist.back().time >= time) continue;
+            NativePowerSupplySample s;
+            s.time = time;
+            s.busVoltageV = net.GetSupplyBusVoltageV(sid);
+            s.sourceCurrentA = net.GetSupplySourceCurrentA(sid);
+            s.loadCurrentA = net.GetSupplyLoadCurrentA(sid);
+            s.chopperCurrentA = net.GetSupplyChopperCurrentA(sid);
+            s.powerW = net.GetSupplyOutputPowerW(sid);
+            s.storedEnergyJ = net.GetSupplyStoredEnergyJ(sid);
+            hist.push_back(s);
+        }
+        for (auto& [iid, hist] : drv.inverterHistories) {
+            if (!hist.empty() && hist.back().time >= time) continue;
+            NativeInverterSample s;
+            s.time = time;
+            s.busVoltageV = net.GetInverterBusVoltageV(iid);
+            s.outputVoltageV = net.GetInverterOutputVoltageV(iid);
+            s.phaseCurrentA = net.GetInverterPhaseCurrentA(iid);
+            s.dcCurrentA = net.GetInverterDcCurrentA(iid);
+            s.modulationIndex = net.GetInverterModulationIndex(iid);
+            s.outputPowerW = net.GetInverterOutputPowerW(iid);
+            s.lossW = net.GetInverterLossW(iid);
+            s.command = net.GetInverterCommand(iid);
+            hist.push_back(s);
         }
     }
 }

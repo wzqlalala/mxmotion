@@ -60,8 +60,13 @@ public:
     std::map<int, std::shared_ptr<NativeHydraulicRuntime>> hydraulicCylinders;
     std::map<int, std::shared_ptr<NativeHydraulicMotorRuntime>> hydraulicMotors;
     std::shared_ptr<NativeHydraulicCircuitRuntime> hydraulicCircuit;
+    std::map<int, std::shared_ptr<NativeElectricMotorRuntime>> electricMotors;
+    std::map<int, std::shared_ptr<NativeEhaRuntime>> ehaActuators;
+    std::map<int, std::shared_ptr<NativeEmaRuntime>> emaActuators;
+    std::shared_ptr<NativeElectricDriveRuntime> electricDrive;
     bool hasNativeHydraulics() const {
-        return !hydraulicCylinders.empty() || !hydraulicMotors.empty() || hydraulicCircuit != nullptr;
+        return !hydraulicCylinders.empty() || !hydraulicMotors.empty() || hydraulicCircuit != nullptr
+            || !electricMotors.empty() || !ehaActuators.empty() || !emaActuators.empty() || electricDrive != nullptr;
     }
     std::map<std::string, std::shared_ptr<motion::MotionLinkBase>> nativeJoints;
     std::set<int> importedMnfBodyIds;
