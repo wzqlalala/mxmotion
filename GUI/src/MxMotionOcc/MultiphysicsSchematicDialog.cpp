@@ -1,6 +1,11 @@
 #include "MultiphysicsSchematicDialog.h"
+#include "UiMetrics.h"
+#include "UiPalette.h"
 
+#include <QAbstractButton>
 #include <QFileDialog>
+#include <QFontMetrics>
+#include <QFrame>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
@@ -13,9 +18,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QSlider>
-#include <QToolBar>
-#include <QToolButton>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -186,7 +191,7 @@ public:
     }
 
     QRectF boundingRect() const override {
-        return QRectF(-82, -46, 164, 96);
+        return QRectF(-98, -52, 196, 110);
     }
 
     QPointF scenePinPos(const QString& pinKey) const {
@@ -208,41 +213,41 @@ public:
             accentColor = QColor(34, 118, 178);
             const QString ct = row.value("componentType").toString();
             if (ct == "Pump") {
-                pins.push_back({"suctionNodeId", QStringLiteral("吸"), QPointF(-70, 0)});
-                pins.push_back({"deliveryNodeId", QStringLiteral("压"), QPointF(70, 0)});
+                pins.push_back({"suctionNodeId", QStringLiteral("吸"), QPointF(-82, 4)});
+                pins.push_back({"deliveryNodeId", QStringLiteral("压"), QPointF(82, 4)});
             } else if (ct == "DirectionalValve" || ct == "ServoValve") {
-                pins.push_back({"portPNodeId", QStringLiteral("P"), QPointF(-70, -16)});
-                pins.push_back({"portTNodeId", QStringLiteral("T"), QPointF(-70, 16)});
-                pins.push_back({"portANodeId", QStringLiteral("A"), QPointF(70, -16)});
-                pins.push_back({"portBNodeId", QStringLiteral("B"), QPointF(70, 16)});
+                pins.push_back({"portPNodeId", QStringLiteral("P"), QPointF(-82, -12)});
+                pins.push_back({"portTNodeId", QStringLiteral("T"), QPointF(-82, 18)});
+                pins.push_back({"portANodeId", QStringLiteral("A"), QPointF(82, -12)});
+                pins.push_back({"portBNodeId", QStringLiteral("B"), QPointF(82, 18)});
             } else if (ct == "Accumulator") {
-                pins.push_back({"targetNodeId", QStringLiteral("口"), QPointF(0, 34)});
+                pins.push_back({"targetNodeId", QStringLiteral("口"), QPointF(0, 38)});
             } else if (ct == "PortConnection") {
-                pins.push_back({"targetNodeId", QStringLiteral("节"), QPointF(-70, 0)});
+                pins.push_back({"targetNodeId", QStringLiteral("节"), QPointF(-82, 4)});
             } else {
-                pins.push_back({"inletNodeId", QStringLiteral("入"), QPointF(-70, 0)});
-                pins.push_back({"outletNodeId", QStringLiteral("出"), QPointF(70, 0)});
+                pins.push_back({"inletNodeId", QStringLiteral("入"), QPointF(-82, 4)});
+                pins.push_back({"outletNodeId", QStringLiteral("出"), QPointF(82, 4)});
             }
         } else if (key.collection == "hydraulicCylinders" || key.collection == "hydraulicMotors") {
             accentColor = QColor(18, 112, 166);
-            pins.push_back({"portANodeId", QStringLiteral("A"), QPointF(-70, -16)});
-            pins.push_back({"portBNodeId", QStringLiteral("B"), QPointF(-70, 16)});
+            pins.push_back({"portANodeId", QStringLiteral("A"), QPointF(-82, -12)});
+            pins.push_back({"portBNodeId", QStringLiteral("B"), QPointF(-82, 18)});
         } else if (key.collection == "powerSupplies") {
             accentColor = QColor(132, 82, 198);
-            PinSpec p{"dcOut", QStringLiteral("DC+"), QPointF(70, 0)};
+            PinSpec p{"dcOut", QStringLiteral("DC+"), QPointF(82, 4)};
             p.isSupplyOut = true;
             pins.push_back(p);
         } else if (key.collection == "inverters") {
             accentColor = QColor(42, 152, 102);
-            PinSpec pIn{"supplyId", QStringLiteral("DC"), QPointF(-70, 0)};
+            PinSpec pIn{"supplyId", QStringLiteral("DC"), QPointF(-82, 4)};
             pIn.isInverterDcIn = true;
-            PinSpec pOut{"acOut", QStringLiteral("UVW"), QPointF(70, 0)};
+            PinSpec pOut{"acOut", QStringLiteral("UVW"), QPointF(82, 4)};
             pOut.isInverterAcOut = true;
             pins.push_back(pIn);
             pins.push_back(pOut);
         } else if (key.collection == "electricMotors" || key.collection == "ehaActuators" || key.collection == "emaActuators") {
             accentColor = key.collection == "electricMotors" ? QColor(38, 156, 98) : QColor(142, 92, 205);
-            PinSpec pIn{"inverterId", QStringLiteral("电"), QPointF(-70, 0)};
+            PinSpec pIn{"inverterId", QStringLiteral("电"), QPointF(-82, 4)};
             pIn.isActuatorAcIn = true;
             pins.push_back(pIn);
         }
@@ -250,83 +255,89 @@ public:
 
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->save();
-        const QRectF card(-70, -34, 140, 68);
-        if (severity > 0) {
-            const QColor halo = severity == 2 ? QColor(220, 53, 69, 90) : QColor(240, 158, 36, 95);
-            painter->setPen(QPen(halo.darker(115), 2.5));
-            painter->setBrush(halo);
-            painter->drawRoundedRect(card.adjusted(-4, -4, 4, 4), 10, 10);
-        }
-
+        const QString fontFam = MxFunctions::UiMetrics::uiFontFamily();
+        const QRectF card(-82, -38, 164, 76);
         const bool isNode = key.collection == "hydraulicNodes";
-        const QRectF bodyRect = isNode ? QRectF(-56, -24, 112, 48) : card;
-        painter->setPen(QPen(isSelected() ? QColor(22, 96, 212) : accentColor.darker(115), isSelected() ? 2.2 : 1.4));
+        const QRectF bodyRect = isNode ? QRectF(-64, -27, 128, 54) : card;
+        if (severity > 0) {
+            const QColor halo = severity == 2 ? QColor(220, 53, 69, 85) : QColor(240, 158, 36, 90);
+            painter->setPen(QPen(halo.darker(115), 2.2));
+            painter->setBrush(halo);
+            const qreal r = isNode ? 25.0 : 11.0;
+            painter->drawRoundedRect(bodyRect.adjusted(-5, -5, 5, 5), r, r);
+        }
+        painter->setPen(QPen(isSelected() ? QColor(22, 96, 212) : accentColor.darker(115), isSelected() ? 2.4 : 1.5));
         painter->setBrush(QColor(255, 255, 255));
-        painter->drawRoundedRect(bodyRect, isNode ? 20 : 8, isNode ? 20 : 8);
+        painter->drawRoundedRect(bodyRect, isNode ? 22 : 8, isNode ? 22 : 8);
 
         // Top color header strip
         if (!isNode) {
             QPainterPath header;
-            header.addRoundedRect(QRectF(bodyRect.left(), bodyRect.top(), bodyRect.width(), 19), 8, 8);
+            header.addRoundedRect(QRectF(bodyRect.left(), bodyRect.top(), bodyRect.width(), 22), 8, 8);
             painter->fillPath(header, accentColor);
-            painter->fillRect(QRectF(bodyRect.left(), bodyRect.top() + 11, bodyRect.width(), 8), accentColor);
+            painter->fillRect(QRectF(bodyRect.left(), bodyRect.top() + 14, bodyRect.width(), 8), accentColor);
             painter->setPen(Qt::white);
-            QFont hf = painter->font();
-            hf.setPixelSize(11);
+            QFont hf(fontFam);
+            hf.setPixelSize(12);
             hf.setBold(true);
             painter->setFont(hf);
-            painter->drawText(QRectF(bodyRect.left() + 6, bodyRect.top() + 1, bodyRect.width() - 12, 17),
+            painter->drawText(QRectF(bodyRect.left() + 8, bodyRect.top() + 1, bodyRect.width() - 16, 20),
                               Qt::AlignCenter, subtitle);
         }
 
         // ISO/IEEE schematic glyph + entity name
-        painter->setPen(QColor(34, 42, 54));
-        QFont nf = painter->font();
-        nf.setPixelSize(12);
-        nf.setBold(isNode);
+        painter->setPen(QColor(30, 41, 59));
+        QFont nf(fontFam);
+        nf.setPixelSize(13);
+        nf.setWeight(isNode ? QFont::Bold : QFont::DemiBold);
         painter->setFont(nf);
-        const QRectF nameRect = isNode ? QRectF(-50, -19, 100, 20)
-                                       : QRectF(bodyRect.left() + 8, bodyRect.top() + 22, bodyRect.width() - 16, 20);
+        const QRectF nameRect = isNode ? QRectF(-56, -21, 112, 22)
+                                       : QRectF(bodyRect.left() + 18, bodyRect.top() + 26, bodyRect.width() - 36, 24);
         painter->drawText(nameRect, Qt::AlignCenter,
                           painter->fontMetrics().elidedText(title, Qt::ElideRight, int(nameRect.width())));
 
         if (isNode) {
-            QFont sf = painter->font();
-            sf.setPixelSize(10);
+            QFont sf(fontFam);
+            sf.setPixelSize(11);
             sf.setBold(false);
             painter->setFont(sf);
             painter->setPen(accentColor.darker(120));
-            painter->drawText(QRectF(-50, 1, 100, 16), Qt::AlignCenter, subtitle);
+            painter->drawText(QRectF(-56, 2, 112, 18), Qt::AlignCenter, subtitle);
         }
 
         if (!telemetry.isEmpty()) {
-            QFont tf = painter->font();
-            tf.setPixelSize(10);
+            QFont tf(fontFam);
+            tf.setPixelSize(11);
             tf.setBold(true);
             painter->setFont(tf);
-            const QRectF badge(-68, bodyRect.bottom() + 3, 136, 15);
+            const QRectF badge(-76, bodyRect.bottom() + 4, 152, 18);
             painter->setPen(Qt::NoPen);
-            painter->setBrush(QColor(25, 35, 48, 215));
+            painter->setBrush(QColor(25, 35, 48, 225));
             painter->drawRoundedRect(badge, 4, 4);
             painter->setPen(QColor(138, 232, 184));
             painter->drawText(badge, Qt::AlignCenter, telemetry);
         }
 
         // Draw connection pins
-        QFont pf = painter->font();
-        pf.setPixelSize(9);
+        QFont pf(fontFam);
+        pf.setPixelSize(11);
         pf.setBold(true);
         painter->setFont(pf);
         for (const auto& p : pins) {
             if (p.isHydNode) continue;
             const bool activePin = (p.key == activePinKey);
-            painter->setPen(QPen(QColor(30, 40, 52), 1.2));
+            painter->setPen(QPen(QColor(30, 40, 52), 1.3));
             painter->setBrush(activePin ? QColor(255, 193, 7) : accentColor.lighter(135));
-            painter->drawEllipse(p.localPos, 5.5, 5.5);
-            const QRectF lblRect(p.localPos.x() < 0 ? p.localPos.x() + 7 : p.localPos.x() - 27,
-                                 p.localPos.y() - 7, 20, 14);
-            painter->setPen(QColor(72, 84, 98));
-            painter->drawText(lblRect, p.localPos.x() < 0 ? Qt::AlignLeft | Qt::AlignVCenter : Qt::AlignRight | Qt::AlignVCenter, p.label);
+            painter->drawEllipse(p.localPos, 6.0, 6.0);
+            const QRectF lblRect(p.localPos.x() < 0 ? p.localPos.x() + 9
+                                                    : (p.localPos.x() > 0 ? p.localPos.x() - 41 : -16),
+                                 p.localPos.x() == 0 ? p.localPos.y() - 22 : p.localPos.y() - 8,
+                                 32, 16);
+            painter->setPen(QColor(51, 65, 85));
+            const Qt::Alignment align = p.localPos.x() < 0 ? (Qt::AlignLeft | Qt::AlignVCenter)
+                                      : p.localPos.x() > 0 ? (Qt::AlignRight | Qt::AlignVCenter)
+                                                           : Qt::AlignCenter;
+            painter->drawText(lblRect, align, p.label);
         }
         painter->restore();
     }
@@ -374,10 +385,11 @@ struct MultiphysicsSchematicDialog::Impl {
 
     QGraphicsScene* scene = nullptr;
     SchematicView* view = nullptr;
-    QToolButton* wireModeBtn = nullptr;
+    QPushButton* wireModeBtn = nullptr;
     QLabel* statusLabel = nullptr;
     QSlider* frameSlider = nullptr;
     QLabel* frameTimeLabel = nullptr;
+    bool initialFitDone = false;
 
     std::map<BlockKey, SchematicBlockItem*> blockItems;
     std::vector<QGraphicsPathItem*> wireItems;
@@ -443,11 +455,11 @@ struct MultiphysicsSchematicDialog::Impl {
             const QString nt = o.value("nodeType").toString("Chamber");
             if (overwriteExisting || !o.contains("schemX") || !o.contains("schemY")) {
                 if (nt == "Tank" || nt == "PressureSource") {
-                    o.insert("schemX", -360.0);
-                    o.insert("schemY", -200.0 + (srcIdx++) * 120.0);
+                    o.insert("schemX", -410.0);
+                    o.insert("schemY", -140.0 + (srcIdx++) * 108.0);
                 } else {
-                    o.insert("schemX", -40.0 + (chmIdx % 2) * 230.0);
-                    o.insert("schemY", -220.0 + (chmIdx / 2) * 120.0);
+                    o.insert("schemX", 30.0 + (chmIdx % 2) * 235.0);
+                    o.insert("schemY", -140.0 + (chmIdx / 2) * 108.0);
                     ++chmIdx;
                 }
                 putEntity("hydraulicNodes", o);
@@ -459,24 +471,41 @@ struct MultiphysicsSchematicDialog::Impl {
             const QString ct = o.value("componentType").toString();
             if (overwriteExisting || !o.contains("schemX") || !o.contains("schemY")) {
                 if (ct == "Pump" || ct == "FlowSource") {
-                    o.insert("schemX", -200.0);
-                    o.insert("schemY", -200.0 + (pumpIdx++) * 120.0);
+                    o.insert("schemX", -195.0);
+                    o.insert("schemY", -140.0 + (pumpIdx++) * 112.0);
                 } else {
-                    o.insert("schemX", 100.0);
-                    o.insert("schemY", -220.0 + (valveIdx++) * 115.0);
+                    o.insert("schemX", 240.0);
+                    o.insert("schemY", -140.0 + (valveIdx++) * 112.0);
                 }
                 putEntity("hydraulicComponents", o);
             }
         }
-        placeLane("hydraulicCylinders", 390.0, -200.0, 130.0);
-        placeLane("hydraulicMotors", 390.0, -40.0, 130.0);
+        int hydActIdx = 0;
+        for (const char* col : {"hydraulicCylinders", "hydraulicMotors"}) {
+            for (const auto& v : doc.collection(QLatin1String(col))) {
+                auto o = v.toObject();
+                if (overwriteExisting || !o.contains("schemX") || !o.contains("schemY")) {
+                    o.insert("schemX", 465.0);
+                    o.insert("schemY", -140.0 + (hydActIdx++) * 114.0);
+                    putEntity(QLatin1String(col), o);
+                }
+            }
+        }
 
-        // Electrical & Integrated Swimlane (lower section y >= 180)
-        placeLane("powerSupplies", -320.0, 210.0, 125.0);
-        placeLane("inverters", -40.0, 210.0, 125.0);
-        placeLane("electricMotors", 260.0, 170.0, 120.0);
-        placeLane("ehaActuators", 260.0, 295.0, 120.0);
-        placeLane("emaActuators", 260.0, 420.0, 120.0);
+        // Electrical & Integrated Swimlane (compact lower section)
+        placeLane("powerSupplies", -380.0, 115.0, 112.0);
+        placeLane("inverters", -110.0, 115.0, 112.0);
+        int elecActIdx = 0;
+        for (const char* col : {"electricMotors", "ehaActuators", "emaActuators"}) {
+            for (const auto& v : doc.collection(QLatin1String(col))) {
+                auto o = v.toObject();
+                if (overwriteExisting || !o.contains("schemX") || !o.contains("schemY")) {
+                    o.insert("schemX", 200.0);
+                    o.insert("schemY", 95.0 + (elecActIdx++) * 108.0);
+                    putEntity(QLatin1String(col), o);
+                }
+            }
+        }
     }
 
     bool handlePinClick(const BlockKey& clickedKey, const QString& pinKey) {
@@ -768,9 +797,29 @@ struct MultiphysicsSchematicDialog::Impl {
         }
 
         rebuildWires();
-        scene->setSceneRect(scene->itemsBoundingRect().adjusted(-140, -100, 140, 100));
+        const QRectF rawBounds = blockItems.empty() ? QRectF(-320, -200, 640, 400) : scene->itemsBoundingRect();
+        scene->setSceneRect(rawBounds.adjusted(-90, -70, 90, 70));
         if (fitView && !blockItems.empty()) {
-            view->fitInView(scene->sceneRect(), Qt::KeepAspectRatio);
+            fitSceneComfortably();
+        }
+    }
+
+    void fitSceneComfortably() {
+        if (!view || !scene || blockItems.empty()) {
+            if (view) view->resetTransform();
+            return;
+        }
+        const QRectF fitBounds = scene->itemsBoundingRect().adjusted(-48, -38, 48, 38);
+        scene->setSceneRect(fitBounds.adjusted(-70, -50, 70, 50));
+        view->resetTransform();
+        if (view->viewport()->width() >= 160 && view->viewport()->height() >= 120) {
+            view->fitInView(fitBounds, Qt::KeepAspectRatio);
+            const double curScale = view->transform().m11();
+            if (curScale > 1.2) {
+                view->resetTransform();
+                view->scale(1.2, 1.2);
+                view->centerOn(fitBounds.center());
+            }
         }
     }
 };
@@ -784,7 +833,8 @@ MultiphysicsSchematicDialog::MultiphysicsSchematicDialog(const NativeMotionDocum
 {
     setObjectName(QStringLiteral("multiphysicsSchematicDialog"));
     setWindowTitle(tr("机电液回路原理图与拓扑工作台"));
-    resize(1120, 680);
+    resize(1240, 740);
+    setMinimumSize(940, 560);
 
     m_impl->doc = initialDocument;
     m_impl->solvedResult = solvedResult;
@@ -794,20 +844,106 @@ MultiphysicsSchematicDialog::MultiphysicsSchematicDialog(const NativeMotionDocum
         m_impl->lastReport = m_impl->callbacks.runDiagnostics(m_impl->doc);
     }
 
+    const QString fontFam = MxFunctions::UiMetrics::uiFontFamily();
+    const int btnFontPx = std::max(13, MxFunctions::UiMetrics::bodyFontSize() + 1);
+    const int btnOuterH = std::max(32, MxFunctions::UiMetrics::controlHeight() + 6);
+    const int btnInnerH = btnOuterH - 2;
+
+    QFont btnFont(fontFam);
+    btnFont.setPixelSize(btnFontPx);
+    btnFont.setWeight(QFont::Medium);
+    const QFontMetrics btnFm(btnFont);
+
+    QFont sectionFont(fontFam);
+    sectionFont.setPixelSize(std::max(12, btnFontPx - 1));
+    sectionFont.setWeight(QFont::DemiBold);
+
+    const auto styleActionBtn = [&](QPushButton* btn, bool accentToggle = false) {
+        btn->setProperty("mxBtnNoTheme", true);
+        btn->setFont(btnFont);
+        btn->setCursor(Qt::PointingHandCursor);
+        const int contentW = std::max(68, btnFm.horizontalAdvance(btn->text()) + 28);
+        const int outerW = contentW + 2;
+        btn->setMinimumSize(outerW, btnOuterH);
+        btn->setFixedHeight(btnOuterH);
+        btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+
+        const QString qss = accentToggle
+            ? QStringLiteral(
+                  "QPushButton { font-family:'%1'; font-size:%2px; font-weight:600;"
+                  " width:%3px; min-width:%3px; height:%4px; min-height:%4px; padding:0px;"
+                  " color:%5; background-color:%6; border:1px solid %7; border-radius:5px; }"
+                  "QPushButton:hover { background-color:%8; border-color:%5; }"
+                  "QPushButton:checked { color:#ffffff; background-color:%5; border:1px solid %5; }"
+                  "QPushButton:checked:hover { background-color:%9; }")
+                  .arg(fontFam)
+                  .arg(btnFontPx)
+                  .arg(contentW)
+                  .arg(btnInnerH)
+                  .arg(MxFunctions::UiPalette::primaryHex(),
+                       MxFunctions::UiPalette::selectedHex(),
+                       MxFunctions::UiPalette::primaryHex(),
+                       MxFunctions::UiPalette::hoverHex(),
+                       MxFunctions::UiPalette::actionHex())
+            : QStringLiteral(
+                  "QPushButton { font-family:'%1'; font-size:%2px; font-weight:500;"
+                  " width:%3px; min-width:%3px; height:%4px; min-height:%4px; padding:0px;"
+                  " color:%5; background-color:%6; border:1px solid %7; border-radius:5px; }"
+                  "QPushButton:hover { background-color:%8; border-color:%9; }"
+                  "QPushButton:pressed { background-color:%10; color:%11; border-color:%9; }")
+                  .arg(fontFam)
+                  .arg(btnFontPx)
+                  .arg(contentW)
+                  .arg(btnInnerH)
+                  .arg(MxFunctions::UiPalette::textHex(),
+                       MxFunctions::UiPalette::surfaceHex(),
+                       MxFunctions::UiPalette::borderHex(),
+                       MxFunctions::UiPalette::hoverHex(),
+                       MxFunctions::UiPalette::primaryHex(),
+                       MxFunctions::UiPalette::selectedHex(),
+                       MxFunctions::UiPalette::selectedTextHex());
+        btn->setStyleSheet(qss);
+    };
+
+    const auto makeSectionTag = [&](const QString& text, QWidget* host) {
+        auto* lbl = new QLabel(text, host);
+        lbl->setFont(sectionFont);
+        return lbl;
+    };
+
+    const auto makeDivider = [&](QWidget* host) {
+        auto* sep = new QFrame(host);
+        sep->setFrameShape(QFrame::VLine);
+        sep->setFixedWidth(1);
+        sep->setFixedHeight(btnOuterH - 8);
+        sep->setStyleSheet(QStringLiteral("background-color:%1; border:none;").arg(MxFunctions::UiPalette::borderHex()));
+        return sep;
+    };
+
     auto* rootLayout = new QVBoxLayout(this);
-    rootLayout->setContentsMargins(8, 8, 8, 8);
-    rootLayout->setSpacing(6);
+    rootLayout->setContentsMargins(12, 10, 12, 10);
+    rootLayout->setSpacing(8);
 
-    auto* toolbar = new QToolBar(this);
+    auto* toolbar = new QFrame(this);
     toolbar->setObjectName(QStringLiteral("schematicToolbar"));
-    toolbar->setMovable(false);
+    toolbar->setStyleSheet(QStringLiteral(
+        "QFrame#schematicToolbar { background-color:%1; border:1px solid %2; border-radius:6px; }")
+        .arg(MxFunctions::UiPalette::panelHex(), MxFunctions::UiPalette::borderHex()));
+    auto* toolbarRows = new QVBoxLayout(toolbar);
+    toolbarRows->setContentsMargins(10, 8, 10, 8);
+    toolbarRows->setSpacing(6);
 
-    const auto addQuickCreate = [&](const QString& objName, const QString& text, const QString& col, const QString& subType = {}) {
-        auto* btn = new QToolButton(toolbar);
+    auto* createRow = new QHBoxLayout;
+    createRow->setContentsMargins(0, 0, 0, 0);
+    createRow->setSpacing(6);
+
+    const auto addQuickCreate = [&](QHBoxLayout* row, const QString& objName, const QString& text,
+                                    const QString& col, const QString& subType = {}) {
+        auto* btn = new QPushButton(text, toolbar);
         btn->setObjectName(objName);
-        btn->setText(text);
-        toolbar->addWidget(btn);
-        connect(btn, &QToolButton::clicked, this, [this, col, subType] {
+        styleActionBtn(btn, false);
+        row->addWidget(btn);
+        connect(btn, &QPushButton::clicked, this, [this, col, subType] {
             if (!m_impl->callbacks.createDefaultEntity) return;
             auto created = m_impl->callbacks.createDefaultEntity(m_impl->doc, col, subType);
             if (created.isEmpty()) return;
@@ -817,25 +953,37 @@ MultiphysicsSchematicDialog::MultiphysicsSchematicDialog(const NativeMotionDocum
             m_impl->putEntity(col, created);
             m_impl->commitAndRefresh(tr("已添加 %1“%2”。").arg(blockTypeTitle(col, created), created.value("name").toString()));
         });
+        return btn;
     };
 
-    addQuickCreate("schemAddTankBtn", tr("+油箱"), "hydraulicNodes", "Tank");
-    addQuickCreate("schemAddChamberBtn", tr("+容腔"), "hydraulicNodes", "Chamber");
-    addQuickCreate("schemAddPumpBtn", tr("+液压泵"), "hydraulicComponents", "Pump");
-    addQuickCreate("schemAddServoValveBtn", tr("+伺服阀"), "hydraulicComponents", "ServoValve");
-    addQuickCreate("schemAddReliefBtn", tr("+溢流阀"), "hydraulicComponents", "ReliefValve");
-    addQuickCreate("schemAddAccBtn", tr("+蓄能器"), "hydraulicComponents", "Accumulator");
-    toolbar->addSeparator();
-    addQuickCreate("schemAddSupplyBtn", tr("+电源"), "powerSupplies");
-    addQuickCreate("schemAddInverterBtn", tr("+逆变器"), "inverters");
-    toolbar->addSeparator();
+    createRow->addWidget(makeSectionTag(tr("液压元件:"), toolbar));
+    addQuickCreate(createRow, QStringLiteral("schemAddTankBtn"), tr("+ 油箱"), QStringLiteral("hydraulicNodes"), QStringLiteral("Tank"));
+    addQuickCreate(createRow, QStringLiteral("schemAddChamberBtn"), tr("+ 容腔"), QStringLiteral("hydraulicNodes"), QStringLiteral("Chamber"));
+    addQuickCreate(createRow, QStringLiteral("schemAddPumpBtn"), tr("+ 液压泵"), QStringLiteral("hydraulicComponents"), QStringLiteral("Pump"));
+    addQuickCreate(createRow, QStringLiteral("schemAddDirValveBtn"), tr("+ 换向阀"), QStringLiteral("hydraulicComponents"), QStringLiteral("DirectionalValve"));
+    addQuickCreate(createRow, QStringLiteral("schemAddServoValveBtn"), tr("+ 伺服阀"), QStringLiteral("hydraulicComponents"), QStringLiteral("ServoValve"));
+    addQuickCreate(createRow, QStringLiteral("schemAddReliefBtn"), tr("+ 溢流阀"), QStringLiteral("hydraulicComponents"), QStringLiteral("ReliefValve"));
+    addQuickCreate(createRow, QStringLiteral("schemAddAccBtn"), tr("+ 蓄能器"), QStringLiteral("hydraulicComponents"), QStringLiteral("Accumulator"));
+    createRow->addSpacing(4);
+    createRow->addWidget(makeDivider(toolbar));
+    createRow->addSpacing(4);
+    createRow->addWidget(makeSectionTag(tr("电气驱动:"), toolbar));
+    addQuickCreate(createRow, QStringLiteral("schemAddSupplyBtn"), tr("+ 直流电源"), QStringLiteral("powerSupplies"));
+    addQuickCreate(createRow, QStringLiteral("schemAddInverterBtn"), tr("+ 伺服逆变器"), QStringLiteral("inverters"));
+    createRow->addStretch(1);
+    toolbarRows->addLayout(createRow);
 
-    m_impl->wireModeBtn = new QToolButton(toolbar);
+    auto* toolRow = new QHBoxLayout;
+    toolRow->setContentsMargins(0, 0, 0, 0);
+    toolRow->setSpacing(6);
+    toolRow->addWidget(makeSectionTag(tr("拓扑与诊断:"), toolbar));
+
+    m_impl->wireModeBtn = new QPushButton(tr("端口连线模式"), toolbar);
     m_impl->wireModeBtn->setObjectName(QStringLiteral("schemWireModeButton"));
-    m_impl->wireModeBtn->setText(tr("端口连线模式"));
     m_impl->wireModeBtn->setCheckable(true);
-    toolbar->addWidget(m_impl->wireModeBtn);
-    connect(m_impl->wireModeBtn, &QToolButton::toggled, this, [this](bool on) {
+    styleActionBtn(m_impl->wireModeBtn, true);
+    toolRow->addWidget(m_impl->wireModeBtn);
+    connect(m_impl->wireModeBtn, &QPushButton::toggled, this, [this](bool on) {
         m_impl->hasPendingPin = false;
         m_impl->view->setDragMode(on ? QGraphicsView::NoDrag : QGraphicsView::ScrollHandDrag);
         m_impl->statusLabel->setText(on ? tr("连线模式开启：依次点击元件端口圆点与目标节点（或两个油口自动建腔）即可完成拓扑连接。")
@@ -843,26 +991,11 @@ MultiphysicsSchematicDialog::MultiphysicsSchematicDialog(const NativeMotionDocum
         m_impl->rebuildScene(false);
     });
 
-    auto* autoLayoutBtn = new QToolButton(toolbar);
-    autoLayoutBtn->setObjectName(QStringLiteral("schemAutoLayoutButton"));
-    autoLayoutBtn->setText(tr("自动排布"));
-    toolbar->addWidget(autoLayoutBtn);
-    connect(autoLayoutBtn, &QToolButton::clicked, this, [this] {
-        m_impl->assignAutoLayout(true);
-        m_impl->commitAndRefresh(tr("已按液压/电驱双泳道重新自动排布原理图。"));
-        m_impl->view->fitInView(m_impl->scene->sceneRect(), Qt::KeepAspectRatio);
-    });
-
-    auto* fitBtn = new QToolButton(toolbar);
-    fitBtn->setObjectName(QStringLiteral("schemFitViewButton"));
-    fitBtn->setText(tr("自适应缩放"));
-    toolbar->addWidget(fitBtn);
-
-    auto* checkBtn = new QToolButton(toolbar);
+    auto* checkBtn = new QPushButton(tr("回路检查"), toolbar);
     checkBtn->setObjectName(QStringLiteral("schemCheckButton"));
-    checkBtn->setText(tr("回路检查"));
-    toolbar->addWidget(checkBtn);
-    connect(checkBtn, &QToolButton::clicked, this, [this] {
+    styleActionBtn(checkBtn, false);
+    toolRow->addWidget(checkBtn);
+    connect(checkBtn, &QPushButton::clicked, this, [this] {
         if (m_impl->callbacks.runDiagnostics) {
             m_impl->lastReport = m_impl->callbacks.runDiagnostics(m_impl->doc);
             m_impl->rebuildScene(false);
@@ -873,35 +1006,85 @@ MultiphysicsSchematicDialog::MultiphysicsSchematicDialog(const NativeMotionDocum
         }
     });
 
-    auto* exportBtn = new QToolButton(toolbar);
+    toolRow->addSpacing(4);
+    toolRow->addWidget(makeDivider(toolbar));
+    toolRow->addSpacing(4);
+    toolRow->addWidget(makeSectionTag(tr("视图与导出:"), toolbar));
+
+    auto* autoLayoutBtn = new QPushButton(tr("自动排布"), toolbar);
+    autoLayoutBtn->setObjectName(QStringLiteral("schemAutoLayoutButton"));
+    styleActionBtn(autoLayoutBtn, false);
+    toolRow->addWidget(autoLayoutBtn);
+    connect(autoLayoutBtn, &QPushButton::clicked, this, [this] {
+        m_impl->assignAutoLayout(true);
+        m_impl->commitAndRefresh(tr("已按液压/电驱双泳道重新自动排布原理图。"));
+        m_impl->fitSceneComfortably();
+    });
+
+    auto* fitBtn = new QPushButton(tr("自适应缩放"), toolbar);
+    fitBtn->setObjectName(QStringLiteral("schemFitViewButton"));
+    styleActionBtn(fitBtn, false);
+    toolRow->addWidget(fitBtn);
+
+    auto* zoomInBtn = new QPushButton(tr("放大 +"), toolbar);
+    zoomInBtn->setObjectName(QStringLiteral("schemZoomInButton"));
+    styleActionBtn(zoomInBtn, false);
+    toolRow->addWidget(zoomInBtn);
+
+    auto* zoomOutBtn = new QPushButton(tr("缩小 -"), toolbar);
+    zoomOutBtn->setObjectName(QStringLiteral("schemZoomOutButton"));
+    styleActionBtn(zoomOutBtn, false);
+    toolRow->addWidget(zoomOutBtn);
+
+    auto* resetZoomBtn = new QPushButton(tr("100% 视图"), toolbar);
+    resetZoomBtn->setObjectName(QStringLiteral("schemResetZoomButton"));
+    styleActionBtn(resetZoomBtn, false);
+    toolRow->addWidget(resetZoomBtn);
+
+    auto* exportBtn = new QPushButton(tr("导出 PNG"), toolbar);
     exportBtn->setObjectName(QStringLiteral("schemExportPngButton"));
-    exportBtn->setText(tr("导出PNG"));
-    toolbar->addWidget(exportBtn);
-    connect(exportBtn, &QToolButton::clicked, this, [this] {
+    styleActionBtn(exportBtn, false);
+    toolRow->addWidget(exportBtn);
+    connect(exportBtn, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(this, tr("导出机电液原理图"), QStringLiteral("circuit-schematic.png"), tr("PNG 图像 (*.png)"));
         if (!path.isEmpty()) exportPng(path);
     });
 
+    toolRow->addStretch(1);
+    toolbarRows->addLayout(toolRow);
     rootLayout->addWidget(toolbar);
 
     m_impl->scene = new QGraphicsScene(this);
     m_impl->view = new SchematicView(m_impl->scene, this);
     m_impl->view->setObjectName(QStringLiteral("multiphysicsSchematicView"));
+    m_impl->view->setFrameShape(QFrame::StyledPanel);
     rootLayout->addWidget(m_impl->view, 1);
 
-    connect(fitBtn, &QToolButton::clicked, this, [this] {
-        if (!m_impl->scene->items().isEmpty())
-            m_impl->view->fitInView(m_impl->scene->sceneRect(), Qt::KeepAspectRatio);
+    connect(fitBtn, &QPushButton::clicked, this, [this] {
+        m_impl->fitSceneComfortably();
+    });
+    connect(zoomInBtn, &QPushButton::clicked, this, [this] {
+        if (m_impl->view->transform().m11() < 3.5) m_impl->view->scale(1.18, 1.18);
+    });
+    connect(zoomOutBtn, &QPushButton::clicked, this, [this] {
+        if (m_impl->view->transform().m11() > 0.25) m_impl->view->scale(1.0 / 1.18, 1.0 / 1.18);
+    });
+    connect(resetZoomBtn, &QPushButton::clicked, this, [this] {
+        m_impl->view->resetTransform();
+        if (!m_impl->blockItems.empty()) m_impl->view->centerOn(m_impl->scene->itemsBoundingRect().center());
     });
 
     if (solvedResult && !solvedResult->frames.empty()) {
         auto* scrubRow = new QHBoxLayout;
+        scrubRow->setSpacing(8);
         auto* scrubTitle = new QLabel(tr("结果帧动态监测:"), this);
+        scrubTitle->setFont(sectionFont);
         m_impl->frameSlider = new QSlider(Qt::Horizontal, this);
         m_impl->frameSlider->setObjectName(QStringLiteral("schemTimelineSlider"));
         m_impl->frameSlider->setRange(0, int(solvedResult->frames.size()) - 1);
         m_impl->frameSlider->setValue(std::min(m_impl->frameIndex, int(solvedResult->frames.size()) - 1));
         m_impl->frameTimeLabel = new QLabel(this);
+        m_impl->frameTimeLabel->setFont(btnFont);
         scrubRow->addWidget(scrubTitle);
         scrubRow->addWidget(m_impl->frameSlider, 1);
         scrubRow->addWidget(m_impl->frameTimeLabel);
@@ -913,18 +1096,34 @@ MultiphysicsSchematicDialog::MultiphysicsSchematicDialog(const NativeMotionDocum
     }
 
     auto* bottomRow = new QHBoxLayout;
+    bottomRow->setSpacing(12);
     m_impl->statusLabel = new QLabel(tr("提示：拖拽元件调整布局；开启“端口连线模式”点击端口连接管路/母线；双击任意元件编辑参数。"), this);
     m_impl->statusLabel->setObjectName(QStringLiteral("schemStatusLabel"));
+    m_impl->statusLabel->setFont(btnFont);
     m_impl->statusLabel->setWordWrap(true);
     auto* closeBtn = new QPushButton(tr("关闭"), this);
     closeBtn->setObjectName(QStringLiteral("schemCloseButton"));
+    styleActionBtn(closeBtn, false);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
     bottomRow->addWidget(m_impl->statusLabel, 1);
     bottomRow->addWidget(closeBtn);
     rootLayout->addLayout(bottomRow);
 
-    m_impl->rebuildScene(true);
+    m_impl->rebuildScene(false);
     m_impl->updateTelemetryLabels();
+}
+
+void MultiphysicsSchematicDialog::showEvent(QShowEvent* event)
+{
+    QDialog::showEvent(event);
+    if (!m_impl->initialFitDone) {
+        m_impl->initialFitDone = true;
+        if (layout()) layout()->activate();
+        m_impl->fitSceneComfortably();
+        QTimer::singleShot(0, this, [this] {
+            if (isVisible()) m_impl->fitSceneComfortably();
+        });
+    }
 }
 
 MultiphysicsSchematicDialog::~MultiphysicsSchematicDialog() = default;

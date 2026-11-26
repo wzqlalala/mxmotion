@@ -11,11 +11,13 @@
 #include "mMechGlobalSignals.h"
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepTools.hxx>
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QGraphicsView>
 #include <QImage>
 #include <QJsonArray>
 #include <QKeyEvent>
@@ -310,13 +312,34 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
         window.dispatchOriginalMotionAction("openMultiphysicsSchematic");
         auto* schem = window.findChild<MultiphysicsSchematicDialog*>("multiphysicsSchematicDialog");
         require(schem && schem->isVisible(), "Multiphysics 2D circuit schematic dialog did not open");
-        if (auto* addChm = schem->findChild<QToolButton*>("schemAddChamberBtn")) addChm->click();
-        if (auto* autoLay = schem->findChild<QToolButton*>("schemAutoLayoutButton")) autoLay->click();
-        if (auto* chkBtn = schem->findChild<QToolButton*>("schemCheckButton")) chkBtn->click();
+        QApplication::processEvents();
+        const auto schemButtons = schem->findChildren<QAbstractButton*>();
+        require(schemButtons.size() >= 14, "Multiphysics schematic dialog is missing expected toolbar/action buttons");
+        for (auto* btn : schemButtons) {
+            if (!btn->isVisible()) continue;
+            const int minReadableWidth = btn->fontMetrics().horizontalAdvance(btn->text()) + 16;
+            require(btn->height() >= 28 && btn->width() >= minReadableWidth,
+                QStringLiteral("Schematic button too small or clipped: %1 (%2x%3, need >=%4x28)")
+                    .arg(btn->objectName()).arg(btn->width()).arg(btn->height()).arg(minReadableWidth));
+        }
+        auto* addChm = schem->findChild<QAbstractButton*>("schemAddChamberBtn");
+        auto* autoLay = schem->findChild<QAbstractButton*>("schemAutoLayoutButton");
+        auto* chkBtn = schem->findChild<QAbstractButton*>("schemCheckButton");
+        require(addChm && autoLay && chkBtn, "Core schematic toolbar buttons not found");
+        addChm->click();
+        autoLay->click();
+        chkBtn->click();
+        QApplication::processEvents();
+        if (auto* schemView = schem->findChild<QGraphicsView*>("multiphysicsSchematicView")) {
+            require(schemView->transform().m11() >= 0.45,
+                "Schematic canvas view zoom is too small to read labels");
+        }
         require(context()->document().collection("hydraulicNodes").size() == 2,
             "Quick-add chamber inside 2D schematic did not commit back to document");
         require(schem->exportPng(output.filePath("multiphysics-schematic.png")),
             "Could not export 2D multiphysics schematic PNG");
+        require(schem->grab().save(output.filePath("multiphysics-schematic-window.png")),
+            "Could not capture 2D multiphysics schematic dialog window screenshot");
         schem->close();
         QApplication::processEvents();
 

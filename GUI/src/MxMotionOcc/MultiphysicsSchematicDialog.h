@@ -29,6 +29,9 @@ public:
     const NativeMotionDocument& currentDocument() const;
     bool exportPng(const QString& filePath) const;
 
+protected:
+    void showEvent(QShowEvent* event) override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
