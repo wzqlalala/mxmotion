@@ -58,6 +58,11 @@ public:
     std::map<int, std::shared_ptr<motion::MotionLinkMotor>> nativeMotors;
     std::map<int, std::shared_ptr<NativeEffortRuntime>> effortMotors;
     std::map<int, std::shared_ptr<NativeHydraulicRuntime>> hydraulicCylinders;
+    std::map<int, std::shared_ptr<NativeHydraulicMotorRuntime>> hydraulicMotors;
+    std::shared_ptr<NativeHydraulicCircuitRuntime> hydraulicCircuit;
+    bool hasNativeHydraulics() const {
+        return !hydraulicCylinders.empty() || !hydraulicMotors.empty() || hydraulicCircuit != nullptr;
+    }
     std::map<std::string, std::shared_ptr<motion::MotionLinkBase>> nativeJoints;
     std::set<int> importedMnfBodyIds;
     double acceptedStepSize=0, acceptedEndTime=0;

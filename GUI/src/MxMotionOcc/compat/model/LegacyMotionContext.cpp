@@ -138,7 +138,13 @@ void LegacyMotionContext::setExtensionFields(const QString& collection,int id,co
     for(int i=0;i<rows.size();++i) {
         auto row=rows[i].toObject();if(row.value("id").toInt(-1)!=id)continue;
         bool changed=false;
-        for(auto it=fields.begin();it!=fields.end();++it)if(row.value(it.key())!=it.value()) { row.insert(it.key(),it.value());changed=true; }
+        for(auto it=fields.begin();it!=fields.end();++it) {
+            if(it.value().isNull() || it.value().isUndefined()) {
+                if(row.contains(it.key())) { row.remove(it.key());changed=true; }
+            } else if(row.value(it.key())!=it.value()) {
+                row.insert(it.key(),it.value());changed=true;
+            }
+        }
         if(changed) { rows[i]=row;data.insert(collection,rows);document_.root.insert("motionData",data);emit documentChanged(document_); }
         return;
     }

@@ -45,7 +45,8 @@ QStringList collectionNames()
         QStringLiteral("threePointForces"), QStringLiteral("threePointTorques"), QStringLiteral("contacts"),
         QStringLiteral("sensors"), QStringLiteral("controllers"), QStringLiteral("controlInputs"),
         QStringLiteral("autoFlexBodies"), QStringLiteral("importedMnfBodies"), QStringLiteral("scenarios"), QStringLiteral("tensionCables"),
-        QStringLiteral("softStops"), QStringLiteral("hydraulicCylinders")};
+        QStringLiteral("softStops"), QStringLiteral("hydraulicCylinders"), QStringLiteral("hydraulicMotors"),
+        QStringLiteral("hydraulicNodes"), QStringLiteral("hydraulicComponents")};
 }
 
 bool integer(const QJsonValue& value, int minimum, int* result = nullptr)
@@ -189,10 +190,11 @@ public:
             "allowSliding", "dampingEnabled", "reverse", "applyOffset", "useConvexHullAction", "useConvexHullBase",
             "frictionEnabled", "actionUseFacetFile", "baseUseFacetFile", "actionUseMaxFacetSize", "baseUseMaxFacetSize",
             "usePreset", "solverVerbose", "hasTable", "outputModeShapes", "outputStressStrain", "rigidBodyModeFilter",
-            "hydraulicSteadyInit"};
+            "hydraulicSteadyInit", "checkPhase", "positionAssemblyPerStep", "quadraticInvariants", "useCustomModalDamping"};
         for (const auto& key : booleans)
             if (object.contains(key) && !object.value(key).isBool()) issue(where + QLatin1Char('.') + key, QStringLiteral("需要布尔值"));
-        const QStringList strings = {"name", "expression", "forceFunction", "torqueFunction", "dampingFunction", "commandExpression"};
+        const QStringList strings = {"name", "expression", "forceFunction", "torqueFunction", "dampingFunction",
+            "commandExpression", "pressureExpression", "speedExpression", "flowExpression"};
         for (const auto& key : strings)
             if (object.contains(key) && !object.value(key).isString()) issue(where + QLatin1Char('.') + key, QStringLiteral("需要文本"));
     }
@@ -225,7 +227,8 @@ public:
             {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
             {"VectorForce", "vectorForces"}, {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
             {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"},
-            {"ImportedMnfBody", "importedMnfBodies"}, {"Contact", "contacts"}, {"HydraulicCylinder", "hydraulicCylinders"}};
+            {"ImportedMnfBody", "importedMnfBodies"}, {"Contact", "contacts"}, {"HydraulicCylinder", "hydraulicCylinders"},
+            {"HydraulicMotor", "hydraulicMotors"}, {"HydraulicNode", "hydraulicNodes"}, {"HydraulicComponent", "hydraulicComponents"}};
         // Original files use PascalCase enum aliases. New native curves use
         // the exact collection keys so every recorded force/flexible channel
         // survives .motion.json export without narrowing to the legacy enum.
@@ -340,7 +343,12 @@ public:
         } else if (kind == "couplings") {
             enumeration(object, "couplingType", {"Gear", "GearRack", "Cable"}, where, true);
             ref(object, "firstJointId", "joints", where, false, true); ref(object, "secondJointId", "joints", where, false, true);
-            for (const auto* key : {"gearRatio", "ratio"}) number(object, key, where);
+            for (const auto* key : {"gearRatio", "ratio", "phaseDeg"}) number(object, key, where);
+            for (const auto* key : {"pressureAngleDeg", "helixAngleDeg"}) {
+                number(object, key, where, -85.0);
+                if (object.value(QLatin1String(key)).isDouble() && std::abs(object.value(QLatin1String(key)).toDouble()) >= 85.0)
+                    issue(where + QLatin1Char('.') + QLatin1String(key), QStringLiteral("啮合角度绝对值须小于 85°"));
+            }
             for (const auto* key : {"radius", "pitchRadius1", "pitchRadius2", "toothCount1", "toothCount2"}) number(object, key, where, 0);
         } else if (kind == "vectorForces") {
             enumeration(object, "loadType", {"Force", "Torque", "UniForce", "UniTorque", "TriForce", "TriTorque", "GeneralForce",
@@ -482,6 +490,7 @@ public:
                         issue(where, QStringLiteral("无效运动副或接口节点映射 %1").arg(binding.key()));
                 }
             }
+            number(object, "modalDampingRatio", where, 0.0);
         } else if (kind == "scenarios") {
             positive(object, "endTime", where); positive(object, "stepSize", where); vector(object, "gravity", where);
             enumeration(object,"analysisType",{"Dynamic","Static","PreloadedDynamics"},where);
@@ -494,6 +503,9 @@ public:
                 "TRAPEZOIDAL", "TRAPEZOIDAL_LINEARIZED", "HHT", "HEUN", "RUNGEKUTTA45", "EULER_EXPLICIT", "LEAPFROG", "NEWMARK", "CUSTOM_INTEGRATOR"}, where);
             enumeration(object, "mnfIntegratorType", {"HHT", "EULER_IMPLICIT_LINEARIZED"}, where);
             enumeration(object, "independentPositionProjection", {"MASS", "MASS_STIFFNESS"}, where);
+            if (object.contains("positionAssemblyIterations")
+                && (!integer(object.value("positionAssemblyIterations"), 1) || object.value("positionAssemblyIterations").toInt() > 50))
+                issue(where, QStringLiteral("positionAssemblyIterations 必须为 1…50 的整数"));
             enumeration(object, "solverType", {"PSOR", "PSSOR", "PJACOBI", "PMINRES", "BARZILAIBORWEIN", "APGD", "ADDM",
                 "SPARSE_LU", "SPARSE_QR", "PARDISO_MKL", "PARDISO_PROJECT", "MUMPS", "GMRES", "MINRES", "BICGSTAB", "CUSTOM_SOLVER"}, where);
             for (const auto* key : {"integratorAlpha", "integratorBeta"}) number(object, key, where);
@@ -559,11 +571,116 @@ public:
             positive(object, "deadVolumeB", where);
             number(object, "viscousFriction", where, 0.0);
             number(object, "internalLeakage", where, 0.0);
-            enumeration(object, "supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort"}, where, true);
+            enumeration(object, "supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort", "ExternalCircuit"}, where, true);
+            ref(object, "portANodeId", "hydraulicNodes", where, true);
+            ref(object, "portBNodeId", "hydraulicNodes", where, true);
             positive(object, "ratedFlowLpm", where);
             positive(object, "ratedPressureDrop", where);
             number(object, "initialPressureA", where, 0.0);
             number(object, "initialPressureB", where, 0.0);
+            table(object, "commandTableX", "commandTableY", where);
+        } else if (kind == "hydraulicMotors") {
+            ref(object, "targetJointId", "joints", where, false, true);
+            const auto jointType = doc.entity("joints", object.value("targetJointId").toInt(-1)).value("jointType").toString();
+            if (!jointType.isEmpty() && jointType != "Revolute" && jointType != "Cylindrical")
+                issue(where, QStringLiteral("液压马达仅支持关联旋转副或圆柱副"));
+            positive(object, "displacementCcRev", where, true);
+            positive(object, "mechanicalEfficiency", where);
+            if (object.value("mechanicalEfficiency").isDouble() && object.value("mechanicalEfficiency").toDouble() > 1.0)
+                issue(where, QStringLiteral("机械效率不能大于 1"));
+            positive(object, "chamberVolumeA", where);
+            positive(object, "chamberVolumeB", where);
+            number(object, "viscousDamping", where, 0.0);
+            number(object, "internalLeakage", where, 0.0);
+            enumeration(object, "supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort", "ExternalCircuit"}, where, true);
+            ref(object, "portANodeId", "hydraulicNodes", where, true);
+            ref(object, "portBNodeId", "hydraulicNodes", where, true);
+            positive(object, "ratedFlowLpm", where);
+            positive(object, "ratedPressureDrop", where);
+            number(object, "initialPressureA", where, 0.0);
+            number(object, "initialPressureB", where, 0.0);
+            table(object, "commandTableX", "commandTableY", where);
+        } else if (kind == "hydraulicNodes") {
+            enumeration(object, "nodeType", {"Tank", "PressureSource", "Chamber"}, where, true);
+            number(object, "pressureMPa", where, 0.0);
+            positive(object, "volumeMl", where);
+            number(object, "initialPressureMPa", where, 0.0);
+            table(object, "pressureTableX", "pressureTableY", where);
+        } else if (kind == "hydraulicComponents") {
+            enumeration(object, "componentType", {
+                "Pump", "FlowSource", "DirectionalValve", "ServoValve",
+                "ReliefValve", "PressureReducingValve", "SequenceValve",
+                "CheckValve", "ThrottleValve", "Pipe", "Filter",
+                "Accumulator", "PortConnection"
+            }, where, true);
+            for (const auto* nkey : {"inletNodeId", "outletNodeId", "suctionNodeId", "deliveryNodeId",
+                                     "portPNodeId", "portTNodeId", "portANodeId", "portBNodeId", "targetNodeId"})
+                ref(object, nkey, "hydraulicNodes", where, true);
+            const QString ctype = object.value("componentType").toString();
+            if (ctype == "Pump") {
+                positive(object, "displacementCcRev", where, true);
+                positive(object, "volumetricEfficiency", where);
+                positive(object, "mechanicalEfficiency", where);
+                if (object.value("volumetricEfficiency").toDouble(0.95) > 1.0
+                    || object.value("mechanicalEfficiency").toDouble(0.90) > 1.0)
+                    issue(where, QStringLiteral("泵容积效率与机械效率不得大于 1"));
+                positive(object, "ratedPressureMPa", where);
+            } else if (ctype == "DirectionalValve" || ctype == "ServoValve") {
+                positive(object, "ratedFlowLpm", where, true);
+                positive(object, "ratedPressureDropMPa", where, true);
+                enumeration(object, "centerMode", {"ClosedCenter", "TandemUnload", "FloatAB"}, where);
+                number(object, "responseTimeMs", where, 0.0);
+                if (ctype == "ServoValve") positive(object, "responseTimeMs", where);
+                number(object, "underlap", where, 0.0);
+                if (object.value("underlap").toDouble(0.0) > 0.5)
+                    issue(where, QStringLiteral("阀芯负遮盖比不得超过 0.5"));
+            } else if (ctype == "ReliefValve") {
+                number(object, "crackingPressureMPa", where, 0.0, true);
+                positive(object, "pressureOverrideMPa", where, true);
+                positive(object, "ratedFlowLpm", where, true);
+            } else if (ctype == "PressureReducingValve") {
+                number(object, "regulatedPressureMPa", where, 0.0, true);
+                positive(object, "pressureBandMPa", where, true);
+                positive(object, "ratedFlowLpm", where, true);
+                positive(object, "ratedPressureDropMPa", where, true);
+            } else if (ctype == "SequenceValve") {
+                number(object, "sequencePressureMPa", where, 0.0, true);
+                positive(object, "pressureBandMPa", where, true);
+                positive(object, "ratedFlowLpm", where, true);
+                positive(object, "ratedPressureDropMPa", where, true);
+            } else if (ctype == "CheckValve") {
+                number(object, "crackingPressureMPa", where, 0.0, true);
+                positive(object, "ratedFlowLpm", where, true);
+                positive(object, "ratedPressureDropMPa", where, true);
+                if (object.value("ratedPressureDropMPa").isDouble() && object.value("crackingPressureMPa").isDouble()
+                    && object.value("ratedPressureDropMPa").toDouble() <= object.value("crackingPressureMPa").toDouble())
+                    issue(where, QStringLiteral("单向阀额定压差必须大于开启压力"));
+            } else if (ctype == "ThrottleValve") {
+                positive(object, "ratedFlowLpm", where, true);
+                positive(object, "ratedPressureDropMPa", where, true);
+            } else if (ctype == "Pipe") {
+                positive(object, "lengthMm", where, true);
+                positive(object, "diameterMm", where, true);
+                number(object, "localLossCoeff", where, 0.0);
+            } else if (ctype == "Filter") {
+                positive(object, "ratedFlowLpm", where, true);
+                positive(object, "cleanPressureDropMPa", where, true);
+                number(object, "foulingFactor", where, 1.0);
+            } else if (ctype == "Accumulator") {
+                positive(object, "prechargePressureMPa", where, true);
+                positive(object, "gasVolumeL", where, true);
+                number(object, "polytropicGamma", where, 1.0);
+                if (object.value("polytropicGamma").toDouble(1.3) > 2.0)
+                    issue(where, QStringLiteral("多变指数应在 1.0…2.0 之间"));
+            } else if (ctype == "PortConnection") {
+                enumeration(object, "actuatorType", {"Cylinder", "Motor"}, where, true);
+                enumeration(object, "actuatorPort", {"A", "B"}, where, true);
+                if (object.value("actuatorType").toString("Cylinder") == "Motor")
+                    ref(object, "actuatorId", "hydraulicMotors", where, true);
+                else
+                    ref(object, "actuatorId", "hydraulicCylinders", where, true);
+                positive(object, "conductanceLpm", where);
+            }
             table(object, "commandTableX", "commandTableY", where);
         }
     }

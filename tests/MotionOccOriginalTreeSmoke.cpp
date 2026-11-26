@@ -21,6 +21,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QSlider>
 #include <QTextStream>
 #include <QTimer>
@@ -202,9 +203,12 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
             "Body drive creation submenu is missing from the root context menu");
         rootActions.removeAt(bodyDriveAction);
 #endif
-        const int hydraulicAction = rootActions.indexOf(QStringLiteral("新建液压缸"));
-        require(hydraulicAction > 0, "Hydraulic cylinder creation action is missing from the root context menu");
-        rootActions.removeAt(hydraulicAction);
+        for (const auto& hydTitle : {QStringLiteral("新建液压缸"), QStringLiteral("新建液压马达"),
+                                     QStringLiteral("新建液压节点"), QStringLiteral("新建液压元件")}) {
+            const int hydraulicAction = rootActions.indexOf(hydTitle);
+            require(hydraulicAction > 0, "Hydraulic creation action is missing from the root context menu: " + hydTitle);
+            rootActions.removeAt(hydraulicAction);
+        }
         require(rootActions.size()==11&&rootActions.first()=="新建运动体"&&rootActions.last()=="删除运动数据","Original root context menu changed");
         require(menu(tree,node(tree,"markers",11))==QStringList{"删除","重命名","复制"},"Original child context menu changed");
         require(menu(tree,node(tree,"scenarios",1))==QStringList{"删除","重命名","求解"},"Original scenario context menu changed");
@@ -253,6 +257,44 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
             menu(tree,node(tree,"forceElements",-1,true),"删除所有力元");
             require(context()->document().collection(test.collection).isEmpty(),"Typed force group delete did not remove this force subtype");
         }
+        window.dispatchOriginalMotionAction("createHydraulicMotor");
+        auto* motorEditor = window.findChild<QWidget*>("nativeEditor_hydraulicMotors");
+        require(motorEditor && !motorEditor->findChild<QWidget*>("native_name")
+            && !motorEditor->findChild<QWidget*>("native_enabled"),
+            "Hydraulic motor editor missing or leaked name/enabled controls");
+        auto* motorApply = motorEditor->findChild<QPushButton*>("motionApplyButton");
+        require(motorApply != nullptr, "Hydraulic motor editor missing apply button");
+        motorApply->click();
+
+        window.dispatchOriginalMotionAction("createHydraulicNode", "Tank");
+        auto* nodeEditor = window.findChild<QWidget*>("nativeEditor_hydraulicNodes");
+        require(nodeEditor && !nodeEditor->findChild<QWidget*>("native_name")
+            && !nodeEditor->findChild<QWidget*>("native_enabled"),
+            "Hydraulic node editor missing or leaked name/enabled controls");
+        auto* nodeApply = nodeEditor->findChild<QPushButton*>("motionApplyButton");
+        require(nodeApply != nullptr, "Hydraulic node editor missing apply button");
+        nodeApply->click();
+
+        window.dispatchOriginalMotionAction("createHydraulicComponent", "Pump");
+        auto* compEditor = window.findChild<QWidget*>("nativeEditor_hydraulicComponents");
+        require(compEditor && !compEditor->findChild<QWidget*>("native_name")
+            && !compEditor->findChild<QWidget*>("native_enabled"),
+            "Hydraulic component editor missing or leaked name/enabled controls");
+        auto* compApply = compEditor->findChild<QPushButton*>("motionApplyButton");
+        require(compApply != nullptr, "Hydraulic component editor missing apply button");
+        compApply->click();
+
+        require(node(tree, "hydraulicMotors", -1, true) && node(tree, "hydraulicNodes", -1, true)
+            && node(tree, "hydraulicComponents", -1, true), "Stage 3 hydraulic groups did not appear in model tree");
+        window.dispatchOriginalMotionAction("checkHydraulicCircuit");
+        menu(tree, node(tree, "hydraulicComponents", -1, true), "删除所有液压元件");
+        menu(tree, node(tree, "hydraulicNodes", -1, true), "删除所有液压节点");
+        menu(tree, node(tree, "hydraulicMotors", -1, true), "删除所有液压马达");
+        require(context()->document().collection("hydraulicMotors").isEmpty()
+            && context()->document().collection("hydraulicNodes").isEmpty()
+            && context()->document().collection("hydraulicComponents").isEmpty(),
+            "Group delete did not clear Stage 3 hydraulic collections");
+
         menu(tree,node(tree,"markers",-1,true),"删除所有标记点");
         auto* markerGroup=node(tree,"markers",-1,true);require(markerGroup&&markerGroup->childCount()==0,"Empty fixed original group was removed");
         const auto scenario=context()->document().entity("scenarios",1);

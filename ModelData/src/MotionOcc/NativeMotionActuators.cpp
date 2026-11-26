@@ -3,7 +3,9 @@
 
 #include "motion/functions/Function_Expr.h"
 #include "motion/functions/Function_Table.h"
+#include "motion/physics/HydraulicCircuit.h"
 #include "motion/physics/HydraulicCylinder.h"
+#include "motion/physics/HydraulicMotor.h"
 #include "motion/physics/LinkMotorLinearForce.h"
 #include "motion/physics/LinkMotorRotationTorque.h"
 #include "motion/physics/FlexBodyAuxRef.h"
@@ -13,7 +15,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
+#include <tuple>
 
 namespace MotionOcc {
 namespace {
@@ -26,14 +30,14 @@ motion::MotionVector<> jsonVec(const QJsonValue& value, motion::MotionVector<> f
     motion::MotionVector<> out;
     if (value.isArray()) {
         const auto a = value.toArray();
-        if (a.size() != 3) fail(QStringLiteral("液压缸坐标向量需要三个分量。"));
+        if (a.size() != 3) fail(QStringLiteral("液压坐标向量需要三个分量。"));
         out = motion::MotionVector<>(a[0].toDouble(NAN), a[1].toDouble(NAN), a[2].toDouble(NAN));
     } else {
         const auto o = value.toObject();
         out = motion::MotionVector<>(o.value("x").toDouble(NAN), o.value("y").toDouble(NAN), o.value("z").toDouble(NAN));
     }
     if (!std::isfinite(out.x()) || !std::isfinite(out.y()) || !std::isfinite(out.z()))
-        fail(QStringLiteral("液压缸坐标向量包含非有限数值。"));
+        fail(QStringLiteral("液压坐标向量包含非有限数值。"));
     return out;
 }
 
@@ -43,6 +47,43 @@ std::shared_ptr<motion::MotionBody> findSystemBody(NativeMotionSystem& system, i
     auto body = system.SearchBody(key.c_str());
     if (!body) body = std::dynamic_pointer_cast<motion::MotionBody>(system.SearchFlex(key.c_str()));
     return body;
+}
+
+std::shared_ptr<motion::MotionFunction> parseHydraulicFunction(
+    const QJsonObject& row,
+    const char* exprKey,
+    const char* tableXKey,
+    const char* tableYKey,
+    const QString& fallbackExpr,
+    const QString& ownerLabel,
+    double& outConstValue,
+    bool alwaysCreateFunction = false)
+{
+    std::vector<double> tx, ty;
+    if (tableXKey && tableYKey) {
+        for (const auto& v : row.value(QLatin1String(tableXKey)).toArray()) tx.push_back(v.toDouble());
+        for (const auto& v : row.value(QLatin1String(tableYKey)).toArray()) ty.push_back(v.toDouble());
+    }
+    if (!tx.empty() || !ty.empty()) {
+        auto table = std::make_shared<motion::MotionFunction_Table>(tx, ty);
+        if (!table->IsValid()) fail(QStringLiteral("%1 控制时间表无效。").arg(ownerLabel));
+        outConstValue = ty.front();
+        return table;
+    }
+    QString expr = exprKey ? row.value(QLatin1String(exprKey)).toString(fallbackExpr).trimmed() : fallbackExpr;
+    if (expr.isEmpty()) expr = fallbackExpr;
+    bool isNumber = false;
+    const double numeric = expr.toDouble(&isNumber);
+    if (isNumber && std::isfinite(numeric)) {
+        outConstValue = numeric;
+        if (!alwaysCreateFunction) return nullptr;
+    } else {
+        outConstValue = fallbackExpr.toDouble();
+    }
+    auto fn = std::make_shared<motion::MotionFunction_Expr>(expr.toStdString());
+    if (!fn->IsValid())
+        fail(QStringLiteral("%1 函数表达式无效：%2").arg(ownerLabel, QString::fromStdString(fn->GetCompileError())));
+    return fn;
 }
 
 class EffortFunction final : public motion::MotionFunction {
@@ -144,9 +185,6 @@ void createNativeEffortMotors(NativeMotionSystem& system,const NativeMotionInput
         motor->SetNameString(std::to_string(runtime->driveId));runtime->motor=motor;
         motor->SetMotorFunction(std::make_shared<EffortFunction>(runtime));
         system.AddLink(motor);system.effortMotors.emplace(runtime->driveId,runtime);
-        // Keep marker mapping and rotational units available to all existing
-        // result and structural-load export paths. This record is deliberately
-        // added after the legacy parser: it is an effort, not a motion law.
         motion::adams_motion_struct record;
         record.id=std::to_string(runtime->driveId);record.marker_I=joint->second->marker_I;record.marker_J=joint->second->marker_J;
         record.resolved_joint_id=joint->first;record.is_rotation=runtime->angular;record.is_translation=!runtime->angular;
@@ -171,8 +209,6 @@ void recordNativeEffortMotors(NativeMotionSystem& system)
         auto& value=history.data.back();
         const auto frame=motor->GetFrame2()>>*motor->GetBody2();
         const auto effort=frame.GetRot().Rotate(runtime.angular?motion::MotionVector<>(0,0,sample.applied*1000):motion::MotionVector<>(sample.applied*1000,0,0));
-        // Existing reaction channels describe the wrench on J. Applied effort
-        // is equal/opposite on I; keep the established endpoint contract.
         if(runtime.angular){value.actuation_torque={-effort.x(),-effort.y(),-effort.z()};
             const auto rotary=std::dynamic_pointer_cast<motion::MotionLinkMotorRotation>(motor);
             value.imposed_value=rotary->GetMotorRot();value.imposed_speed=rotary->GetMotorRot_dt();value.imposed_acc=rotary->GetMotorRot_dtdt();}
@@ -246,26 +282,18 @@ void createNativeHydraulicCylinders(NativeMotionSystem& system, const NativeMoti
             cyl->SetSupplyMode(motion::MotionHydraulicCylinder::SupplyMode::ClosedPort);
         else if (supplyMode == QLatin1String("FlowCommand"))
             cyl->SetSupplyMode(motion::MotionHydraulicCylinder::SupplyMode::FlowCommand);
+        else if (supplyMode == QLatin1String("ExternalCircuit"))
+            cyl->SetSupplyMode(motion::MotionHydraulicCylinder::SupplyMode::ExternalCircuit);
         else
             cyl->SetSupplyMode(motion::MotionHydraulicCylinder::SupplyMode::DirectionalValve);
 
         cyl->SetInitialPressures(row.value("initialPressureA").toDouble(1.0),
                                  row.value("initialPressureB").toDouble(1.0));
 
-        std::vector<double> tx, ty;
-        for (const auto& v : row.value("commandTableX").toArray()) tx.push_back(v.toDouble());
-        for (const auto& v : row.value("commandTableY").toArray()) ty.push_back(v.toDouble());
-        if (!tx.empty() || !ty.empty()) {
-            auto table = std::make_shared<motion::MotionFunction_Table>(tx, ty);
-            if (!table->IsValid()) fail(QStringLiteral("液压缸 %1 控制时间表无效。").arg(id));
-            cyl->SetCommandFunction(table);
-        } else {
-            const QString expr = row.value("commandExpression").toString("0").trimmed();
-            auto fn = std::make_shared<motion::MotionFunction_Expr>((expr.isEmpty() ? QStringLiteral("0") : expr).toStdString());
-            if (!fn->IsValid())
-                fail(QStringLiteral("液压缸 %1 控制表达式无效：%2").arg(id).arg(QString::fromStdString(fn->GetCompileError())));
-            cyl->SetCommandFunction(fn);
-        }
+        double constCmd = 0.0;
+        auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                            QStringLiteral("0"), QStringLiteral("液压缸 %1").arg(id), constCmd, true);
+        cyl->SetCommandFunction(cmdFn);
 
         cyl->Initialize(bodyI, bodyJ, false, worldI, worldJ);
         system.AddLink(cyl);
@@ -278,16 +306,371 @@ void createNativeHydraulicCylinders(NativeMotionSystem& system, const NativeMoti
     }
 }
 
+void createNativeHydraulicMotors(NativeMotionSystem& system, const NativeMotionInput& input)
+{
+    const auto fluid = input.document.root.value("motionData").toObject().value("hydraulicFluid").toObject();
+    const double bulkModulus = fluid.value("bulkModulus").toDouble(1400.0);
+    const double density = fluid.value("density").toDouble(860.0);
+    const double supplyPressure = fluid.value("supplyPressure").toDouble(21.0);
+    const double tankPressure = fluid.value("tankPressure").toDouble(0.1);
+
+    for (const auto& value : input.document.collection("hydraulicMotors")) {
+        const auto row = value.toObject();
+        if (!row.value("enabled").toBool(true)) continue;
+        const int id = row.value("id").toInt();
+        const int jointId = row.value("targetJointId").toInt(-1);
+        const auto jointRow = input.document.entity("joints", jointId);
+        if (jointRow.isEmpty()) fail(QStringLiteral("液压马达 %1 关联的运动副不存在。").arg(id));
+        const QString jType = jointRow.value("jointType").toString();
+        if (jType != QLatin1String("Revolute") && jType != QLatin1String("Cylindrical"))
+            fail(QStringLiteral("液压马达 %1 仅支持关联旋转副或圆柱副。").arg(id));
+
+        const auto jointIt = system.joints_map.find(std::to_string(jointId));
+        if (jointIt == system.joints_map.end())
+            fail(QStringLiteral("液压马达 %1 关联的运动副 %2 未启用。").arg(id).arg(jointId));
+        const auto markerI = system.SearchMarker(jointIt->second->marker_I.c_str());
+        const auto markerJ = system.SearchMarker(jointIt->second->marker_J.c_str());
+        if (!markerI || !markerJ)
+            fail(QStringLiteral("液压马达 %1 目标运动副 Marker 不存在。").arg(id));
+        auto bodyI = system.SearchBody(markerI->GetBody()->GetName());
+        auto bodyJ = system.SearchBody(markerJ->GetBody()->GetName());
+        if (!bodyI || !bodyJ || bodyI == bodyJ)
+            fail(QStringLiteral("液压马达 %1 需要连接两个不同的刚体（不支持直接挂接 MNF 模态体）。").arg(id));
+
+        auto motor = std::make_shared<motion::MotionHydraulicMotor>();
+        motor->SetNameString("HM_" + std::to_string(id));
+        motor->SetTorqueFromNmmScale(1000.0); // 1 N*mm = 1000 kg*mm^2/s^2
+        motor->SetDisplacementCcRev(row.value("displacementCcRev").toDouble(50.0));
+        motor->SetMechanicalEfficiency(row.value("mechanicalEfficiency").toDouble(0.95));
+        motor->SetChamberVolumesMm3(row.value("chamberVolumeA").toDouble(50000.0),
+                                    row.value("chamberVolumeB").toDouble(50000.0));
+        motor->SetFluidProperties(bulkModulus, density);
+        motor->SetViscousDamping(row.value("viscousDamping").toDouble(100.0));
+        motor->SetInternalLeakage(row.value("internalLeakage").toDouble(0.0));
+        motor->SetSupplyPressures(supplyPressure, tankPressure);
+        motor->SetValveRating(row.value("ratedFlowLpm").toDouble(40.0),
+                              row.value("ratedPressureDrop").toDouble(3.5));
+
+        const QString supplyMode = row.value("supplyMode").toString("DirectionalValve");
+        if (supplyMode == QLatin1String("ClosedPort"))
+            motor->SetSupplyMode(motion::MotionHydraulicMotor::SupplyMode::ClosedPort);
+        else if (supplyMode == QLatin1String("FlowCommand"))
+            motor->SetSupplyMode(motion::MotionHydraulicMotor::SupplyMode::FlowCommand);
+        else if (supplyMode == QLatin1String("ExternalCircuit"))
+            motor->SetSupplyMode(motion::MotionHydraulicMotor::SupplyMode::ExternalCircuit);
+        else
+            motor->SetSupplyMode(motion::MotionHydraulicMotor::SupplyMode::DirectionalValve);
+
+        motor->SetInitialPressures(row.value("initialPressureA").toDouble(1.0),
+                                   row.value("initialPressureB").toDouble(1.0));
+
+        double constCmd = 0.0;
+        auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                            QStringLiteral("0"), QStringLiteral("液压马达 %1").arg(id), constCmd, true);
+        motor->SetCommandFunction(cmdFn);
+
+        motor->Initialize(bodyI, bodyJ, false, markerI->GetAbsCoord(), markerJ->GetAbsCoord());
+        system.AddLink(motor);
+
+        auto runtime = std::make_shared<NativeHydraulicMotorRuntime>();
+        runtime->motorId = id;
+        runtime->definition = row;
+        runtime->motor = motor;
+        system.hydraulicMotors.emplace(id, std::move(runtime));
+    }
+}
+
+void createNativeHydraulicCircuit(NativeMotionSystem& system, const NativeMotionInput& input)
+{
+    std::vector<QJsonObject> activeNodes;
+    for (const auto& v : input.document.collection("hydraulicNodes")) {
+        const auto row = v.toObject();
+        if (row.value("enabled").toBool(true)) activeNodes.push_back(row);
+    }
+    std::vector<QJsonObject> activeComps;
+    for (const auto& v : input.document.collection("hydraulicComponents")) {
+        const auto row = v.toObject();
+        if (row.value("enabled").toBool(true)) activeComps.push_back(row);
+    }
+
+    struct PortBinding {
+        bool isMotor = false;
+        int actuatorId = -1;
+        bool portB = false;
+        int nodeId = -1;
+        double conductanceLpm = 200.0;
+        int portConnCompId = -1;
+        bool directlyFused = false;
+    };
+    std::vector<PortBinding> portBindings;
+    const auto addOrMergeBinding = [&](bool isMotor, int actId, bool portB, int nodeId, double condLpm, int compId) {
+        if (nodeId < 0) return;
+        for (auto& b : portBindings) {
+            if (b.isMotor == isMotor && b.actuatorId == actId && b.portB == portB) {
+                if (b.nodeId != nodeId)
+                    fail(QStringLiteral("%1 %2 的 %3 口同时连接到了两个不同的液压节点（%4 与 %5）。")
+                             .arg(isMotor ? QStringLiteral("液压马达") : QStringLiteral("液压缸"))
+                             .arg(actId)
+                             .arg(portB ? QStringLiteral("B") : QStringLiteral("A"))
+                             .arg(b.nodeId).arg(nodeId));
+                if (compId >= 0) {
+                    b.portConnCompId = compId;
+                    b.conductanceLpm = condLpm;
+                }
+                return;
+            }
+        }
+        portBindings.push_back({isMotor, actId, portB, nodeId, condLpm, compId, false});
+    };
+
+    for (const auto& [cid, rt] : system.hydraulicCylinders) {
+        if (rt->definition.value("supplyMode").toString() != QLatin1String("ExternalCircuit")) continue;
+        addOrMergeBinding(false, cid, false, rt->definition.value("portANodeId").toInt(-1), 200.0, -1);
+        addOrMergeBinding(false, cid, true, rt->definition.value("portBNodeId").toInt(-1), 200.0, -1);
+    }
+    for (const auto& [mid, rt] : system.hydraulicMotors) {
+        if (rt->definition.value("supplyMode").toString() != QLatin1String("ExternalCircuit")) continue;
+        addOrMergeBinding(true, mid, false, rt->definition.value("portANodeId").toInt(-1), 200.0, -1);
+        addOrMergeBinding(true, mid, true, rt->definition.value("portBNodeId").toInt(-1), 200.0, -1);
+    }
+    for (const auto& row : activeComps) {
+        if (row.value("componentType").toString() != QLatin1String("PortConnection")) continue;
+        const int compId = row.value("id").toInt();
+        const int nodeId = row.value("targetNodeId").toInt(-1);
+        const bool isMotor = row.value("actuatorType").toString("Cylinder") == QLatin1String("Motor");
+        const int actId = row.value("actuatorId").toInt(-1);
+        const bool portB = row.value("actuatorPort").toString("A") == QLatin1String("B");
+        if (nodeId < 0 || actId < 0)
+            fail(QStringLiteral("端口连接 [%1] 尚未指定目标液压节点或执行器。").arg(compId));
+        if (isMotor && !system.hydraulicMotors.count(actId))
+            fail(QStringLiteral("端口连接 [%1] 引用的液压马达 %2 不存在或未启用。").arg(compId).arg(actId));
+        if (!isMotor && !system.hydraulicCylinders.count(actId))
+            fail(QStringLiteral("端口连接 [%1] 引用的液压缸 %2 不存在或未启用。").arg(compId).arg(actId));
+        addOrMergeBinding(isMotor, actId, portB, nodeId, row.value("conductanceLpm").toDouble(200.0), compId);
+    }
+
+    if (activeNodes.empty() && activeComps.empty() && portBindings.empty())
+        return;
+
+    const auto fluid = input.document.root.value("motionData").toObject().value("hydraulicFluid").toObject();
+    const double bulkModulus = fluid.value("bulkModulus").toDouble(1400.0);
+    const double density = fluid.value("density").toDouble(860.0);
+    const double viscosity = fluid.value("kinematicViscosity").toDouble(46.0);
+    const double defaultSupply = fluid.value("supplyPressure").toDouble(21.0);
+    const double defaultTank = fluid.value("tankPressure").toDouble(0.1);
+
+    auto netRuntime = std::make_shared<NativeHydraulicCircuitRuntime>();
+    auto circuit = std::make_shared<motion::MotionHydraulicCircuit>();
+    circuit->SetNameString("HydraulicCircuit");
+    circuit->SetFluidProperties(bulkModulus, density, viscosity);
+
+    std::map<int, std::vector<std::size_t>> bindingsPerNode;
+    for (std::size_t i = 0; i < portBindings.size(); ++i)
+        bindingsPerNode[portBindings[i].nodeId].push_back(i);
+
+    for (const auto& row : activeNodes) {
+        const int nid = row.value("id").toInt();
+        const QString ntype = row.value("nodeType").toString("Chamber");
+        netRuntime->nodeHistories[nid] = {};
+        if (ntype == QLatin1String("Tank")) {
+            circuit->AddBoundaryNode(nid, row.value("pressureMPa").toDouble(defaultTank), nullptr);
+        } else if (ntype == QLatin1String("PressureSource")) {
+            const QString defStr = QString::number(row.value("pressureMPa").toDouble(defaultSupply), 'g', 15);
+            double constP = row.value("pressureMPa").toDouble(defaultSupply);
+            auto pFn = parseHydraulicFunction(row, "pressureExpression", "pressureTableX", "pressureTableY",
+                                              defStr, QStringLiteral("压力源节点 %1").arg(nid), constP, false);
+            circuit->AddBoundaryNode(nid, constP, pFn);
+        } else {
+            const double volMm3 = row.value("volumeMl").toDouble(100.0) * 1000.0;
+            const double initP = row.value("initialPressureMPa").toDouble(1.0);
+            const auto bIt = bindingsPerNode.find(nid);
+            if (bIt != bindingsPerNode.end() && bIt->second.size() == 1) {
+                auto& pb = portBindings[bIt->second.front()];
+                pb.directlyFused = true;
+                if (pb.isMotor) {
+                    auto& mot = *system.hydraulicMotors.at(pb.actuatorId)->motor;
+                    if (pb.portB) mot.SetChamberVolumesMm3(mot.GetVolumeAMm3(), mot.GetVolumeBMm3() + volMm3);
+                    else mot.SetChamberVolumesMm3(mot.GetVolumeAMm3() + volMm3, mot.GetVolumeBMm3());
+                    circuit->BindMotorPortNode(nid, system.hydraulicMotors.at(pb.actuatorId)->motor, pb.portB);
+                } else {
+                    auto& cyl = *system.hydraulicCylinders.at(pb.actuatorId)->cylinder;
+                    if (pb.portB) cyl.SetDeadVolumesMm3(cyl.GetDeadVolumeAMm3(), cyl.GetDeadVolumeBMm3() + volMm3);
+                    else cyl.SetDeadVolumesMm3(cyl.GetDeadVolumeAMm3() + volMm3, cyl.GetDeadVolumeBMm3());
+                    circuit->BindCylinderPortNode(nid, system.hydraulicCylinders.at(pb.actuatorId)->cylinder, pb.portB);
+                }
+                if (pb.portConnCompId >= 0)
+                    netRuntime->portConnectionBranchIds[pb.portConnCompId] = 0;
+            } else {
+                circuit->AddVolumeNode(nid, volMm3, initP);
+            }
+        }
+    }
+
+    int internalSeq = 0;
+    for (auto& pb : portBindings) {
+        if (!circuit->HasNode(pb.nodeId))
+            fail(QStringLiteral("执行器端口引用的液压节点 %1 不存在或未启用。").arg(pb.nodeId));
+        if (pb.directlyFused) continue;
+        ++internalSeq;
+        const int internalNodeId = -10000 - internalSeq;
+        if (pb.isMotor)
+            circuit->BindMotorPortNode(internalNodeId, system.hydraulicMotors.at(pb.actuatorId)->motor, pb.portB);
+        else
+            circuit->BindCylinderPortNode(internalNodeId, system.hydraulicCylinders.at(pb.actuatorId)->cylinder, pb.portB);
+
+        const int branchId = pb.portConnCompId >= 0 ? pb.portConnCompId : (-20000 - internalSeq);
+        circuit->AddThrottleValve(branchId, pb.nodeId, internalNodeId,
+                                  std::max(1.0, pb.conductanceLpm), 0.1, 1.0, nullptr);
+        if (pb.portConnCompId >= 0)
+            netRuntime->portConnectionBranchIds[pb.portConnCompId] = branchId;
+    }
+
+    const auto requireNode = [&](int compId, const QString& compName, const QJsonObject& row, const char* key) {
+        const int nid = row.value(QLatin1String(key)).toInt(-1);
+        if (nid < 0 || !circuit->HasNode(nid))
+            fail(QStringLiteral("液压元件 %1 [%2] 的端口 %3 未连接有效液压节点。")
+                     .arg(compName).arg(compId).arg(QLatin1String(key)));
+        return nid;
+    };
+
+    for (const auto& row : activeComps) {
+        const int cid = row.value("id").toInt();
+        const QString cname = row.value("name").toString();
+        const QString ctype = row.value("componentType").toString();
+        netRuntime->componentTypes[cid] = ctype;
+        netRuntime->componentHistories[cid] = {};
+
+        if (ctype == QLatin1String("PortConnection")) {
+            continue;
+        } else if (ctype == QLatin1String("Accumulator")) {
+            const int target = requireNode(cid, cname, row, "targetNodeId");
+            circuit->AddAccumulator(cid, target,
+                                    row.value("prechargePressureMPa").toDouble(10.0),
+                                    row.value("gasVolumeL").toDouble(1.0),
+                                    row.value("polytropicGamma").toDouble(1.3));
+            netRuntime->accumulatorIds.insert(cid);
+        } else if (ctype == QLatin1String("Pump")) {
+            const int suc = requireNode(cid, cname, row, "suctionNodeId");
+            const int del = requireNode(cid, cname, row, "deliveryNodeId");
+            double constRpm = 1500.0;
+            auto rpmFn = parseHydraulicFunction(row, "speedExpression", "commandTableX", "commandTableY",
+                                                QStringLiteral("1500"), QStringLiteral("液压泵 %1").arg(cid), constRpm, false);
+            circuit->AddPump(cid, suc, del,
+                             row.value("displacementCcRev").toDouble(25.0),
+                             constRpm, rpmFn,
+                             row.value("volumetricEfficiency").toDouble(0.95),
+                             row.value("mechanicalEfficiency").toDouble(0.90),
+                             row.value("ratedPressureMPa").toDouble(21.0));
+        } else if (ctype == QLatin1String("FlowSource")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            double constFlow = 20.0;
+            auto flowFn = parseHydraulicFunction(row, "flowExpression", "commandTableX", "commandTableY",
+                                                 QStringLiteral("20"), QStringLiteral("流量源 %1").arg(cid), constFlow, false);
+            circuit->AddFlowSource(cid, inNode, outNode, constFlow, flowFn);
+        } else if (ctype == QLatin1String("ReliefValve")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            circuit->AddReliefValve(cid, inNode, outNode,
+                                    row.value("crackingPressureMPa").toDouble(21.0),
+                                    row.value("pressureOverrideMPa").toDouble(1.0),
+                                    row.value("ratedFlowLpm").toDouble(60.0));
+        } else if (ctype == QLatin1String("PressureReducingValve")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            circuit->AddPressureReducingValve(cid, inNode, outNode,
+                                              row.value("regulatedPressureMPa").toDouble(10.0),
+                                              row.value("pressureBandMPa").toDouble(0.5),
+                                              row.value("ratedFlowLpm").toDouble(50.0),
+                                              row.value("ratedPressureDropMPa").toDouble(1.0));
+        } else if (ctype == QLatin1String("SequenceValve")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            circuit->AddSequenceValve(cid, inNode, outNode,
+                                      row.value("sequencePressureMPa").toDouble(15.0),
+                                      row.value("pressureBandMPa").toDouble(0.5),
+                                      row.value("ratedFlowLpm").toDouble(50.0),
+                                      row.value("ratedPressureDropMPa").toDouble(1.0));
+        } else if (ctype == QLatin1String("CheckValve")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            circuit->AddCheckValve(cid, inNode, outNode,
+                                   row.value("crackingPressureMPa").toDouble(0.05),
+                                   row.value("ratedFlowLpm").toDouble(60.0),
+                                   row.value("ratedPressureDropMPa").toDouble(0.5));
+        } else if (ctype == QLatin1String("ThrottleValve")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            double constOpen = 1.0;
+            auto openFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                                 QStringLiteral("1"), QStringLiteral("节流阀 %1").arg(cid), constOpen, false);
+            circuit->AddThrottleValve(cid, inNode, outNode,
+                                      row.value("ratedFlowLpm").toDouble(40.0),
+                                      row.value("ratedPressureDropMPa").toDouble(1.0),
+                                      constOpen, openFn);
+        } else if (ctype == QLatin1String("Pipe")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            circuit->AddPipe(cid, inNode, outNode,
+                             row.value("lengthMm").toDouble(1000.0),
+                             row.value("diameterMm").toDouble(12.0),
+                             row.value("localLossCoeff").toDouble(0.5));
+        } else if (ctype == QLatin1String("Filter")) {
+            const int inNode = requireNode(cid, cname, row, "inletNodeId");
+            const int outNode = requireNode(cid, cname, row, "outletNodeId");
+            circuit->AddFilter(cid, inNode, outNode,
+                               row.value("ratedFlowLpm").toDouble(80.0),
+                               row.value("cleanPressureDropMPa").toDouble(0.15),
+                               row.value("foulingFactor").toDouble(1.0));
+        } else if (ctype == QLatin1String("DirectionalValve") || ctype == QLatin1String("ServoValve")) {
+            const int np = requireNode(cid, cname, row, "portPNodeId");
+            const int nt = requireNode(cid, cname, row, "portTNodeId");
+            const int na = requireNode(cid, cname, row, "portANodeId");
+            const int nb = requireNode(cid, cname, row, "portBNodeId");
+            const QString cmStr = row.value("centerMode").toString("ClosedCenter");
+            auto cm = motion::MotionHydraulicCircuit::CenterMode::ClosedCenter;
+            if (cmStr == QLatin1String("TandemUnload"))
+                cm = motion::MotionHydraulicCircuit::CenterMode::TandemUnloadPToT;
+            else if (cmStr == QLatin1String("FloatAB"))
+                cm = motion::MotionHydraulicCircuit::CenterMode::FloatABToT;
+            const double tauS = ctype == QLatin1String("ServoValve")
+                ? std::max(0.0, row.value("responseTimeMs").toDouble(15.0)) * 0.001
+                : std::max(0.0, row.value("responseTimeMs").toDouble(0.0)) * 0.001;
+            double constCmd = 0.0;
+            auto cmdFn = parseHydraulicFunction(row, "commandExpression", "commandTableX", "commandTableY",
+                                                QStringLiteral("0"), QStringLiteral("控制阀 %1").arg(cid), constCmd, false);
+            circuit->AddFourWayValve(cid, np, nt, na, nb,
+                                     row.value("ratedFlowLpm").toDouble(40.0),
+                                     row.value("ratedPressureDropMPa").toDouble(3.5),
+                                     cm, tauS, row.value("underlap").toDouble(0.0),
+                                     constCmd, cmdFn);
+            netRuntime->fourWayIds.insert(cid);
+        }
+    }
+
+    circuit->Finalize();
+    system.AddOtherPhysicsItem(circuit);
+    netRuntime->circuit = std::move(circuit);
+    system.hydraulicCircuit = std::move(netRuntime);
+}
+
 QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJsonObject& scenario)
 {
-    if (!scenario.value("hydraulicSteadyInit").toBool(false) || system.hydraulicCylinders.empty())
+    if (!scenario.value("hydraulicSteadyInit").toBool(false)
+        || (system.hydraulicCylinders.empty() && system.hydraulicMotors.empty()))
         return {};
 
-    std::vector<NativeHydraulicRuntime*> runtimes;
-    runtimes.reserve(system.hydraulicCylinders.size());
+    std::vector<NativeHydraulicRuntime*> cylRuntimes;
+    cylRuntimes.reserve(system.hydraulicCylinders.size());
     for (auto& entry : system.hydraulicCylinders) {
-        runtimes.push_back(entry.second.get());
+        cylRuntimes.push_back(entry.second.get());
         entry.second->cylinder->SetDisabled(true);
+    }
+    std::vector<NativeHydraulicMotorRuntime*> motRuntimes;
+    motRuntimes.reserve(system.hydraulicMotors.size());
+    for (auto& entry : system.hydraulicMotors) {
+        motRuntimes.push_back(entry.second.get());
+        entry.second->motor->SetDisabled(true);
     }
 
     system.Setup();
@@ -297,14 +680,16 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
 
     const int n = system.GetNcoords_v();
     const int m = system.GetNconstr();
-    const int k = static_cast<int>(runtimes.size());
+    const int kCyl = static_cast<int>(cylRuntimes.size());
+    const int kMot = static_cast<int>(motRuntimes.size());
+    const int kTot = kCyl + kMot;
 
-    if (n > 0) {
+    if (n > 0 && kTot > 0) {
         motion::MotionVectorDynamic<> force(n);
         force.setZero();
         system.LoadResidual_F(force, 1.0);
 
-        Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n, m + k);
+        Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n, m + kTot);
         if (m > 0) {
             motion::MotionSparseMatrix cq;
             system.GetConstraintJacobianMatrix(&cq);
@@ -312,8 +697,8 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
                 A.leftCols(m) = Eigen::MatrixXd(cq.transpose());
             }
         }
-        for (int r = 0; r < k; ++r) {
-            auto& cyl = *runtimes[r]->cylinder;
+        for (int r = 0; r < kCyl; ++r) {
+            auto& cyl = *cylRuntimes[r]->cylinder;
             auto* b1 = static_cast<motion::MotionBody*>(cyl.GetBody1());
             auto* b2 = static_cast<motion::MotionBody*>(cyl.GetBody2());
             const auto p1 = b1->TransformPointLocalToParent(cyl.GetPoint1Rel());
@@ -332,10 +717,25 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
                 A.block<3, 1>(off2 + 3, m + r) = lt2.eigen();
             }
         }
+        for (int j = 0; j < kMot; ++j) {
+            auto& mot = *motRuntimes[j]->motor;
+            auto* b1 = static_cast<motion::MotionBody*>(mot.GetBody1());
+            auto* b2 = static_cast<motion::MotionBody*>(mot.GetBody2());
+            const auto nz = b2->TransformDirectionLocalToParent(mot.GetLinkRelativeCoords().rot.GetZaxis()).GetNormalized();
+            const int col = m + kCyl + j;
+            if (b1->Variables().IsActive()) {
+                const int off1 = static_cast<int>(b1->GetOffset_w());
+                A.block<3, 1>(off1 + 3, col) = b1->TransformDirectionParentToLocal(nz).eigen();
+            }
+            if (b2->Variables().IsActive()) {
+                const int off2 = static_cast<int>(b2->GetOffset_w());
+                A.block<3, 1>(off2 + 3, col) = b2->TransformDirectionParentToLocal(-nz).eigen();
+            }
+        }
 
         const Eigen::VectorXd sol = A.completeOrthogonalDecomposition().solve(-force);
-        for (int r = 0; r < k; ++r) {
-            auto& rt = *runtimes[r];
+        for (int r = 0; r < kCyl; ++r) {
+            auto& rt = *cylRuntimes[r];
             rt.cylinder->SetDisabled(false);
             const double fReqN = (sol.size() > m + r && std::isfinite(sol(m + r))) ? sol(m + r) * 0.001 : 0.0;
             const double preload = std::max(rt.cylinder->GetTankPressureMPa(),
@@ -343,16 +743,33 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
                          rt.definition.value("initialPressureB").toDouble(1.0)));
             rt.cylinder->ApplySteadyInitialPressures(fReqN, preload);
         }
+        for (int j = 0; j < kMot; ++j) {
+            auto& rt = *motRuntimes[j];
+            rt.motor->SetDisabled(false);
+            const int col = m + kCyl + j;
+            const double tauReqNmm = (sol.size() > col && std::isfinite(sol(col))) ? sol(col) * 0.001 : 0.0;
+            const double preload = std::max(rt.motor->GetTankPressureMPa(),
+                std::min(rt.definition.value("initialPressureA").toDouble(1.0),
+                         rt.definition.value("initialPressureB").toDouble(1.0)));
+            rt.motor->ApplySteadyInitialPressures(tauReqNmm, preload);
+        }
     } else {
-        for (auto* rt : runtimes) rt->cylinder->SetDisabled(false);
+        for (auto* rt : cylRuntimes) rt->cylinder->SetDisabled(false);
+        for (auto* rt : motRuntimes) rt->motor->SetDisabled(false);
     }
 
     system.Setup();
     system.Update(0.0, true);
-    return QStringLiteral("液压稳态初始化已完成：%1 个液压缸按 t=0 静载平衡初始腔压。").arg(k);
+    return QStringLiteral("液压稳态初始化已完成：%1 个液压缸、%2 个液压马达按 t=0 静载平衡初始腔压。")
+        .arg(kCyl).arg(kMot);
 }
 
 void recordNativeHydraulicCylinders(NativeMotionSystem& system)
+{
+    recordNativeHydraulics(system);
+}
+
+void recordNativeHydraulics(NativeMotionSystem& system)
 {
     const double time = system.GetMotionTime();
     for (auto& entry : system.hydraulicCylinders) {
@@ -372,6 +789,82 @@ void recordNativeHydraulicCylinders(NativeMotionSystem& system)
         sample.mechPowerW = cyl.GetMechanicalPowerW();
         sample.fluidPowerW = cyl.GetFluidPowerW();
         rt.history.push_back(sample);
+    }
+    for (auto& entry : system.hydraulicMotors) {
+        auto& rt = *entry.second;
+        if (!rt.history.empty() && rt.history.back().time >= time) continue;
+        const auto& mot = *rt.motor;
+        NativeHydraulicMotorSample sample;
+        sample.time = time;
+        sample.pressureA = mot.GetPressureAMPa();
+        sample.pressureB = mot.GetPressureBMPa();
+        sample.torqueNmm = mot.GetTotalTorqueNmm();
+        sample.angleDeg = mot.GetAngleDeg();
+        sample.speedRpm = mot.GetSpeedRpm();
+        sample.flowALpm = mot.GetFlowALpm();
+        sample.flowBLpm = mot.GetFlowBLpm();
+        sample.command = mot.GetCommandValue(time);
+        sample.mechPowerW = mot.GetMechanicalPowerW();
+        sample.fluidPowerW = mot.GetFluidPowerW();
+        rt.history.push_back(sample);
+    }
+    if (system.hydraulicCircuit && system.hydraulicCircuit->circuit) {
+        auto& net = *system.hydraulicCircuit;
+        const auto& c = *net.circuit;
+        for (auto& [nid, hist] : net.nodeHistories) {
+            if (!hist.empty() && hist.back().time >= time) continue;
+            NativeHydraulicNodeSample sample;
+            sample.time = time;
+            sample.pressureMPa = c.GetNodePressureMPa(nid);
+            sample.netFlowLpm = c.GetNodeNetFlowLpm(nid);
+            hist.push_back(sample);
+        }
+        for (auto& [cid, hist] : net.componentHistories) {
+            if (!hist.empty() && hist.back().time >= time) continue;
+            NativeHydraulicComponentSample sample;
+            sample.time = time;
+            const QString ctype = net.componentTypes[cid];
+            if (ctype == QLatin1String("Accumulator")) {
+                sample.flowLpm = c.GetAccumulatorFlowLpm(cid);
+                sample.gasPressureMPa = c.GetAccumulatorPressureMPa(cid);
+                sample.gasVolumeL = c.GetAccumulatorGasVolumeL(cid);
+                sample.oilVolumeL = c.GetAccumulatorOilVolumeL(cid);
+            } else if (ctype == QLatin1String("PortConnection")) {
+                const int bid = net.portConnectionBranchIds[cid];
+                if (bid != 0) {
+                    sample.flowLpm = c.GetComponentFlowLpm(bid);
+                    sample.deltaPressureMPa = c.GetComponentDeltaPressureMPa(bid);
+                    sample.powerW = c.GetComponentPowerW(bid);
+                    sample.spoolPosition = 1.0;
+                    sample.command = 1.0;
+                } else if (system.sourceInput) {
+                    const auto pc = system.sourceInput->document.entity("hydraulicComponents", cid);
+                    const bool isMotor = pc.value("actuatorType").toString("Cylinder") == QLatin1String("Motor");
+                    const int actId = pc.value("actuatorId").toInt(-1);
+                    const bool portB = pc.value("actuatorPort").toString("A") == QLatin1String("B");
+                    if (isMotor && system.hydraulicMotors.count(actId)) {
+                        const auto& mot = *system.hydraulicMotors.at(actId)->motor;
+                        sample.flowLpm = portB ? mot.GetFlowBLpm() : mot.GetFlowALpm();
+                    } else if (!isMotor && system.hydraulicCylinders.count(actId)) {
+                        const auto& cyl = *system.hydraulicCylinders.at(actId)->cylinder;
+                        sample.flowLpm = portB ? cyl.GetFlowBLpm() : cyl.GetFlowALpm();
+                    }
+                    sample.spoolPosition = 1.0;
+                    sample.command = 1.0;
+                }
+            } else {
+                sample.flowLpm = c.GetComponentFlowLpm(cid);
+                sample.deltaPressureMPa = c.GetComponentDeltaPressureMPa(cid);
+                sample.spoolPosition = c.GetComponentSpoolPosition(cid);
+                sample.command = c.GetComponentCommand(cid);
+                sample.powerW = c.GetComponentPowerW(cid);
+                if (net.fourWayIds.count(cid)) {
+                    sample.flowALpm = c.GetComponentFlowALpm(cid);
+                    sample.flowBLpm = c.GetComponentFlowBLpm(cid);
+                }
+            }
+            hist.push_back(sample);
+        }
     }
 }
 }

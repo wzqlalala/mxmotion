@@ -29,10 +29,11 @@ NativeFlexRuntime buildImportedMnfFlex(NativeMotionSystem& system, const Prepare
                                        const motion::MotionVector<>& initialVelocity,
                                        const motion::MotionVector<>& initialAngularVelocity)
 {
+    const bool quadraticInvariants = definition.value("quadraticInvariants").toBool(false);
     motion::utils::MnfParseOptions options;
     options.include_all_nodes = true;
     options.include_surface_topology = true;
-    options.include_quadratic_invariants = false;
+    options.include_quadratic_invariants = quadraticInvariants;
     auto data = motion::utils::MotionParserMnf().Parse(path.toUtf8().toStdString(), options);
     auto preview = makeMnfModePreview(data);
     auto& matrices = data.matrices;
@@ -64,6 +65,10 @@ NativeFlexRuntime buildImportedMnfFlex(NativeMotionSystem& system, const Prepare
     matrices.at("INVAR3").data *= massScale * lengthScale;
     for (const char* name : {"INVAR4", "INVAR6", "INVAR7", "INVAR8"})
         matrices.at(name).data *= inertiaScale;
+    if (quadraticInvariants) {
+        for (const char* name : {"INVAR5", "INVAR9"})
+            if (matrices.count(name)) matrices.at(name).data *= inertiaScale;
+    }
     matrices.at("GENSTIFF").data *= energyScale;
 
     // HHT updates the engine nodes repeatedly while evaluating the tangent.
@@ -100,10 +105,15 @@ NativeFlexRuntime buildImportedMnfFlex(NativeMotionSystem& system, const Prepare
     flex->setLevel(static_cast<int>(modeCount));
     flex->SetMass(mass);
     flex->SetInertia(motion::MotionMatrix33<>(inertia));
-    flex->SetQuadraticInvariantsEnabled(false);
+    flex->SetQuadraticInvariantsEnabled(quadraticInvariants);
     for (const auto& matrix : matrices)
         flex->set_matrix(matrix.first, matrix.second);
-    flex->UseAdamsDefaultModalDamping();
+    const bool customDamping = definition.value("useCustomModalDamping").toBool(definition.contains("modalDampingRatio"));
+    const double customRatio = definition.value("modalDampingRatio").toDouble(0.02);
+    if (customDamping)
+        flex->SetModalDampingRatio(customRatio);
+    else
+        flex->UseAdamsDefaultModalDamping();
     flex->SetNameString(std::to_string(target.body.id));
     flex->SetFrame_COG_to_REF(motion::MotionFrame<>(motion::MotionVector<>(center), motion::QUNIT));
     flex->SetFrame_REF_to_abs(referencePose);
@@ -122,7 +132,10 @@ NativeFlexRuntime buildImportedMnfFlex(NativeMotionSystem& system, const Prepare
     runtime.importedReferencePose = referencePose;
     runtime.result.surface_tris = std::move(preview.surfaceTriangles);
     runtime.modalBasis = std::move(preview.modalBasis);
-    runtime.modalBasis.diagnostics.append(QStringLiteral("动力学使用部分惯性耦合与 MotionEngine 默认模态阻尼。"));
+    runtime.modalBasis.diagnostics.append(QStringLiteral("动力学使用%1与%2。")
+        .arg(quadraticInvariants ? QStringLiteral("完整二阶惯性耦合 (INVAR1-9)") : QStringLiteral("部分惯性耦合"))
+        .arg(customDamping ? QStringLiteral("常数模态阻尼比 %1").arg(customRatio, 0, 'g', 5)
+                           : QStringLiteral("MotionEngine 默认模态阻尼")));
     runtime.result.n_modes = static_cast<int>(modeCount);
     const auto modes = static_cast<std::size_t>(modeCount);
     runtime.result.node_x0.reserve(preview.referenceNodes.size());

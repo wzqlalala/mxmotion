@@ -150,9 +150,9 @@ namespace {
             m_cmbPresetMode->addItem(text, static_cast<int>(mode));
             };
         addPresetModeItem("FAST (快速计算)", MechMotionData::PresetMode::FAST);
-        // addPresetModeItem("CONTACT (接触优化)", MechMotionData::PresetMode::CONTACT);
+        addPresetModeItem("CONTACT (接触优化)", MechMotionData::PresetMode::CONTACT);
         addPresetModeItem("ROBUST (高精度求解)", MechMotionData::PresetMode::ROBUST);
-        // addPresetModeItem("HIGH_PRECISION (高精度)", MechMotionData::PresetMode::HIGH_PRECISION);
+        addPresetModeItem("HIGH_PRECISION (高精度)", MechMotionData::PresetMode::HIGH_PRECISION);
         foldPreset->addRow(m_lblPresetMode, m_cmbPresetMode);
 
         m_mainLayout->addWidget(foldPreset);

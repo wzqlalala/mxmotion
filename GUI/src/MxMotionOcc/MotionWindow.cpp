@@ -896,13 +896,17 @@ void MotionWindow::updateTree()
         {"parts", tr("部件")}, {"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")},
         {"bodyDrives", tr("运动体驱动")}, {"hydraulicCylinders", tr("液压缸")},
+        {"hydraulicMotors", tr("液压马达")}, {"hydraulicNodes", tr("液压节点")},
+        {"hydraulicComponents", tr("液压元件")},
         {"springs", tr("弹簧")}, {"forceElements", tr("力元")}, {"sensors", tr("传感器")},
         {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")},
         {"controlInputs", tr("控制输入")}
     };
     std::map<QString, QTreeWidgetItem*> groupItems;
     for (const auto& entry : groups) {
-        if ((entry.first == "bodyDrives" || entry.first == "hydraulicCylinders")
+        if ((entry.first == "bodyDrives" || entry.first == "hydraulicCylinders"
+             || entry.first == "hydraulicMotors" || entry.first == "hydraulicNodes"
+             || entry.first == "hydraulicComponents")
             && (!m_model.nativeDocument || m_model.nativeDocument->collection(entry.first).isEmpty())) continue;
         auto* group = new QTreeWidgetItem(root, { entry.second });
         groupItems.emplace(entry.second, group);

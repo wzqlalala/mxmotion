@@ -76,7 +76,8 @@ enum class Command {
     ImportMotionJson, ExportMotionJson, AddNativeJoint, AddCoupling, AddSpring,
     AddVectorForce, AddScalarForce, AddScalarTorque, AddThreePointForce, AddThreePointTorque,
     AddContact, AddMarker, AddSensor, AddController, AddControlInput, AddAutoFlex,
-    AddSoftStop, AddTensionCable, AddHydraulicCylinder, EditHydraulicFluid,
+    AddSoftStop, AddTensionCable, AddHydraulicCylinder, AddHydraulicMotor,
+    EditHydraulicFluid, HydraulicCircuitCheck,
     ModelCheck, ConstraintDiagnostics,
     ResetLayout, ManageLayout, QuickShot, About, Exit
 };
@@ -95,7 +96,7 @@ public:
     bool startMotionJsonImport(const QString& path, std::function<void(bool)> finished = {});
     bool geometryImportInProgress() const { return m_importingGeometry; }
     void cancelGeometryImport();
-    void showModelDiagnostics(bool focusConstraints = false);
+    void showModelDiagnostics(bool focusConstraints = false, bool focusHydraulics = false);
     void editHydraulicFluid();
     void dispatchOriginalMotionAction(const QString& action, const QVariant& argument = {});
 

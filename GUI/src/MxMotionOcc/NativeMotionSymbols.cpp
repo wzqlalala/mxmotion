@@ -328,6 +328,23 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         crosshair(symbol,a,scale*0.18);crosshair(symbol,b,scale*0.18);
         append(std::move(symbol));
     }
+    for(const auto& value:document.collection("hydraulicMotors")){
+        const auto row=value.toObject();if(!visible(row))continue;
+        const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
+        if(joint.isEmpty())continue;
+        const auto [origin,axis]=jointFrame(joint,joint.value("actionBodyId").toInt(-1));
+        if(norm(axis)<0.5)continue;
+        auto symbol=make("hydraulicMotors",row,origin,hydraulicColor);
+        cylinder(symbol,origin,axis,scale*0.95);
+        ring(symbol,add(origin,mul(axis,scale*0.95)),axis,scale*0.72,0,pi*1.65);
+        const auto [u,v]=basis(axis);
+        const double endAng=pi*1.65;
+        const auto tip=add(add(origin,mul(axis,scale*0.95)),
+                           add(mul(u,scale*0.72*std::cos(endAng)),mul(v,scale*0.72*std::sin(endAng))));
+        const auto tang=add(mul(u,-std::sin(endAng)),mul(v,std::cos(endAng)));
+        arrow(symbol,sub(tip,mul(tang,scale*0.25)),tang,scale*0.35);
+        append(std::move(symbol));
+    }
     return output;
 }
 

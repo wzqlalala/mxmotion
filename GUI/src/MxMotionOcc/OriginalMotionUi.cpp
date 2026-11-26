@@ -264,6 +264,10 @@ void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVar
     if(action=="createMotionTensionCable" || action=="createTensionCable") { if(ensureNativeModel())editNativeEntity("tensionCables");return; }
     if(action=="createBodyDrive") { if(ensureNativeModel())editNativeEntity("bodyDrives",-1,argument.toString());return; }
     if(action=="createHydraulicCylinder") { if(ensureNativeModel())editNativeEntity("hydraulicCylinders");return; }
+    if(action=="createHydraulicMotor") { if(ensureNativeModel())editNativeEntity("hydraulicMotors");return; }
+    if(action=="createHydraulicNode") { if(ensureNativeModel())editNativeEntity("hydraulicNodes",-1,argument.toString());return; }
+    if(action=="createHydraulicComponent") { if(ensureNativeModel())editNativeEntity("hydraulicComponents",-1,argument.toString());return; }
+    if(action=="checkHydraulicCircuit") { showModelDiagnostics(false,true);return; }
     if(action=="editHydraulicFluid") { editHydraulicFluid();return; }
     if(dispatchOriginalWorkspaceAction(action,argument))return;
     QString title;

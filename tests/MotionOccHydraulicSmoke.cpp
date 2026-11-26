@@ -160,7 +160,7 @@ void testConstantFlowSpeedAndForceDirection()
     SliderFixture f(40.0);
     f.setScenarioField("gravity", xyz(0, 0, -9810.0)); // 40 kg * 9.81 = 392.4 N downward opposing load
     f.setScenarioField("hydraulicSteadyInit", true);
-    f.setScenarioField("endTime", 0.30);
+    f.setScenarioField("endTime", 0.35);
     f.setScenarioField("stepSize", 0.001);
 
     const double dp = 80.0, dr = 40.0;
@@ -345,6 +345,333 @@ void testGravitySteadyInitAndValveLift()
     require(flowA.back() > 1.0 && power.back() > 50.0, "Positive port A flow and positive lifting mechanical power expected");
 }
 
+// Stage 3 Case 1: Full Hydraulic Power Unit (Pump + ReliefValve + Accumulator + Filter + ServoValve) -> Cylinder
+void testMultiComponentHydraulicCircuitAndAccumulator()
+{
+    SliderFixture f(120.0);
+    f.setScenarioField("gravity", xyz(0, 0, -9810.0)); // 1177.2 N downward gravity load
+    f.setScenarioField("hydraulicSteadyInit", true);
+    f.setScenarioField("endTime", 0.35);
+    f.setScenarioField("stepSize", 0.001);
+
+    setCollection(f.document, "hydraulicNodes", {
+        QJsonObject{{"id", 1}, {"name", "主油箱"}, {"enabled", true}, {"nodeType", "Tank"}, {"pressureMPa", 0.1}},
+        QJsonObject{{"id", 2}, {"name", "泵出口母管"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 150.0}, {"initialPressureMPa", 18.0}},
+        QJsonObject{{"id", 3}, {"name", "阀前滤后腔"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 60.0}, {"initialPressureMPa", 18.0}},
+        QJsonObject{{"id", 4}, {"name", "无杆腔油口节点"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 40.0}, {"initialPressureMPa", 2.0}},
+        QJsonObject{{"id", 5}, {"name", "有杆腔油口节点"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 40.0}, {"initialPressureMPa", 0.5}}
+    });
+
+    setCollection(f.document, "hydraulicCylinders", {QJsonObject{
+        {"id", 1}, {"name", "伺服回路举升缸"}, {"enabled", true},
+        {"mountMode", "Points"},
+        {"bodyIId", 0}, {"bodyJId", -1},
+        {"localI", xyz(0, 0, 200)}, {"localJ", xyz(0, 0, 0)},
+        {"pistonDiameter", 80.0}, {"rodDiameter", 45.0},
+        {"stroke", 400.0}, {"initialStroke", 100.0},
+        {"deadVolumeA", 50000.0}, {"deadVolumeB", 50000.0},
+        {"viscousFriction", 2.0}, {"internalLeakage", 0.0},
+        {"supplyMode", "ExternalCircuit"},
+        {"portANodeId", -1}, {"portBNodeId", 5},
+        {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
+        {"commandExpression", "0"},
+        {"initialPressureA", 1.0}, {"initialPressureB", 0.5}
+    }});
+
+    setCollection(f.document, "hydraulicComponents", {
+        QJsonObject{
+            {"id", 1}, {"name", "定量液压泵"}, {"enabled", true}, {"componentType", "Pump"},
+            {"suctionNodeId", 1}, {"deliveryNodeId", 2},
+            {"displacementCcRev", 22.0}, {"speedExpression", "1500"},
+            {"volumetricEfficiency", 0.95}, {"mechanicalEfficiency", 0.90}, {"ratedPressureMPa", 21.0}
+        },
+        QJsonObject{
+            {"id", 2}, {"name", "安全溢流阀"}, {"enabled", true}, {"componentType", "ReliefValve"},
+            {"inletNodeId", 2}, {"outletNodeId", 1},
+            {"crackingPressureMPa", 20.0}, {"pressureOverrideMPa", 1.0}, {"ratedFlowLpm", 60.0}
+        },
+        QJsonObject{
+            {"id", 3}, {"name", "稳压蓄能器"}, {"enabled", true}, {"componentType", "Accumulator"},
+            {"targetNodeId", 2},
+            {"prechargePressureMPa", 12.0}, {"gasVolumeL", 0.6}, {"polytropicGamma", 1.3}
+        },
+        QJsonObject{
+            {"id", 4}, {"name", "高压过滤器"}, {"enabled", true}, {"componentType", "Filter"},
+            {"inletNodeId", 2}, {"outletNodeId", 3},
+            {"ratedFlowLpm", 80.0}, {"cleanPressureDropMPa", 0.15}, {"foulingFactor", 1.1}
+        },
+        QJsonObject{
+            {"id", 5}, {"name", "电液伺服阀"}, {"enabled", true}, {"componentType", "ServoValve"},
+            {"portPNodeId", 3}, {"portTNodeId", 1}, {"portANodeId", 4}, {"portBNodeId", 5},
+            {"ratedFlowLpm", 45.0}, {"ratedPressureDropMPa", 3.5},
+            {"centerMode", "ClosedCenter"}, {"responseTimeMs", 20.0}, {"underlap", 0.0},
+            {"commandExpression", "0"},
+            {"commandTableX", QJsonArray{0.0, 0.12, 0.125, 0.35}},
+            {"commandTableY", QJsonArray{0.0, 0.0, 0.75, 0.75}}
+        },
+        QJsonObject{
+            {"id", 6}, {"name", "A口端口连接"}, {"enabled", true}, {"componentType", "PortConnection"},
+            {"targetNodeId", 4}, {"actuatorType", "Cylinder"}, {"actuatorId", 1},
+            {"actuatorPort", "A"}, {"conductanceLpm", 240.0}
+        }
+    });
+
+    const auto diag = diagnoseNativeMotion(f.cad, f.document, 0);
+    require(diag.errorCount == 0 && diag.warningCount == 0,
+            QStringLiteral("Clean hydraulic circuit had unexpected issues: err=%1 warn=%2")
+                .arg(diag.errorCount).arg(diag.warningCount));
+    require(diag.hydraulicActuators == 1 && diag.hydraulicNodes == 5 && diag.hydraulicComponents == 6,
+            "Unexpected hydraulic circuit entity counts in diagnostics");
+
+    const auto res = f.solve();
+    const auto& pSupply = channel(res, "hydraulicNodes", 2, "Pressure").values;
+    const auto& reliefFlow = channel(res, "hydraulicComponents", 2, "Flow").values;
+    const auto& accOil = channel(res, "hydraulicComponents", 3, "OilVolume").values;
+    const auto& servoSpool = channel(res, "hydraulicComponents", 5, "SpoolPosition").values;
+    const auto& stroke = channel(res, "hydraulicCylinders", 1, "Stroke").values;
+
+    // During t in [0, 0.12s] (closed servo valve), the 31.35 L/min pump charges the 0.6 L accumulator
+    // past 20 MPa so ReliefValve regulates manifold pressure in 20..21 MPa and bypasses excess flow;
+    // once ServoValve opens wide (t > 0.125s), Accumulator discharges stored oil to supplement pump flow!
+    require(pSupply[120] > 20.0 && pSupply[120] < 21.2,
+            QStringLiteral("Pump/relief manifold pressure at t=0.12s out of regulated 20..21.2 MPa band: %1 MPa").arg(pSupply[120]));
+    double maxReliefFlow = *std::max_element(reliefFlow.begin(), reliefFlow.end());
+    require(maxReliefFlow > 10.0, QStringLiteral("Relief valve should bypass excess pump flow when servo valve is closed: %1 L/min").arg(maxReliefFlow));
+    require(accOil[120] > 0.19 && accOil.back() < accOil[120] && pSupply.back() > 12.0,
+            QStringLiteral("Accumulator charge/discharge peak-shaving unexpected: oil@0.12s=%1 L, oil@end=%2 L, P@end=%3 MPa")
+                .arg(accOil[120]).arg(accOil.back()).arg(pSupply.back()));
+
+    // First-order servo spool lag at t = 0.135 s (10 ms after command step to 0.75 with tau = 20 ms)
+    require(servoSpool[135] > 0.15 && servoSpool[135] < 0.65,
+            QStringLiteral("Servo valve 1st-order spool lag missing at t=0.135s: %1").arg(servoSpool[135]));
+    expectNear(servoSpool.back(), 0.75, 0.02, "Servo spool settles to 0.75 command");
+    require(stroke.back() > 115.0, QStringLiteral("Cylinder did not extend under circuit supply: %1 mm").arg(stroke.back()));
+}
+
+// Stage 3 Case 2: Rotary Hydraulic Motor + PressureReducingValve + Pipe + CheckValve driving rotary load
+void testRotaryHydraulicMotorAndReducingPipeBranch()
+{
+    CadDocument cad;
+    NativeMotionDocument doc;
+    QString error;
+    int part = 0;
+    require(cad.addPrimitive(Primitive::Cylinder, 50, 40, 40, part, error), error);
+    doc.root = {{"formatVersion", 1}, {"motionData", QJsonObject{}}};
+    doc.bodyPartBindings.insert(0, {part});
+    setCollection(doc, "bodies", {QJsonObject{
+        {"id", 0}, {"name", "rotor"}, {"geoEntityIds", QJsonArray{part}},
+        {"mass", 15.0}, {"isCustomMassProps", true},
+        {"centerOfMass", xyz(0, 0, 0)},
+        {"inertia", QJsonArray{2.0e5, 2.0e5, 4.0e5, 0, 0, 0}}, // Izz = 0.4 kg*m^2
+        {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
+    }});
+    setCollection(doc, "joints", {QJsonObject{
+        {"id", 0}, {"name", "main_shaft"}, {"jointType", "Revolute"},
+        {"actionBodyId", 0}, {"baseBodyId", -1},
+        {"origin", xyz(0, 0, 0)}, {"axis", xyz(0, 0, 1)}
+    }});
+    // Opposing load torque of -50 N*m = -50,000 N*mm
+    setCollection(doc, "vectorForces", {QJsonObject{
+        {"id", 1}, {"name", "load_torque"}, {"enabled", true},
+        {"loadType", "Torque"}, {"bodyId", 0},
+        {"actionPoint", xyz(0, 0, 0)}, {"direction", xyz(0, 0, 1)},
+        {"directionMode", "GlobalFixed"}, {"magnitudeMode", "Constant"},
+        {"magnitude", -50000.0}
+    }});
+    setCollection(doc, "scenarios", {QJsonObject{
+        {"id", 0}, {"name", "motor_case"},
+        {"endTime", 0.30}, {"stepSize", 0.001},
+        {"gravity", xyz(0, 0, 0)},
+        {"usePreset", true}, {"presetMode", "ROBUST"},
+        {"analysisType", "Dynamic"},
+        {"hydraulicSteadyInit", true}
+    }});
+    setHydraulicFluid(doc, {
+        {"bulkModulus", 1400.0}, {"density", 860.0},
+        {"kinematicViscosity", 46.0}, {"supplyPressure", 25.0}, {"tankPressure", 0.1}
+    });
+
+    setCollection(doc, "hydraulicNodes", {
+        QJsonObject{{"id", 1}, {"name", "高压恒压源"}, {"enabled", true}, {"nodeType", "PressureSource"}, {"pressureMPa", 25.0}, {"pressureExpression", "25"}},
+        QJsonObject{{"id", 2}, {"name", "回油箱"}, {"enabled", true}, {"nodeType", "Tank"}, {"pressureMPa", 0.1}},
+        QJsonObject{{"id", 3}, {"name", "减压后腔"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 80.0}, {"initialPressureMPa", 12.0}},
+        QJsonObject{{"id", 4}, {"name", "管路末端腔"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 60.0}, {"initialPressureMPa", 12.0}},
+        QJsonObject{{"id", 5}, {"name", "马达A腔连接点"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 30.0}, {"initialPressureMPa", 5.0}},
+        QJsonObject{{"id", 6}, {"name", "马达B腔连接点"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 30.0}, {"initialPressureMPa", 0.5}}
+    });
+
+    // Displacement = 62.831853 mL/r => d_m = 10,000 mm^3/rad; at 12 MPa drop, max torque ~ 0.95 * 10000 * 11.9 ~ 113,000 N*mm > 50,000 N*mm!
+    setCollection(doc, "hydraulicMotors", {QJsonObject{
+        {"id", 1}, {"name", "回转液压马达"}, {"enabled", true},
+        {"targetJointId", 0},
+        {"displacementCcRev", 62.83185307179586},
+        {"mechanicalEfficiency", 0.95},
+        {"chamberVolumeA", 40000.0}, {"chamberVolumeB", 40000.0},
+        {"viscousDamping", 50.0}, {"internalLeakage", 0.01},
+        {"supplyMode", "ExternalCircuit"},
+        {"portANodeId", 5}, {"portBNodeId", 6},
+        {"ratedFlowLpm", 50.0}, {"ratedPressureDrop", 3.5},
+        {"commandExpression", "0"},
+        {"initialPressureA", 1.0}, {"initialPressureB", 0.5}
+    }});
+
+    setCollection(doc, "hydraulicComponents", {
+        QJsonObject{
+            {"id", 1}, {"name", "定值减压阀"}, {"enabled", true}, {"componentType", "PressureReducingValve"},
+            {"inletNodeId", 1}, {"outletNodeId", 3},
+            {"regulatedPressureMPa", 12.0}, {"pressureBandMPa", 0.6},
+            {"ratedFlowLpm", 60.0}, {"ratedPressureDropMPa", 1.0}
+        },
+        QJsonObject{
+            {"id", 2}, {"name", "输油管路"}, {"enabled", true}, {"componentType", "Pipe"},
+            {"inletNodeId", 3}, {"outletNodeId", 4},
+            {"lengthMm", 1500.0}, {"diameterMm", 14.0}, {"localLossCoeff", 0.5}
+        },
+        QJsonObject{
+            {"id", 3}, {"name", "四通比例换向阀"}, {"enabled", true}, {"componentType", "DirectionalValve"},
+            {"portPNodeId", 4}, {"portTNodeId", 2}, {"portANodeId", 5}, {"portBNodeId", 6},
+            {"ratedFlowLpm", 50.0}, {"ratedPressureDropMPa", 3.0},
+            {"centerMode", "ClosedCenter"}, {"responseTimeMs", 0.0}, {"underlap", 0.0},
+            {"commandExpression", "0.85"}
+        }
+    });
+
+    require(validateNativeMotionDocument(doc, error), "motor doc invalid: " + error);
+    NativeMotionInput input;
+    require(prepareNativeMotion(cad, doc, 0, input, error), "motor prepare failed: " + error);
+    RigidResult res;
+    require(solveNativeMotion(input, res, error) == SolveStatus::Completed, "motor solve failed: " + error);
+
+    const auto& pReduced = channel(res, "hydraulicNodes", 3, "Pressure").values;
+    const auto& mTorque = channel(res, "hydraulicMotors", 1, "Torque").values;
+    const auto& mSpeed = channel(res, "hydraulicMotors", 1, "Speed").values;
+    const auto& mAngle = channel(res, "hydraulicMotors", 1, "Angle").values;
+
+    // Steady init balances 50,000 N*mm opposing load at t=0
+    expectNear(mTorque.front(), 50000.0, 50.0, "Motor t=0 steady-state load torque balance");
+    // Reducing valve keeps downstream below ~12.5 MPa despite 25 MPa upstream source
+    for (double p : pReduced) {
+        require(p < 13.0, QStringLiteral("Pressure reducing valve failed to cap pressure: %1 MPa").arg(p));
+    }
+    require(mSpeed.back() > 80.0 && mAngle.back() > 35.0,
+            QStringLiteral("Hydraulic motor did not accelerate rotor: speed=%1 rpm, angle=%2 deg")
+                .arg(mSpeed.back()).arg(mAngle.back()));
+}
+
+// Stage 3 Case 3: Circuit Check Diagnostics (unprotected pump, isolated node, unconnected external ports)
+void testHydraulicCircuitDiagnostics()
+{
+    SliderFixture f(20.0);
+    setCollection(f.document, "hydraulicNodes", {
+        QJsonObject{{"id", 1}, {"name", "油箱"}, {"enabled", true}, {"nodeType", "Tank"}, {"pressureMPa", 0.1}},
+        QJsonObject{{"id", 2}, {"name", "无溢流保护腔"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 100.0}, {"initialPressureMPa", 1.0}},
+        QJsonObject{{"id", 3}, {"name", "孤立腔"}, {"enabled", true}, {"nodeType", "Chamber"}, {"volumeMl", 50.0}, {"initialPressureMPa", 1.0}}
+    });
+    setCollection(f.document, "hydraulicComponents", {QJsonObject{
+        {"id", 1}, {"name", "裸泵"}, {"enabled", true}, {"componentType", "Pump"},
+        {"suctionNodeId", 1}, {"deliveryNodeId", 2},
+        {"displacementCcRev", 25.0}, {"speedExpression", "1500"},
+        {"volumetricEfficiency", 0.95}, {"mechanicalEfficiency", 0.90}, {"ratedPressureMPa", 21.0}
+    }});
+    setCollection(f.document, "hydraulicCylinders", {QJsonObject{
+        {"id", 1}, {"name", "悬空外接缸"}, {"enabled", true},
+        {"mountMode", "Joint"}, {"targetJointId", 0},
+        {"pistonDiameter", 60.0}, {"rodDiameter", 30.0}, {"stroke", 200.0}, {"initialStroke", 100.0},
+        {"supplyMode", "ExternalCircuit"}, {"portANodeId", -1}, {"portBNodeId", -1},
+        {"commandExpression", "0"}
+    }});
+
+    const auto report = diagnoseNativeMotion(f.cad, f.document, 0);
+    require(report.errorCount >= 1, "Unconnected ExternalCircuit cylinder must report an Error");
+    require(report.warningCount >= 2, "Unprotected pump and isolated node must report Warnings");
+}
+
+// Track A: Newly wired MotionEngine capabilities (3D Helical Gear axial thrust, Nonlinear Spring Table, Viscous Joint Friction)
+void testNewlyWiredEngineCapabilities()
+{
+    // 1. 3D Helical Gear (helixAngleDeg = 25 deg, pressureAngleDeg = 20 deg) generates real axial Z reaction thrust
+    auto runGear = [](double helixDeg) {
+        CadDocument cad;
+        NativeMotionDocument doc;
+        QString error;
+        int p1 = 0, p2 = 0;
+        require(cad.addPrimitive(Primitive::Cylinder, 50, 20, 20, p1, error), error);
+        require(cad.addPrimitive(Primitive::Cylinder, 50, 20, 20, p2, error), error);
+        doc.root = {{"formatVersion", 1}, {"motionData", QJsonObject{}}};
+        doc.bodyPartBindings.insert(1, {p1});
+        doc.bodyPartBindings.insert(2, {p2});
+        setCollection(doc, "bodies", {
+            QJsonObject{{"id", 1}, {"name", "gear1"}, {"geoEntityIds", QJsonArray{p1}},
+                        {"mass", 5.0}, {"isCustomMassProps", true}, {"centerOfMass", xyz(0, 0, 0)},
+                        {"inertia", QJsonArray{5000.0, 5000.0, 8000.0, 0, 0, 0}},
+                        {"initialVelocity", xyz(0,0,0)}, {"initialAngularVelocity", xyz(0,0,0)}},
+            QJsonObject{{"id", 2}, {"name", "gear2"}, {"geoEntityIds", QJsonArray{p2}},
+                        {"mass", 5.0}, {"isCustomMassProps", true}, {"centerOfMass", xyz(100, 0, 0)},
+                        {"inertia", QJsonArray{5000.0, 5000.0, 8000.0, 0, 0, 0}},
+                        {"initialVelocity", xyz(0,0,0)}, {"initialAngularVelocity", xyz(0,0,0)}}
+        });
+        setCollection(doc, "joints", {
+            QJsonObject{{"id", 1}, {"name", "rev1"}, {"jointType", "Revolute"}, {"actionBodyId", 1}, {"baseBodyId", -1},
+                        {"origin", xyz(0, 0, 0)}, {"axis", xyz(0, 0, 1)},
+                        {"friction", QJsonObject{{"enabled", true}, {"staticCoefficient", 0.0}, {"kineticCoefficient", 0.0}, {"viscousCoefficient", 200.0}, {"effectiveRadius", 10.0}}}},
+            QJsonObject{{"id", 2}, {"name", "rev2"}, {"jointType", "Revolute"}, {"actionBodyId", 2}, {"baseBodyId", -1},
+                        {"origin", xyz(100, 0, 0)}, {"axis", xyz(0, 0, 1)}}
+        });
+        setCollection(doc, "couplings", {QJsonObject{
+            {"id", 1}, {"name", "helical_gear"}, {"couplingType", "Gear"},
+            {"firstJointId", 1}, {"secondJointId", 2},
+            {"gearRatio", 1.0}, {"pitchRadius1", 50.0}, {"pitchRadius2", 50.0}, {"toothCount1", 25}, {"toothCount2", 25},
+            {"pressureAngleDeg", 20.0}, {"helixAngleDeg", helixDeg}, {"phaseDeg", 0.0}, {"checkPhase", true}
+        }});
+        setCollection(doc, "drives", {QJsonObject{
+            {"id", 1}, {"name", "speed_drive"}, {"driveType", "JointDrive"}, {"targetType", "Joint"},
+            {"targetJointId", 1}, {"motionType", "Rotation"}, {"controlMode", "Velocity"}, {"expression", "180"}
+        }});
+        setCollection(doc, "vectorForces", {QJsonObject{
+            {"id", 1}, {"name", "load_trq"}, {"enabled", true}, {"loadType", "Torque"}, {"bodyId", 2},
+            {"actionPoint", xyz(100, 0, 0)}, {"direction", xyz(0, 0, 1)}, {"directionMode", "GlobalFixed"},
+            {"magnitudeMode", "Constant"}, {"magnitude", -20000.0}
+        }});
+        setCollection(doc, "scenarios", {QJsonObject{
+            {"id", 0}, {"name", "gear_case"}, {"endTime", 0.05}, {"stepSize", 0.001},
+            {"gravity", xyz(0, 0, 0)}, {"usePreset", true}, {"presetMode", "ROBUST"}, {"analysisType", "Dynamic"}
+        }});
+        require(validateNativeMotionDocument(doc, error), "gear doc invalid: " + error);
+        NativeMotionInput input;
+        require(prepareNativeMotion(cad, doc, 0, input, error), "gear prepare failed: " + error);
+        RigidResult res;
+        require(solveNativeMotion(input, res, error) == SolveStatus::Completed, "gear solve failed: " + error);
+        // ReactionForce on rev2: 3 components [Fx, Fy, Fz] at final frame
+        const auto& rf = channel(res, "joints", 2, "ReactionForce").values;
+        return std::abs(rf.back()); // Fz component of last frame
+    };
+
+    const double spurFz = runGear(0.0);
+    const double helicalFz = runGear(25.0);
+    expectNear(spurFz, 0.0, 1e-4, "Spur gear (beta=0) should produce zero axial thrust");
+    require(helicalFz > 50.0, QStringLiteral("Helical gear (beta=25 deg) must generate significant axial Z thrust: Fz=%1 N").arg(helicalFz));
+
+    // 2. Nonlinear Spring Lookup Table (tableX, tableY)
+    SliderFixture sf(10.0);
+    sf.setScenarioField("analysisType", "Static");
+    sf.setScenarioField("gravity", xyz(0, 0, -9810.0)); // 98.1 N downward weight
+    setCollection(sf.document, "springs", {QJsonObject{
+        {"id", 1}, {"name", "nonlinear_table_spring"}, {"enabled", true},
+        {"springType", "BodyPoint"},
+        {"bodyIId", 0}, {"bodyJId", -1},
+        {"localI", xyz(0, 0, 200)}, {"localJ", xyz(0, 0, 0)},
+        {"stiffness", 0.0}, {"damping", 1.0}, {"dampingEnabled", true},
+        {"freeValue", 200.0}, {"installValue", 200.0}, {"preload", 0.0},
+        {"springDirectionMode", "Bidirectional"}, {"dampingDirectionMode", "Bidirectional"},
+        {"tableX", QJsonArray{-50.0, -10.0, 0.0, 50.0}},
+        {"tableY", QJsonArray{981.0, 98.1, 0.0, -981.0}}
+    }});
+    const auto sRes = sf.solve();
+    const auto& zPos = channel(sRes, "bodies", 0, "Position").values;
+    // At compression x = -10 mm (length 190 mm), tableY = +98.1 N restoring upward force balancing 98.1 N weight!
+    expectNear(zPos.back(), 190.0, 0.05, "Nonlinear spring lookup table static equilibrium position");
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -356,7 +683,11 @@ int main(int argc, char* argv[])
         testClosedChamberFreeOscillationEnergy();
         testPrescribedMotionLoadResponse();
         testGravitySteadyInitAndValveLift();
-        qInfo().noquote() << "PASS MotionOccHydraulicSmoke (Stage 1 diagnostics + Stage 2 4-case hydromechanical coupling)";
+        testMultiComponentHydraulicCircuitAndAccumulator();
+        testRotaryHydraulicMotorAndReducingPipeBranch();
+        testHydraulicCircuitDiagnostics();
+        testNewlyWiredEngineCapabilities();
+        qInfo().noquote() << "PASS MotionOccHydraulicSmoke (Stage 1-3 hydraulics + newly wired MotionEngine capabilities)";
         return 0;
     } catch (const std::exception& e) {
         qCritical().noquote() << "FAIL MotionOccHydraulicSmoke:" << e.what();

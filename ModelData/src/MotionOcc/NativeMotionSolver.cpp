@@ -339,7 +339,8 @@ bool isRigidPositionDriven(const NativeMotionInput& input, const NativeMotionSys
         return false;
     for (const auto* category : {"autoFlexBodies", "springs", "contacts", "controllers", "couplings",
                                  "scalarForces", "scalarTorques", "threePointForces", "threePointTorques",
-                                 "vectorForces", "tensionCables", "softStops", "hydraulicCylinders"})
+                                 "vectorForces", "tensionCables", "softStops", "hydraulicCylinders",
+                                 "hydraulicMotors", "hydraulicNodes", "hydraulicComponents"})
         if (!input.document.collection(QLatin1String(category)).isEmpty()) return false;
     return std::all_of(system.motions_map.begin(), system.motions_map.end(), [](const auto& drive) {
         return drive.second.is_position;
@@ -636,10 +637,15 @@ private:
                 fail(QStringLiteral("耦合副 %1 不能引用 MNF 柔性体的转动副。").arg(id));
             const auto type=o.value("couplingType").toString();std::shared_ptr<motion::adams_joint_struct> coupling;
             if(type=="GearRack"){
-                auto p=std::make_shared<motion::adams_rackpin_joint_struct>();p->R=o.value("radius").toDouble();p->has_R=true;p->type="RACKPIN";coupling=p;
+                auto p=std::make_shared<motion::adams_rackpin_joint_struct>();p->R=o.value("radius").toDouble();p->has_R=true;
+                p->alpha=o.value("pressureAngleDeg").toDouble(0.0)*d2r;p->beta=o.value("helixAngleDeg").toDouble(0.0)*d2r;
+                p->phase=o.value("phaseDeg").toDouble(0.0)*d2r;p->checkphase=o.value("checkPhase").toBool(false);
+                p->type="RACKPIN";coupling=p;
             }else if(type=="Gear"){
                 auto p=std::make_shared<motion::adams_gear_joint_struct>();const double ratio=o.value("gearRatio").toDouble(1);
                 p->tau=std::abs(ratio);p->has_tau=true;p->epicyclic=ratio<0;
+                p->alpha=o.value("pressureAngleDeg").toDouble(0.0)*d2r;p->beta=o.value("helixAngleDeg").toDouble(0.0)*d2r;
+                p->phase=o.value("phaseDeg").toDouble(0.0)*d2r;p->checkphase=o.value("checkPhase").toBool(false);
                 p->z1=o.value("toothCount1").toDouble();p->z2=o.value("toothCount2").toDouble();p->r1=o.value("pitchRadius1").toDouble();p->r2=o.value("pitchRadius2").toDouble();
                 p->has_z1=p->z1>0;p->has_z2=p->z2>0;p->has_r1=p->r1>0;p->has_r2=p->r2>0;p->type="GEAR";coupling=p;
             }else if(type=="Cable"){
@@ -820,7 +826,7 @@ private:
 void recordNestedBodies(NativeMotionSystem& system)
 {
     recordNativeEffortMotors(system);
-    recordNativeHydraulicCylinders(system);
+    recordNativeHydraulics(system);
     // Modal assemblies take ownership of their interface bodies. The engine's
     // standard recorder visits top-level bodies only, so record these same real
     // body/marker states here without duplicating top-level samples.
@@ -878,7 +884,7 @@ void assembleInitialState(NativeMotionSystem& system)
     motion::MotionStateDelta compatible;
     double time=0;
     system.projectConstraintVelocity(position,compatible,time);
-    if (!system.hydraulicCylinders.empty()) {
+    if (system.hasNativeHydraulics()) {
         motion::MotionStateDelta acc(system.GetNcoords_v(), &system);
         motion::MotionVectorDynamic<> reactions(system.GetNconstr());
         acc.setZero(system.GetNcoords_v(), &system);
@@ -943,6 +949,8 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
 #endif
         createNativeEffortMotors(system,input);
         createNativeHydraulicCylinders(system,input);
+        createNativeHydraulicMotors(system,input);
+        createNativeHydraulicCircuit(system,input);
         for(const auto& joint:system.joints_map){
             bool created=false;for(const auto& link:system.Get_linklist())if(!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)&&link->GetNameString()==joint.first){created=true;system.nativeJoints.emplace(joint.first,link);break;}
             if(!created)fail(QStringLiteral("引擎没有创建运动副 %1 (%2)，已中止，避免约束被静默丢弃。").arg(QString::fromStdString(joint.first),QString::fromStdString(joint.second->type)));
@@ -980,7 +988,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
                 scenario.value("independentPositionProjection").toString()==QStringLiteral("MASS_STIFFNESS");
             config.solver.type=independent?motion::MotionSolver::Type::SPARSE_QR:motion::MotionSolver::Type::MINRES;
             config.solver.max_iters=std::max(500,config.solver.max_iters);system.SetPositionAssemblyPerStep(true);
-        } else if (!system.hydraulicCylinders.empty()) {
+        } else if (system.hasNativeHydraulics()) {
             if (config.use_preset) {
                 config.use_preset = false;
                 config.integrator.type = motion::MotionTimestepper::Type::HHT;

@@ -26,6 +26,9 @@ inline QIcon item(const QString& type)
         {"drives", "BrowserTree/motion_driveParentItem.png"},
         {"bodyDrives", "BrowserTree/motion_driveParentItem.png"},
         {"hydraulicCylinders", "Motion/mech_hydraulic.png"},
+        {"hydraulicMotors", "Motion/mech_hydraulic.png"},
+        {"hydraulicNodes", "Motion/mech_hydraulic.png"},
+        {"hydraulicComponents", "Motion/mech_hydraulic.png"},
         {"springs", "Motion/force_spring.png"},
         {"forceElements", "BrowserTree/motion_liYuanParentItem.png"},
         {"sensors", "Motion/sensor.png"},
@@ -127,7 +130,9 @@ inline QIcon entity(const QString& collection, const QJsonObject& row)
     // New engine force elements reuse the existing cable and unilateral-force artwork.
     if (collection == "tensionCables") return resource("Motion/coupling_cable.png");
     if (collection == "softStops") return resource("Motion/force_uni.png");
-    if (collection == "hydraulicCylinders") return resource("Motion/mech_hydraulic.png");
+    if (collection == "hydraulicCylinders" || collection == "hydraulicMotors"
+        || collection == "hydraulicNodes" || collection == "hydraulicComponents")
+        return resource("Motion/mech_hydraulic.png");
     return item(collection);
 }
 

@@ -5,6 +5,7 @@
 #include "compat/model/LegacyMotionContext.h"
 
 #include <QBoxLayout>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -218,6 +219,29 @@ void MotionWindow::configureImportedMnf(const QString& path, const RigidFlexResu
         QStringLiteral("mnfReferenceEuler"),
         previous.value("referenceEuler321Deg").toArray(), 360, 5);
     for (auto* field : euler) field->setToolTip(tr("绕 X、Y、Z 的角度，按 Rz · Ry · Rx 组合。"));
+    auto* quadInvar = new QCheckBox(tr("启用二阶速度惯性耦合 (INVAR5/9)"), &dialog);
+    quadInvar->setObjectName(QStringLiteral("mnfQuadraticInvariants"));
+    quadInvar->setChecked(previous.value("quadraticInvariants").toBool(false));
+    form->addRow(tr("惯性耦合"), quadInvar);
+
+    auto* dampRow = new QWidget(&dialog);
+    auto* dampLayout = new QHBoxLayout(dampRow);
+    dampLayout->setContentsMargins(0, 0, 0, 0);
+    auto* customDamp = new QCheckBox(tr("指定常数阻尼比"), dampRow);
+    customDamp->setObjectName(QStringLiteral("mnfUseCustomDamping"));
+    const bool hasCustomDamp = previous.value("useCustomModalDamping").toBool(previous.contains("modalDampingRatio"));
+    customDamp->setChecked(hasCustomDamp);
+    auto* dampSpin = new QDoubleSpinBox(dampRow);
+    dampSpin->setObjectName(QStringLiteral("mnfModalDampingRatio"));
+    dampSpin->setDecimals(5);
+    dampSpin->setRange(0.0, 10.0);
+    dampSpin->setSingleStep(0.005);
+    dampSpin->setValue(previous.value("modalDampingRatio").toDouble(0.02));
+    dampSpin->setEnabled(hasCustomDamp);
+    connect(customDamp, &QCheckBox::toggled, dampSpin, &QWidget::setEnabled);
+    dampLayout->addWidget(customDamp);
+    dampLayout->addWidget(dampSpin, 1);
+    form->addRow(tr("模态阻尼"), dampRow);
 
     auto* joints = new QTableWidget(0, 3, &dialog);
     joints->setObjectName(QStringLiteral("mnfJointBindings"));
@@ -446,6 +470,10 @@ void MotionWindow::configureImportedMnf(const QString& path, const RigidFlexResu
         definition["jointBindings"] = mapping;
         definition["referenceTranslationMm"] = pointJson(referenceValues(origin));
         definition["referenceEuler321Deg"] = pointJson(referenceValues(euler));
+        definition["quadraticInvariants"] = quadInvar->isChecked();
+        definition["useCustomModalDamping"] = customDamp->isChecked();
+        if (customDamp->isChecked()) definition["modalDampingRatio"] = dampSpin->value();
+        else definition.remove("modalDampingRatio");
         bool replaced = false;
         for (int i = 0; i < imports.size(); ++i) {
             if (imports.at(i).toObject().value("id").toInt(-1) != newId) continue;

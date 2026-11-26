@@ -268,10 +268,7 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
                 QStringLiteral("Planned command has a live action: %1").arg(button->text()));
         }
         const QStringList expectedMultiphysics{
-            "液压马达", "液压泵", "油箱", "压力源", "流量源",
-            "换向阀", "伺服阀", "溢流阀", "减压阀", "单向阀", "节流阀", "顺序阀",
-            "管路", "蓄能器", "过滤器", "液压容腔", "电机", "电源", "逆变器",
-            "EHA", "EMA", "端口连接", "回路图", "回路检查"
+            "电机", "电源", "逆变器", "EHA", "EMA", "回路图"
         };
         const struct {
             QString tab;
@@ -315,16 +312,28 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
                     QStringLiteral("Planned ribbon command missing or duplicated in %1: %2").arg(preview.tab, command));
             if (preview.tab == QStringLiteral("机电液")) {
                 require(plannedCommands.size() == expectedMultiphysics.size(), QStringLiteral("Unexpected multiphysics ribbon command"));
-                bool hasCylinderBtn = false, hasFluidBtn = false;
+                bool hasCylinderBtn = false, hasMotorBtn = false, hasPumpBtn = false,
+                     hasValveBtn = false, hasCheckBtn = false, hasFluidBtn = false;
                 for (auto* button : ribbonButtons) {
                     if (!button->isVisible() || button->property("mxPlannedFeature").toBool()) continue;
                     if (button->text() == QStringLiteral("液压缸")) hasCylinderBtn = true;
+                    if (button->text() == QStringLiteral("液压马达")) hasMotorBtn = true;
+                    if (button->text() == QStringLiteral("液压泵")) {
+                        hasPumpBtn = true;
+                        require(button->isEnabled(), QStringLiteral("Hydraulic pump button should be enabled"));
+                    }
+                    if (button->text() == QStringLiteral("换向阀")) hasValveBtn = true;
+                    if (button->text() == QStringLiteral("回路检查")) {
+                        hasCheckBtn = true;
+                        require(button->isEnabled(), QStringLiteral("Hydraulic circuit check button should be enabled"));
+                    }
                     if (button->text() == QStringLiteral("油液设置")) {
                         hasFluidBtn = true;
                         require(button->isEnabled(), QStringLiteral("Hydraulic fluid settings button should be enabled"));
                     }
                 }
-                require(hasCylinderBtn && hasFluidBtn, QStringLiteral("Active hydraulic ribbon commands missing"));
+                require(hasCylinderBtn && hasMotorBtn && hasPumpBtn && hasValveBtn && hasCheckBtn && hasFluidBtn,
+                        QStringLiteral("Active hydraulic ribbon commands missing"));
             }
             require(ribbon->grab().save(output.filePath(preview.image)),
                 QStringLiteral("Could not capture ribbon tab: %1").arg(preview.tab));

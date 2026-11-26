@@ -73,7 +73,9 @@ QString label(const QString& key)
         {"frameAngles", "初始坐标系内禀 XYZ 角 (°)"}, {"guide", "约束其余五个自由度"},
         {"springs", "弹簧"}, {"vectorForces", "力 / 力矩 / 衬套"}, {"scalarForces", "标量力"},
         {"scalarTorques", "标量力矩"}, {"threePointForces", "三点力"}, {"threePointTorques", "三点力矩"},
-        {"tensionCables", "只拉绳索"}, {"softStops", "止挡"}, {"hydraulicCylinders", "液压缸"},
+        {"tensionCables", "只拉绳索"}, {"softStops", "止挡"},
+        {"hydraulicCylinders", "液压缸"}, {"hydraulicMotors", "液压马达"},
+        {"hydraulicNodes", "液压节点"}, {"hydraulicComponents", "液压元件"},
         {"contacts", "接触"}, {"markers", "标记点"},
         {"sensors", "传感器"}, {"controllers", "控制器"}, {"controlInputs", "控制输入"},
         {"autoFlexBodies", "自动柔性体"}, {"importedMnfBodies", "导入柔性体"}, {"scenarios", "求解方案"},
@@ -163,7 +165,27 @@ QString label(const QString& key)
         {"viscousFriction", "黏性摩擦 (N·s/mm)"}, {"internalLeakage", "内泄漏系数 (L/min/MPa)"},
         {"supplyMode", "供油控制模式"}, {"ratedFlowLpm", "阀额定流量 (L/min)"},
         {"ratedPressureDrop", "阀额定压降 (MPa)"}, {"commandExpression", "控制指令函数"},
-        {"initialPressureA", "A腔初始压力 (MPa)"}, {"initialPressureB", "B腔初始压力 (MPa)"}
+        {"initialPressureA", "A腔初始压力 (MPa)"}, {"initialPressureB", "B腔初始压力 (MPa)"},
+        {"displacementCcRev", "排量 (mL/r)"}, {"mechanicalEfficiency", "机械效率"},
+        {"volumetricEfficiency", "容积效率"}, {"chamberVolumeA", "A口容腔 (mm³)"},
+        {"chamberVolumeB", "B口容腔 (mm³)"}, {"viscousDamping", "黏性阻尼 (N·mm·s/rad)"},
+        {"portANodeId", "A口节点"}, {"portBNodeId", "B口节点"},
+        {"nodeType", "节点类型"}, {"componentType", "元件类型"},
+        {"pressureMPa", "节点压力 (MPa)"}, {"volumeMl", "容腔体积 (mL)"},
+        {"initialPressureMPa", "初始压力 (MPa)"}, {"pressureExpression", "压力时间函数"},
+        {"suctionNodeId", "吸油口节点"}, {"deliveryNodeId", "压油口节点"},
+        {"inletNodeId", "入口节点"}, {"outletNodeId", "出口节点"},
+        {"portPNodeId", "供油口 P"}, {"portTNodeId", "回油口 T"}, {"targetNodeId", "目标节点"},
+        {"ratedPressureMPa", "额定压力 (MPa)"}, {"ratedPressureDropMPa", "额定压差 (MPa)"},
+        {"crackingPressureMPa", "开启压力 (MPa)"}, {"pressureOverrideMPa", "全开超调压差 (MPa)"},
+        {"regulatedPressureMPa", "设定出口压力 (MPa)"}, {"sequencePressureMPa", "顺序开启压力 (MPa)"},
+        {"pressureBandMPa", "压力调节带宽 (MPa)"}, {"centerMode", "中位机能"},
+        {"responseTimeMs", "阀芯响应时间 (ms)"}, {"underlap", "阀芯负遮盖比"},
+        {"lengthMm", "管路长度 (mm)"}, {"diameterMm", "管路内径 (mm)"}, {"localLossCoeff", "局部阻力系数"},
+        {"cleanPressureDropMPa", "清洁压降 (MPa)"}, {"foulingFactor", "堵塞系数"},
+        {"prechargePressureMPa", "预充气压力 (MPa)"}, {"gasVolumeL", "总气容积 (L)"},
+        {"polytropicGamma", "气体多变指数"}, {"actuatorType", "执行器类型"},
+        {"actuatorId", "目标执行器"}, {"actuatorPort", "连接油口"}, {"conductanceLpm", "油口流通能力 (L/min)"}
     };
     return names.value(key, key);
 }
@@ -196,7 +218,16 @@ QString enumLabel(const QString& value)
         {"auto", "按原文档与几何核对"}, {"tensor", "惯量矩阵项"}, {"products", "正号惯量积"},
         {"Linear", "一次多项式"}, {"Quadratic", "二次多项式"}, {"Cubic", "三次多项式"}, {"CustomCurve", "自定义曲线"},
         {"Points", "两点连接"}, {"Joint", "关联移动副"},
-        {"DirectionalValve", "四通比例换向阀"}, {"FlowCommand", "指定流量输入"}, {"ClosedPort", "封闭容腔 (液气弹簧)"}};
+        {"DirectionalValve", "四通比例换向阀"}, {"FlowCommand", "指定流量输入"},
+        {"ClosedPort", "封闭容腔 (液气弹簧)"}, {"ExternalCircuit", "外部液压回路"},
+        {"Tank", "油箱"}, {"PressureSource", "压力源"}, {"Chamber", "液压容腔"},
+        {"Pump", "液压泵"}, {"FlowSource", "流量源"}, {"ServoValve", "电液伺服阀"},
+        {"ReliefValve", "溢流阀"}, {"PressureReducingValve", "减压阀"}, {"SequenceValve", "顺序阀"},
+        {"CheckValve", "单向阀"}, {"ThrottleValve", "节流阀"}, {"Pipe", "管路"},
+        {"Filter", "过滤器"}, {"Accumulator", "蓄能器"}, {"PortConnection", "端口连接"},
+        {"ClosedCenter", "O型封闭中位"}, {"TandemUnload", "M/H型中位卸荷 (P→T)"},
+        {"FloatAB", "Y型中位浮动 (A,B→T)"}, {"Cylinder", "液压缸"}, {"Motor", "液压马达"},
+        {"A", "A 口"}, {"B", "B 口"}};
     return names.value(value, value);
 }
 
@@ -454,9 +485,112 @@ QJsonObject templateRecord(const NativeMotionDocument& doc, const QString& colle
             {"deadVolumeA", 50000.0}, {"deadVolumeB", 50000.0},
             {"viscousFriction", 1.0}, {"internalLeakage", 0.0},
             {"supplyMode", "DirectionalValve"},
+            {"portANodeId", -1}, {"portBNodeId", -1},
             {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
             {"commandExpression", "0"}, {"commandTableX", QJsonArray{}}, {"commandTableY", QJsonArray{}},
             {"initialPressureA", 1.0}, {"initialPressureB", 1.0}});
+    } else if (collection == "hydraulicMotors") {
+        int rotaryJoint = joint;
+        for (const auto& item : doc.collection("joints")) {
+            const auto candidate = item.toObject();
+            const auto jt = candidate.value("jointType").toString();
+            if (jt == "Revolute" || jt == "Cylindrical") { rotaryJoint = candidate.value("id").toInt(-1); break; }
+        }
+        merge({{"enabled", true},
+            {"targetJointId", rotaryJoint},
+            {"displacementCcRev", 50.0}, {"mechanicalEfficiency", 0.95},
+            {"chamberVolumeA", 50000.0}, {"chamberVolumeB", 50000.0},
+            {"viscousDamping", 100.0}, {"internalLeakage", 0.0},
+            {"supplyMode", "DirectionalValve"},
+            {"portANodeId", -1}, {"portBNodeId", -1},
+            {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
+            {"commandExpression", "0"}, {"commandTableX", QJsonArray{}}, {"commandTableY", QJsonArray{}},
+            {"initialPressureA", 1.0}, {"initialPressureB", 1.0}});
+    } else if (collection == "hydraulicNodes") {
+        const QString ntype = type.isEmpty() ? QStringLiteral("Chamber") : type;
+        const auto fluid = doc.root.value("motionData").toObject().value("hydraulicFluid").toObject();
+        row.insert("name", enumLabel(ntype) + QStringLiteral("-%1").arg(key));
+        merge({{"enabled", true}, {"nodeType", ntype}});
+        if (ntype == "Tank") {
+            row.insert("pressureMPa", fluid.value("tankPressure").toDouble(0.1));
+        } else if (ntype == "PressureSource") {
+            const double ps = fluid.value("supplyPressure").toDouble(21.0);
+            merge({{"pressureMPa", ps}, {"pressureExpression", QString::number(ps, 'g', 12)},
+                   {"pressureTableX", QJsonArray{}}, {"pressureTableY", QJsonArray{}}});
+        } else {
+            merge({{"volumeMl", 100.0}, {"initialPressureMPa", 1.0}});
+        }
+    } else if (collection == "hydraulicComponents") {
+        const QString ctype = type.isEmpty() ? QStringLiteral("ReliefValve") : type;
+        row.insert("name", enumLabel(ctype) + QStringLiteral("-%1").arg(key));
+        int tankNode = -1, supplyNode = -1, firstNode = firstId(doc, "hydraulicNodes", -1);
+        for (const auto& item : doc.collection("hydraulicNodes")) {
+            const auto n = item.toObject();
+            const QString nt = n.value("nodeType").toString();
+            if (nt == "Tank" && tankNode < 0) tankNode = n.value("id").toInt(-1);
+            if ((nt == "PressureSource" || nt == "Chamber") && supplyNode < 0) supplyNode = n.value("id").toInt(-1);
+        }
+        merge({{"enabled", true}, {"componentType", ctype},
+               {"commandTableX", QJsonArray{}}, {"commandTableY", QJsonArray{}}});
+        if (ctype == "Pump") {
+            merge({{"suctionNodeId", tankNode >= 0 ? tankNode : firstNode},
+                   {"deliveryNodeId", supplyNode >= 0 ? supplyNode : -1},
+                   {"displacementCcRev", 25.0}, {"speedExpression", "1500"},
+                   {"volumetricEfficiency", 0.95}, {"mechanicalEfficiency", 0.90},
+                   {"ratedPressureMPa", 21.0}});
+        } else if (ctype == "FlowSource") {
+            merge({{"inletNodeId", tankNode >= 0 ? tankNode : firstNode},
+                   {"outletNodeId", supplyNode >= 0 ? supplyNode : -1},
+                   {"flowExpression", "20"}});
+        } else if (ctype == "DirectionalValve" || ctype == "ServoValve") {
+            merge({{"portPNodeId", supplyNode >= 0 ? supplyNode : firstNode},
+                   {"portTNodeId", tankNode >= 0 ? tankNode : -1},
+                   {"portANodeId", -1}, {"portBNodeId", -1},
+                   {"ratedFlowLpm", 40.0}, {"ratedPressureDropMPa", 3.5},
+                   {"centerMode", "ClosedCenter"},
+                   {"responseTimeMs", ctype == "ServoValve" ? 15.0 : 0.0},
+                   {"underlap", 0.0}, {"commandExpression", "0"}});
+        } else if (ctype == "ReliefValve") {
+            merge({{"inletNodeId", supplyNode >= 0 ? supplyNode : firstNode},
+                   {"outletNodeId", tankNode >= 0 ? tankNode : -1},
+                   {"crackingPressureMPa", 21.0}, {"pressureOverrideMPa", 1.0},
+                   {"ratedFlowLpm", 60.0}});
+        } else if (ctype == "PressureReducingValve") {
+            merge({{"inletNodeId", supplyNode >= 0 ? supplyNode : firstNode},
+                   {"outletNodeId", -1}, {"regulatedPressureMPa", 10.0},
+                   {"pressureBandMPa", 0.5}, {"ratedFlowLpm", 50.0},
+                   {"ratedPressureDropMPa", 1.0}});
+        } else if (ctype == "SequenceValve") {
+            merge({{"inletNodeId", supplyNode >= 0 ? supplyNode : firstNode},
+                   {"outletNodeId", -1}, {"sequencePressureMPa", 15.0},
+                   {"pressureBandMPa", 0.5}, {"ratedFlowLpm", 50.0},
+                   {"ratedPressureDropMPa", 1.0}});
+        } else if (ctype == "CheckValve") {
+            merge({{"inletNodeId", firstNode}, {"outletNodeId", -1},
+                   {"crackingPressureMPa", 0.05}, {"ratedFlowLpm", 60.0},
+                   {"ratedPressureDropMPa", 0.5}});
+        } else if (ctype == "ThrottleValve") {
+            merge({{"inletNodeId", firstNode}, {"outletNodeId", -1},
+                   {"ratedFlowLpm", 40.0}, {"ratedPressureDropMPa", 1.0},
+                   {"commandExpression", "1"}});
+        } else if (ctype == "Pipe") {
+            merge({{"inletNodeId", firstNode}, {"outletNodeId", -1},
+                   {"lengthMm", 1000.0}, {"diameterMm", 12.0}, {"localLossCoeff", 0.5}});
+        } else if (ctype == "Filter") {
+            merge({{"inletNodeId", firstNode}, {"outletNodeId", -1},
+                   {"ratedFlowLpm", 80.0}, {"cleanPressureDropMPa", 0.15}, {"foulingFactor", 1.0}});
+        } else if (ctype == "Accumulator") {
+            merge({{"targetNodeId", supplyNode >= 0 ? supplyNode : firstNode},
+                   {"prechargePressureMPa", 10.0}, {"gasVolumeL", 1.0}, {"polytropicGamma", 1.3}});
+        } else if (ctype == "PortConnection") {
+            const int firstCyl = firstId(doc, "hydraulicCylinders", -1);
+            const int firstMot = firstId(doc, "hydraulicMotors", -1);
+            const bool useMotor = firstCyl < 0 && firstMot >= 0;
+            merge({{"targetNodeId", firstNode},
+                   {"actuatorType", useMotor ? "Motor" : "Cylinder"},
+                   {"actuatorId", useMotor ? firstMot : firstCyl},
+                   {"actuatorPort", "A"}, {"conductanceLpm", 200.0}});
+        }
     } else if (collection == "springs") {
         merge(pair); merge({{"springType", type.isEmpty() ? "BodyPoint" : type}, {"jointId", joint},
             {"localRotI", quat()}, {"localRotJ", quat()}, {"stiffness", 10.0}, {"damping", 0.1}, {"dampingEnabled", true},
@@ -541,7 +675,14 @@ QStringList choices(const QString& key)
         {"feedbackType", {"Position", "Velocity"}}, {"inputType", {"Constant", "Linear", "Quadratic", "Cubic", "CustomCurve"}},
         {"presetMode", {"FAST", "CONTACT", "ROBUST", "HIGH_PRECISION"}},
         {"mountMode", {"Points", "Joint"}},
-        {"supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort"}},
+        {"supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort", "ExternalCircuit"}},
+        {"nodeType", {"Tank", "PressureSource", "Chamber"}},
+        {"componentType", {"Pump", "FlowSource", "DirectionalValve", "ServoValve", "ReliefValve",
+                           "PressureReducingValve", "SequenceValve", "CheckValve", "ThrottleValve",
+                           "Pipe", "Filter", "Accumulator", "PortConnection"}},
+        {"centerMode", {"ClosedCenter", "TandemUnload", "FloatAB"}},
+        {"actuatorType", {"Cylinder", "Motor"}},
+        {"actuatorPort", {"A", "B"}},
         {"solverType", {"SPARSE_QR", "SPARSE_LU", "PSOR", "PSSOR", "PJACOBI", "PMINRES", "APGD", "GMRES", "MINRES"}},
         {"integratorType", {"EULER_IMPLICIT", "EULER_IMPLICIT_LINEARIZED", "EULER_IMPLICIT_PROJECTED", "TRAPEZOIDAL", "TRAPEZOIDAL_LINEARIZED", "HHT", "HEUN", "RUNGEKUTTA45", "EULER_EXPLICIT", "LEAPFROG", "NEWMARK"}}
     };
@@ -555,7 +696,9 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
 {
     const QString text = fieldLabel.isEmpty() ? label(key) : fieldLabel;
     const bool forceElement = collection == "softStops" || collection == "tensionCables";
-    const bool aligned = depth == 0 && (collection == "bodyDrives" || forceElement || collection == "hydraulicCylinders");
+    const bool hydraulicEntity = collection == "hydraulicCylinders" || collection == "hydraulicMotors"
+        || collection == "hydraulicNodes" || collection == "hydraulicComponents";
+    const bool aligned = depth == 0 && (collection == "bodyDrives" || forceElement || hydraulicEntity);
     const auto addLabeledRow = [&](QWidget* editor) {
         if (aligned) form->addRow(new PanelLabel(text), editor);
         else form->addRow(text, editor);
@@ -599,12 +742,14 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
     if (key == "targetDriveId") references = "drives";
     if (key == "targetInputId") references = "controlInputs";
     if (key == "feedbackSensorId") references = "sensors";
+    if (key.endsWith("NodeId")) references = "hydraulicNodes";
     if (forceElement && (key == "markerIId" || key == "markerJId")) references = "markers";
     if (!references.isEmpty() && (value.isDouble() || references == "markers")) {
         auto* combo = new QComboBox; combo->setObjectName("native_" + key);
-        const bool cleanBodyEndpoint = references == "bodies"
-            && (forceElement || collection == "bodyDrives" || collection == "hydraulicCylinders")
-            && (key == "bodyIId" || key == "bodyJId" || key == "targetBodyId" || key == "referenceBodyId");
+        const bool cleanBodyEndpoint = (references == "bodies"
+            && (forceElement || collection == "bodyDrives" || hydraulicEntity)
+            && (key == "bodyIId" || key == "bodyJId" || key == "targetBodyId" || key == "referenceBodyId"))
+            || references == "hydraulicNodes";
         if (references == "markers") combo->addItem(QStringLiteral("请选择标记点"));
         else if (cleanBodyEndpoint) combo->addItem(QStringLiteral(" "), -1);
         else combo->addItem(references == "bodies" ? QStringLiteral("大地 (-1)") : QStringLiteral("无 (-1)"), -1);
@@ -638,12 +783,12 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
         int index = combo->findData(value.toString());
         if (index < 0) { combo->addItem(value.toString(), value.toString()); index = combo->count() - 1; }
         combo->setCurrentIndex(index);
-        if (QStringList{"jointType", "couplingType", "springType", "sensorType", "loadType", "bodyDriveMode"}.contains(key)) combo->setEnabled(false);
+        if (QStringList{"jointType", "couplingType", "springType", "sensorType", "loadType", "bodyDriveMode", "nodeType", "componentType"}.contains(key)) combo->setEnabled(false);
         addLabeledRow(combo); return [combo] { return combo->currentData().toString(); };
     }
     if (value.isString() || value.isDouble()) {
         const QString original = value.isDouble() ? QString::number(value.toDouble(), 'g', 17) : value.toString();
-        auto* numberEdit = (forceElement || collection == "hydraulicCylinders") && depth == 0 && value.isDouble()
+        auto* numberEdit = (forceElement || hydraulicEntity) && depth == 0 && value.isDouble()
             ? new MxFunctions::mCalcLineEdit(original) : nullptr;
         QLineEdit* edit = numberEdit ? numberEdit : new QLineEdit(original);
         if (numberEdit) numberEdit->setUnit(unit);
@@ -1273,7 +1418,8 @@ void MotionWindow::createNativeCommands()
             {Command::AddController, "controllers", "controlCalculation.png"}, {Command::AddControlInput, "controlInputs", "controlInput.png"},
             {Command::AddAutoFlex, "autoFlexBodies", "mnf.png"}, {Command::AddSoftStop, "softStops", "force_spring.png"},
             {Command::AddTensionCable, "tensionCables", "force_spring.png"},
-            {Command::AddHydraulicCylinder, "hydraulicCylinders", "mech_hydraulic.png"}}) {
+            {Command::AddHydraulicCylinder, "hydraulicCylinders", "mech_hydraulic.png"},
+            {Command::AddHydraulicMotor, "hydraulicMotors", "mech_hydraulic.png"}}) {
         const QString collection = QLatin1String(entry.collection);
         add(entry.command, entry.command == Command::AddNativeJoint ? tr("更多运动副") : label(collection), entry.icon,
             [this, collection] { if (ensureNativeModel()) editNativeEntity(collection); });
@@ -1323,7 +1469,9 @@ bool MotionWindow::ensureNativeModel()
 namespace {
 bool isNativeTreeManagedCollection(const QString& collection) {
     return collection == "softStops" || collection == "tensionCables"
-        || collection == "bodyDrives" || collection == "hydraulicCylinders";
+        || collection == "bodyDrives" || collection == "hydraulicCylinders"
+        || collection == "hydraulicMotors" || collection == "hydraulicNodes"
+        || collection == "hydraulicComponents";
 }
 QString uniqueNativeCopyName(const NativeMotionDocument& document, const QString& collection, const QString& baseName) {
     QSet<QString> existing;
@@ -1351,14 +1499,18 @@ MxFunctions::PhysicalFieldType originalTreeType(const QString& collection) {
 }
 QStringList originalTreeCollections(const QString& group) {
     if(group=="forceElements")return {"vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques","tensionCables","softStops"};
-    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","bodyDrives","hydraulicCylinders","springs","vectorForces","scalarForces","scalarTorques",
+    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","bodyDrives",
+        "hydraulicCylinders","hydraulicMotors","hydraulicNodes","hydraulicComponents",
+        "springs","vectorForces","scalarForces","scalarTorques",
         "threePointForces","threePointTorques","tensionCables","softStops","contacts","markers","sensors","controllers",
         "controlInputs","scenarios","autoFlexBodies"};
     return {group};
 }
 QString originalCurveCollection(const QString& source) {
     static const QMap<QString,QString> aliases{{"Body","bodies"},{"Joint","joints"},{"Marker","markers"},
-        {"Drive","drives"},{"BodyDrive","bodyDrives"},{"HydraulicCylinder","hydraulicCylinders"},{"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
+        {"Drive","drives"},{"BodyDrive","bodyDrives"},{"HydraulicCylinder","hydraulicCylinders"},
+        {"HydraulicMotor","hydraulicMotors"},{"HydraulicNode","hydraulicNodes"},{"HydraulicComponent","hydraulicComponents"},
+        {"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
         {"Spring","springs"},{"TensionCable","tensionCables"},{"SoftStop","softStops"},
         {"VectorForce","vectorForces"},{"ScalarForce","scalarForces"},{"ScalarTorque","scalarTorques"},
         {"ThreePointForce","threePointForces"},{"ThreePointTorque","threePointTorques"},{"AutoFlexBody","autoFlexBodies"}};
@@ -1419,6 +1571,24 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"角速度","Motion/drive.png","createBodyDrive","RotationSpeed"},
         {"六自由度位姿","Motion/drive.png","createBodyDrive","Pose"}};
 #endif
+    if(collection=="hydraulicNodes")return {
+        {"油箱","Motion/mech_hydraulic.png","createHydraulicNode","Tank"},
+        {"压力源","Motion/mech_hydraulic.png","createHydraulicNode","PressureSource"},
+        {"液压容腔","Motion/mech_hydraulic.png","createHydraulicNode","Chamber"}};
+    if(collection=="hydraulicComponents")return {
+        {"液压泵","Motion/mech_hydraulic.png","createHydraulicComponent","Pump"},
+        {"流量源","Motion/mech_hydraulic.png","createHydraulicComponent","FlowSource"},
+        {"换向阀","Motion/mech_hydraulic.png","createHydraulicComponent","DirectionalValve"},
+        {"伺服阀","Motion/mech_hydraulic.png","createHydraulicComponent","ServoValve"},
+        {"溢流阀","Motion/mech_hydraulic.png","createHydraulicComponent","ReliefValve"},
+        {"减压阀","Motion/mech_hydraulic.png","createHydraulicComponent","PressureReducingValve"},
+        {"顺序阀","Motion/mech_hydraulic.png","createHydraulicComponent","SequenceValve"},
+        {"单向阀","Motion/mech_hydraulic.png","createHydraulicComponent","CheckValve"},
+        {"节流阀","Motion/mech_hydraulic.png","createHydraulicComponent","ThrottleValve"},
+        {"管路","Motion/mech_hydraulic.png","createHydraulicComponent","Pipe"},
+        {"蓄能器","Motion/mech_hydraulic.png","createHydraulicComponent","Accumulator"},
+        {"过滤器","Motion/mech_hydraulic.png","createHydraulicComponent","Filter"},
+        {"端口连接","Motion/controlCalculation.png","createHydraulicComponent","PortConnection"}};
     static const QMap<QString,OriginalTreeCreation> simple{
         {"bodies",{"新建运动体","BrowserTree/xinjian-23x.png","createMotionBody"}},
         {"markers",{"新建标记点","caotu/dian.png","createMotionMarker"}},
@@ -1427,6 +1597,7 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"contacts",{"新建 3D 接触","","createMotionContact"}},
         {"autoFlexBodies",{"新建自动柔性体","BrowserTree/xinjian-23x.png","createMotionAutoFlex"}},
         {"hydraulicCylinders",{"新建液压缸","Motion/mech_hydraulic.png","createHydraulicCylinder"}},
+        {"hydraulicMotors",{"新建液压马达","Motion/mech_hydraulic.png","createHydraulicMotor"}},
         {"scenarios",{"新建求解方案","BrowserTree/motion_solveParentItem.png","createMotionScenario"}}};
     return simple.contains(collection)?QVector<OriginalTreeCreation>{simple.value(collection)}:QVector<OriginalTreeCreation>{};
 }
@@ -1594,6 +1765,9 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
         submenu("bodyDrives",tr("新建运动体驱动"),TreeIcons::item("bodyDrives"),true);
 #endif
         create(&menu,{"新建液压缸","Motion/mech_hydraulic.png","createHydraulicCylinder"});
+        create(&menu,{"新建液压马达","Motion/mech_hydraulic.png","createHydraulicMotor"});
+        submenu("hydraulicNodes",tr("新建液压节点"),TreeIcons::item("hydraulicNodes"),true);
+        submenu("hydraulicComponents",tr("新建液压元件"),TreeIcons::item("hydraulicComponents"),true);
         create(&menu,originalTreeCreations("markers").first());
         submenu("sensors",tr("新建传感器"),TreeIcons::item("sensors"),true);
         create(&menu,{"新建控制器","Motion/controlCalculation.png","createMotionController"});
@@ -1606,8 +1780,10 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
             if(answer==0)deleteOriginalTreeEntities("__motionRoot",-1);
         });
     } else if(group) {
+        const bool isHydGroup=collection=="hydraulicCylinders"||collection=="hydraulicMotors"
+            ||collection=="hydraulicNodes"||collection=="hydraulicComponents";
         if(!originalTreeCreations(collection).isEmpty()
-            && QStringList{"joints","couplings","drives","sensors","bodyDrives"}.contains(collection))
+            && QStringList{"joints","couplings","drives","sensors","bodyDrives","hydraulicNodes","hydraulicComponents"}.contains(collection))
             submenu(collection,tr("新建%1").arg(label(collection)),TreeIcons::item(collection));
         else {
             const bool multiple=collection=="springs"||collection=="forceElements";
@@ -1616,10 +1792,12 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
                 if(collection=="forceElements"&&i==2)menu.addSeparator();
                 create(&menu,entries[i],multiple?tr("新建"):QString{});
             }
-            if(collection=="hydraulicCylinders") {
-                action(&menu,"Motion/mech_hydraulic.png",tr("油液设置…"),[this] { editHydraulicFluid(); });
-                menu.addSeparator();
-            } else if(multiple||collection=="contacts")menu.addSeparator();
+            if(!isHydGroup&&(multiple||collection=="contacts"))menu.addSeparator();
+        }
+        if(isHydGroup) {
+            action(&menu,"Motion/controlCalculation.png",tr("回路检查…"),[this] { showModelDiagnostics(false,true); });
+            action(&menu,"Motion/mech_hydraulic.png",tr("油液设置…"),[this] { editHydraulicFluid(); });
+            menu.addSeparator();
         }
         const auto groupName=collection=="forceElements"?tr("力元"):label(collection);
         action(&menu,"BrowserTree/shanchu.png",tr("删除所有%1").arg(groupName),[this,collection] { deleteOriginalTreeEntities(collection,-1); });
@@ -1869,7 +2047,9 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
     const QMap<QString, QString> groupNames{{"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"importedMnfBodies", tr("柔性体")},
         {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")}, {"bodyDrives", tr("运动体驱动")},
-        {"hydraulicCylinders", tr("液压缸")}, {"springs", tr("弹簧")},
+        {"hydraulicCylinders", tr("液压缸")}, {"hydraulicMotors", tr("液压马达")},
+        {"hydraulicNodes", tr("液压节点")}, {"hydraulicComponents", tr("液压元件")},
+        {"springs", tr("弹簧")},
         {"vectorForces", tr("力元")}, {"scalarForces", tr("力元")}, {"scalarTorques", tr("力元")},
         {"threePointForces", tr("力元")}, {"threePointTorques", tr("力元")}, {"tensionCables", tr("力元")}, {"softStops", tr("力元")},
         {"sensors", tr("传感器")}, {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")}, {"controlInputs", tr("控制输入")}};
@@ -1944,6 +2124,8 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         else if (collection == "vectorForces") types = choices("loadType");
         else if (collection == "sensors") types = choices("sensorType");
         else if (collection == "controlInputs") types = choices("inputType");
+        else if (collection == "hydraulicNodes") types = choices("nodeType");
+        else if (collection == "hydraulicComponents") types = choices("componentType");
         if (type.isEmpty() && !types.isEmpty()) {
             QStringList shown; for (const auto& t : types) shown.append(enumLabel(t)); bool accepted = false;
             const auto selected = QInputDialog::getItem(this, tr("新建%1").arg(label(collection)), tr("类型"), shown, 0, false, &accepted);
@@ -1960,7 +2142,11 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     }
     id = row.value("id").toInt();
     // Add optional defaults when the older document omitted editable fields.
-    const auto defaults = templateRecord(document, collection, row.value(collection == "joints" ? "jointType" : collection == "springs" ? "springType" : "").toString());
+    const auto defaults = templateRecord(document, collection,
+        row.value(collection == "joints" ? "jointType"
+            : collection == "springs" ? "springType"
+            : collection == "hydraulicNodes" ? "nodeType"
+            : collection == "hydraulicComponents" ? "componentType" : "").toString());
     if (collection=="drives") for (const auto& key:{"driveTableX","driveTableY","motionType","controlMode","expression"})
         if (!row.contains(key)) row.insert(key,defaults.value(key));
     if (QStringList{"springs","vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques"}.contains(collection))
@@ -2012,6 +2198,10 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     const bool bodyDrive = collection == "bodyDrives";
     const bool unilateralForce = collection == "softStops" || collection == "tensionCables";
     const bool hydraulicCylinder = collection == "hydraulicCylinders";
+    const bool hydraulicMotor = collection == "hydraulicMotors";
+    const bool hydraulicNode = collection == "hydraulicNodes";
+    const bool hydraulicComponent = collection == "hydraulicComponents";
+    const bool hydraulicPanel = hydraulicCylinder || hydraulicMotor || hydraulicNode || hydraulicComponent;
     const auto bodyDriveMode = row.value("bodyDriveMode").toString();
     const bool poseDrive = bodyDriveMode == "Pose";
     auto* panel = new QWidget; panel->setObjectName("nativeEditor_" + collection);
@@ -2019,7 +2209,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* form = new QFormLayout(panel); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setSizeConstraint(QLayout::SetMinimumSize);
-    if (bodyDrive || unilateralForce || hydraulicCylinder) {
+    if (bodyDrive || unilateralForce || hydraulicPanel) {
         form->setContentsMargins(0, 0, 0, 0);
         form->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
     } else {
@@ -2087,8 +2277,8 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     }
     const QStringList hidden{"id", "isUserRename", "geoEntityIds", "geoEntityNames", "currentCurveRequest", "curveNode", "curveRequests",
         "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds", "occPickReferences",
-        "channels", "commandTableX", "commandTableY"};
-    if (!bodyDrive && !unilateralForce && !hydraulicCylinder && row.contains("name"))
+        "channels", "commandTableX", "commandTableY", "pressureTableX", "pressureTableY"};
+    if (!bodyDrive && !unilateralForce && !hydraulicPanel && row.contains("name"))
         fields.insert("name", addField(form, "name", row.value("name"), document, collection));
     auto specialisedFields = addNativeTypedFields(panel, form, row, collection, document,
         [&, picker](QFormLayout* target, const QString& field, const QJsonValue& value) {
@@ -2203,6 +2393,17 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
 
         auto* ctrlSec = addBodyDriveSection(tr("供油与控制"), "hydraulicControlSection");
         bind(ctrlSec, "supplyMode", tr("控制模式:"));
+
+        auto* extPortsWrap = new QWidget(ctrlSec);
+        auto* extPortsLayout = new QFormLayout(extPortsWrap);
+        extPortsLayout->setContentsMargins(0, 0, 0, 0);
+        extPortsLayout->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
+        fields.insert("portANodeId", addField(extPortsLayout, "portANodeId", QJsonValue(row.value("portANodeId").toInt(-1)), document, collection, 0, picker, {}, tr("A口回路节点:")));
+        fields.insert("portBNodeId", addField(extPortsLayout, "portBNodeId", QJsonValue(row.value("portBNodeId").toInt(-1)), document, collection, 0, picker, {}, tr("B口回路节点:")));
+        specialisedFields.insert("portANodeId");
+        specialisedFields.insert("portBNodeId");
+        ctrlSec->layout()->addRow(extPortsWrap);
+
         bind(ctrlSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
         bind(ctrlSec, "ratedPressureDrop", tr("额定压降:"), QStringLiteral("MPa"));
 
@@ -2251,14 +2452,16 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         fields.insert("commandTableY", [cmdTy] { return *cmdTy; });
 
         if (auto* smCombo = panel->findChild<QComboBox*>("native_supplyMode")) {
-            const auto syncSupply = [panel, smCombo, cmdWrap, cmdLabel, ctrlSec] {
+            const auto syncSupply = [panel, smCombo, extPortsWrap, cmdWrap, cmdLabel, ctrlSec] {
                 const QString m = smCombo->currentData().toString();
                 const bool closed = m == "ClosedPort";
+                const bool external = m == "ExternalCircuit";
                 const bool flow = m == "FlowCommand";
+                extPortsWrap->setVisible(external);
                 cmdLabel->setText(flow ? QObject::tr("供油流量 (L/min):") : QObject::tr("阀芯指令 (-1…1):"));
-                cmdWrap->setEnabled(!closed);
+                cmdWrap->setEnabled(!closed && !external);
                 for (const auto* k : {"native_ratedFlowLpm", "native_ratedPressureDrop"})
-                    if (auto* w = panel->findChild<QWidget*>(QLatin1String(k))) w->setEnabled(!closed);
+                    if (auto* w = panel->findChild<QWidget*>(QLatin1String(k))) w->setEnabled(m == "DirectionalValve");
                 ctrlSec->refreshLayout();
             };
             connect(smCombo, qOverload<int>(&QComboBox::currentIndexChanged), panel, syncSupply);
@@ -2273,9 +2476,323 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         auto* initSec = addBodyDriveSection(tr("初始腔压"), "hydraulicInitialSection");
         bind(initSec, "initialPressureA", tr("A腔初压:"), QStringLiteral("MPa"));
         bind(initSec, "initialPressureB", tr("B腔初压:"), QStringLiteral("MPa"));
-        auto* initHint = new QLabel(tr("若在求解方案中勾选“按初始静载平衡液压缸腔压”，t=0 时将自动覆盖并计算平衡外载的腔压。"), initSec);
+        auto* initHint = new QLabel(tr("若在求解方案中勾选“按初始静载平衡液压执行器腔压”，t=0 时将自动覆盖并计算平衡外载的腔压。"), initSec);
         initHint->setWordWrap(true);
         initSec->layout()->addRow(initHint);
+    }
+    if (hydraulicMotor) {
+        for (const auto& k : defaults.keys()) if (!row.contains(k)) row.insert(k, defaults.value(k));
+        specialisedFields.insert("enabled");
+        specialisedFields.insert("commandExpression");
+        const auto bind = [&](MechMainWindow::FoldSection* sec, const QString& key, const QString& title = {}, const QString& unit = {}) {
+            fields.insert(key, addField(sec->layout(), key, row.value(key), document, collection, 0, picker, {}, title, unit));
+            specialisedFields.insert(key);
+        };
+        auto* typeSec = addBodyDriveSection(tr("类型"), "hydraulicMotorTypeSection");
+        auto* typeCombo = new QComboBox(typeSec);
+        typeCombo->setObjectName(QStringLiteral("native_hydraulicMotorType"));
+        typeCombo->addItem(tr("双向定量旋转液压马达"));
+        typeCombo->setEnabled(false);
+        typeSec->layout()->addRow(new PanelLabel(tr("类型:")), typeCombo);
+
+        auto* mountSec = addBodyDriveSection(tr("安装连接"), "hydraulicMotorMountSection");
+        bind(mountSec, "targetJointId", tr("关联运动副:"));
+
+        auto* geomSec = addBodyDriveSection(tr("马达特性与容腔"), "hydraulicMotorGeomSection");
+        bind(geomSec, "displacementCcRev", tr("排量:"), QStringLiteral("mL/r"));
+        bind(geomSec, "mechanicalEfficiency", tr("机械效率:"));
+        bind(geomSec, "chamberVolumeA", tr("A口容腔:"), QStringLiteral("mm³"));
+        bind(geomSec, "chamberVolumeB", tr("B口容腔:"), QStringLiteral("mm³"));
+        bind(geomSec, "viscousDamping", tr("黏性阻尼:"), QStringLiteral("N·mm·s/rad"));
+        bind(geomSec, "internalLeakage", tr("内泄漏系数:"), QStringLiteral("L/min/MPa"));
+
+        auto* ctrlSec = addBodyDriveSection(tr("供油与控制"), "hydraulicMotorControlSection");
+        bind(ctrlSec, "supplyMode", tr("控制模式:"));
+
+        auto* extPortsWrap = new QWidget(ctrlSec);
+        auto* extPortsLayout = new QFormLayout(extPortsWrap);
+        extPortsLayout->setContentsMargins(0, 0, 0, 0);
+        extPortsLayout->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
+        fields.insert("portANodeId", addField(extPortsLayout, "portANodeId", QJsonValue(row.value("portANodeId").toInt(-1)), document, collection, 0, picker, {}, tr("A口回路节点:")));
+        fields.insert("portBNodeId", addField(extPortsLayout, "portBNodeId", QJsonValue(row.value("portBNodeId").toInt(-1)), document, collection, 0, picker, {}, tr("B口回路节点:")));
+        specialisedFields.insert("portANodeId");
+        specialisedFields.insert("portBNodeId");
+        ctrlSec->layout()->addRow(extPortsWrap);
+
+        bind(ctrlSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+        bind(ctrlSec, "ratedPressureDrop", tr("额定压降:"), QStringLiteral("MPa"));
+
+        auto cmdTx = std::make_shared<QJsonArray>(row.value("commandTableX").toArray());
+        auto cmdTy = std::make_shared<QJsonArray>(row.value("commandTableY").toArray());
+        auto* cmdWrap = new QWidget(ctrlSec);
+        auto* cmdRow = new QHBoxLayout(cmdWrap);
+        cmdRow->setContentsMargins(0, 0, 0, 0);
+        cmdRow->setSpacing(MxFunctions::UiMetrics::choiceGap());
+        auto* cmdEdit = new QLineEdit(row.value("commandExpression").toString("0"), cmdWrap);
+        cmdEdit->setObjectName(QStringLiteral("native_hydraulicMotorCommand"));
+        auto* cmdBtn = new QToolButton(cmdWrap);
+        cmdBtn->setObjectName(QStringLiteral("native_hydraulicMotorFunction"));
+        cmdBtn->setIcon(QIcon(QStringLiteral(":/mMainWidgets/Icon/homepage/hanshu3x.png")));
+        cmdBtn->setIconSize(MxFunctions::UiMetrics::quickIconSize());
+        const int hBtn = MxFunctions::UiMetrics::controlHeight();
+        cmdBtn->setFixedSize(hBtn, hBtn);
+        cmdBtn->setToolTip(tr("编辑控制函数与时间表…"));
+        cmdRow->addWidget(cmdEdit, 1);
+        cmdRow->addWidget(cmdBtn);
+        auto* cmdLabel = new PanelLabel(tr("阀芯指令 (-1…1):"));
+        ctrlSec->layout()->addRow(cmdLabel, cmdWrap);
+
+        const auto scenarios = document.collection("scenarios");
+        const double duration = scenarios.isEmpty() ? 5.0 : scenarios.first().toObject().value("endTime").toDouble(5.0);
+        const auto syncCmdReadOnly = [cmdEdit, cmdTx] {
+            cmdEdit->setReadOnly(!cmdTx->isEmpty());
+            cmdEdit->setToolTip(!cmdTx->isEmpty() ? QObject::tr("当前使用时间表（%1 点）").arg(cmdTx->size())
+                                                  : QObject::tr("输入常数或时间函数 f(t)，t 单位为秒"));
+        };
+        syncCmdReadOnly();
+        connect(cmdBtn, &QToolButton::clicked, panel, [this, panel, cmdEdit, cmdTx, cmdTy, duration, syncCmdReadOnly] {
+            QString unitStr;
+            if (auto* sm = panel->findChild<QComboBox*>("native_supplyMode"))
+                unitStr = sm->currentData().toString() == "FlowCommand" ? QStringLiteral("L/min") : QString{};
+            auto expr = cmdEdit->text();
+            auto tx = *cmdTx, ty = *cmdTy;
+            if (!editNativeFunction(this, expr, tx, ty, unitStr, duration)) return;
+            cmdEdit->setText(expr); *cmdTx = tx; *cmdTy = ty; syncCmdReadOnly();
+        });
+        fields.insert("commandExpression", [cmdEdit] { return cmdEdit->text(); });
+        fields.insert("commandTableX", [cmdTx] { return *cmdTx; });
+        fields.insert("commandTableY", [cmdTy] { return *cmdTy; });
+
+        if (auto* smCombo = panel->findChild<QComboBox*>("native_supplyMode")) {
+            const auto syncSupply = [panel, smCombo, extPortsWrap, cmdWrap, cmdLabel, ctrlSec] {
+                const QString m = smCombo->currentData().toString();
+                const bool closed = m == "ClosedPort";
+                const bool external = m == "ExternalCircuit";
+                const bool flow = m == "FlowCommand";
+                extPortsWrap->setVisible(external);
+                cmdLabel->setText(flow ? QObject::tr("供油流量 (L/min):") : QObject::tr("阀芯指令 (-1…1):"));
+                cmdWrap->setEnabled(!closed && !external);
+                for (const auto* k : {"native_ratedFlowLpm", "native_ratedPressureDrop"})
+                    if (auto* w = panel->findChild<QWidget*>(QLatin1String(k))) w->setEnabled(m == "DirectionalValve");
+                ctrlSec->refreshLayout();
+            };
+            connect(smCombo, qOverload<int>(&QComboBox::currentIndexChanged), panel, syncSupply);
+            syncSupply();
+        }
+
+        auto* fluidBtn = new QPushButton(tr("全局油液与油源设置…"), ctrlSec);
+        fluidBtn->setObjectName(QStringLiteral("native_openFluidSettings"));
+        ctrlSec->layout()->addRow(fluidBtn);
+        connect(fluidBtn, &QPushButton::clicked, panel, [this, picker] { picker->finish(); editHydraulicFluid(); });
+
+        auto* initSec = addBodyDriveSection(tr("初始腔压"), "hydraulicMotorInitialSection");
+        bind(initSec, "initialPressureA", tr("A口初压:"), QStringLiteral("MPa"));
+        bind(initSec, "initialPressureB", tr("B口初压:"), QStringLiteral("MPa"));
+    }
+    if (hydraulicNode) {
+        for (const auto& k : defaults.keys()) if (!row.contains(k)) row.insert(k, defaults.value(k));
+        specialisedFields.insert("enabled");
+        const auto bind = [&](MechMainWindow::FoldSection* sec, const QString& key, const QString& title = {}, const QString& unit = {}) {
+            if (!row.contains(key)) return;
+            fields.insert(key, addField(sec->layout(), key, row.value(key), document, collection, 0, picker, {}, title, unit));
+            specialisedFields.insert(key);
+        };
+        const QString ntype = row.value("nodeType").toString("Chamber");
+        auto* typeSec = addBodyDriveSection(tr("类型"), "hydraulicNodeTypeSection");
+        bind(typeSec, "nodeType", tr("类型:"));
+
+        auto* paramSec = addBodyDriveSection(tr("节点参数"), "hydraulicNodeParamSection");
+        if (ntype == "Tank") {
+            bind(paramSec, "pressureMPa", tr("回油压力:"), QStringLiteral("MPa"));
+        } else if (ntype == "PressureSource") {
+            specialisedFields.insert("pressureExpression");
+            bind(paramSec, "pressureMPa", tr("基准压力:"), QStringLiteral("MPa"));
+            auto pTx = std::make_shared<QJsonArray>(row.value("pressureTableX").toArray());
+            auto pTy = std::make_shared<QJsonArray>(row.value("pressureTableY").toArray());
+            auto* pWrap = new QWidget(paramSec);
+            auto* pRow = new QHBoxLayout(pWrap);
+            pRow->setContentsMargins(0, 0, 0, 0);
+            pRow->setSpacing(MxFunctions::UiMetrics::choiceGap());
+            const QString defExpr = row.value("pressureExpression").toString(
+                QString::number(row.value("pressureMPa").toDouble(21.0), 'g', 12));
+            auto* pEdit = new QLineEdit(defExpr, pWrap);
+            pEdit->setObjectName(QStringLiteral("native_pressureExpression"));
+            auto* pBtn = new QToolButton(pWrap);
+            pBtn->setObjectName(QStringLiteral("native_pressureFunction"));
+            pBtn->setIcon(QIcon(QStringLiteral(":/mMainWidgets/Icon/homepage/hanshu3x.png")));
+            pBtn->setIconSize(MxFunctions::UiMetrics::quickIconSize());
+            const int hBtn = MxFunctions::UiMetrics::controlHeight();
+            pBtn->setFixedSize(hBtn, hBtn);
+            pRow->addWidget(pEdit, 1);
+            pRow->addWidget(pBtn);
+            paramSec->layout()->addRow(new PanelLabel(tr("压力函数 (MPa):")), pWrap);
+            const auto scenarios = document.collection("scenarios");
+            const double duration = scenarios.isEmpty() ? 5.0 : scenarios.first().toObject().value("endTime").toDouble(5.0);
+            pEdit->setReadOnly(!pTx->isEmpty());
+            connect(pBtn, &QToolButton::clicked, panel, [this, pEdit, pTx, pTy, duration] {
+                auto expr = pEdit->text();
+                auto tx = *pTx, ty = *pTy;
+                if (!editNativeFunction(this, expr, tx, ty, QStringLiteral("MPa"), duration)) return;
+                pEdit->setText(expr); *pTx = tx; *pTy = ty;
+                pEdit->setReadOnly(!pTx->isEmpty());
+            });
+            fields.insert("pressureExpression", [pEdit] { return pEdit->text(); });
+            fields.insert("pressureTableX", [pTx] { return *pTx; });
+            fields.insert("pressureTableY", [pTy] { return *pTy; });
+        } else {
+            bind(paramSec, "volumeMl", tr("控制容积:"), QStringLiteral("mL"));
+            bind(paramSec, "initialPressureMPa", tr("初始压力:"), QStringLiteral("MPa"));
+        }
+        auto* fluidBtn = new QPushButton(tr("全局油液与油源设置…"), paramSec);
+        fluidBtn->setObjectName(QStringLiteral("native_openFluidSettings"));
+        paramSec->layout()->addRow(fluidBtn);
+        connect(fluidBtn, &QPushButton::clicked, panel, [this, picker] { picker->finish(); editHydraulicFluid(); });
+    }
+    if (hydraulicComponent) {
+        for (const auto& k : defaults.keys()) if (!row.contains(k)) row.insert(k, defaults.value(k));
+        specialisedFields.insert("enabled");
+        const auto bind = [&](MechMainWindow::FoldSection* sec, const QString& key, const QString& title = {}, const QString& unit = {}) {
+            if (!row.contains(key)) return;
+            fields.insert(key, addField(sec->layout(), key, row.value(key), document, collection, 0, picker, {}, title, unit));
+            specialisedFields.insert(key);
+        };
+        const QString ctype = row.value("componentType").toString("ReliefValve");
+        auto* typeSec = addBodyDriveSection(tr("类型"), "hydraulicCompTypeSection");
+        bind(typeSec, "componentType", tr("类型:"));
+
+        auto* portSec = addBodyDriveSection(tr("端口拓扑连接"), "hydraulicCompPortSection");
+        if (ctype == "Pump") {
+            bind(portSec, "suctionNodeId", tr("吸油口节点:"));
+            bind(portSec, "deliveryNodeId", tr("压油口节点:"));
+        } else if (ctype == "DirectionalValve" || ctype == "ServoValve") {
+            bind(portSec, "portPNodeId", tr("供油口 P:"));
+            bind(portSec, "portTNodeId", tr("回油口 T:"));
+            bind(portSec, "portANodeId", tr("工作口 A:"));
+            bind(portSec, "portBNodeId", tr("工作口 B:"));
+        } else if (ctype == "Accumulator") {
+            bind(portSec, "targetNodeId", tr("挂载容腔节点:"));
+        } else if (ctype == "PortConnection") {
+            bind(portSec, "targetNodeId", tr("回路节点:"));
+            bind(portSec, "actuatorType", tr("执行器类型:"));
+            auto* actCombo = new QComboBox(portSec);
+            actCombo->setObjectName(QStringLiteral("native_actuatorId"));
+            const auto rebuildActuators = [actCombo, document](const QString& atype, int currentId) {
+                const QSignalBlocker blk(actCombo);
+                actCombo->clear();
+                actCombo->addItem(QStringLiteral(" "), -1);
+                const QString targetCol = atype == "Motor" ? QStringLiteral("hydraulicMotors") : QStringLiteral("hydraulicCylinders");
+                for (const auto& item : document.collection(targetCol)) {
+                    const auto obj = item.toObject();
+                    actCombo->addItem(obj.value("name").toString(), obj.value("id").toInt());
+                }
+                const int idx = actCombo->findData(currentId);
+                actCombo->setCurrentIndex(idx >= 0 ? idx : (actCombo->count() > 1 ? 1 : 0));
+            };
+            rebuildActuators(row.value("actuatorType").toString("Cylinder"), row.value("actuatorId").toInt(-1));
+            portSec->layout()->addRow(new PanelLabel(tr("目标执行器:")), actCombo);
+            fields.insert("actuatorId", [actCombo] { return actCombo->currentData().toInt(); });
+            specialisedFields.insert("actuatorId");
+            if (auto* atCombo = panel->findChild<QComboBox*>("native_actuatorType")) {
+                connect(atCombo, qOverload<int>(&QComboBox::currentIndexChanged), panel, [atCombo, rebuildActuators] {
+                    rebuildActuators(atCombo->currentData().toString(), -1);
+                });
+            }
+            bind(portSec, "actuatorPort", tr("连接油口:"));
+        } else {
+            bind(portSec, "inletNodeId", tr("入口节点:"));
+            bind(portSec, "outletNodeId", tr("出口节点:"));
+        }
+
+        auto* propSec = addBodyDriveSection(tr("元件特性参数"), "hydraulicCompPropSection");
+        const auto addExprEditor = [&](const char* exprKey, const QString& labelText, const QString& unitStr, const QString& defVal) {
+            specialisedFields.insert(QLatin1String(exprKey));
+            auto cmdTx = std::make_shared<QJsonArray>(row.value("commandTableX").toArray());
+            auto cmdTy = std::make_shared<QJsonArray>(row.value("commandTableY").toArray());
+            auto* wrap = new QWidget(propSec);
+            auto* h = new QHBoxLayout(wrap);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(MxFunctions::UiMetrics::choiceGap());
+            auto* edit = new QLineEdit(row.value(QLatin1String(exprKey)).toString(defVal), wrap);
+            edit->setObjectName(QStringLiteral("native_") + QLatin1String(exprKey));
+            auto* btn = new QToolButton(wrap);
+            btn->setObjectName(QStringLiteral("native_compFunction_") + QLatin1String(exprKey));
+            btn->setIcon(QIcon(QStringLiteral(":/mMainWidgets/Icon/homepage/hanshu3x.png")));
+            btn->setIconSize(MxFunctions::UiMetrics::quickIconSize());
+            const int hBtn = MxFunctions::UiMetrics::controlHeight();
+            btn->setFixedSize(hBtn, hBtn);
+            h->addWidget(edit, 1);
+            h->addWidget(btn);
+            propSec->layout()->addRow(new PanelLabel(labelText), wrap);
+            const auto scenarios = document.collection("scenarios");
+            const double duration = scenarios.isEmpty() ? 5.0 : scenarios.first().toObject().value("endTime").toDouble(5.0);
+            edit->setReadOnly(!cmdTx->isEmpty());
+            connect(btn, &QToolButton::clicked, panel, [this, edit, cmdTx, cmdTy, unitStr, duration] {
+                auto expr = edit->text();
+                auto tx = *cmdTx, ty = *cmdTy;
+                if (!editNativeFunction(this, expr, tx, ty, unitStr, duration)) return;
+                edit->setText(expr); *cmdTx = tx; *cmdTy = ty;
+                edit->setReadOnly(!cmdTx->isEmpty());
+            });
+            fields.insert(QLatin1String(exprKey), [edit] { return edit->text(); });
+            fields.insert("commandTableX", [cmdTx] { return *cmdTx; });
+            fields.insert("commandTableY", [cmdTy] { return *cmdTy; });
+        };
+
+        if (ctype == "Pump") {
+            bind(propSec, "displacementCcRev", tr("排量:"), QStringLiteral("mL/r"));
+            addExprEditor("speedExpression", tr("驱动转速 (rpm):"), QStringLiteral("rpm"), QStringLiteral("1500"));
+            bind(propSec, "volumetricEfficiency", tr("容积效率:"));
+            bind(propSec, "mechanicalEfficiency", tr("机械效率:"));
+            bind(propSec, "ratedPressureMPa", tr("额定压力:"), QStringLiteral("MPa"));
+        } else if (ctype == "FlowSource") {
+            addExprEditor("flowExpression", tr("输出流量 (L/min):"), QStringLiteral("L/min"), QStringLiteral("20"));
+        } else if (ctype == "DirectionalValve" || ctype == "ServoValve") {
+            bind(propSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+            bind(propSec, "ratedPressureDropMPa", tr("额定压降:"), QStringLiteral("MPa"));
+            bind(propSec, "centerMode", tr("中位机能:"));
+            if (ctype == "ServoValve")
+                bind(propSec, "responseTimeMs", tr("阀芯时间常数:"), QStringLiteral("ms"));
+            else
+                specialisedFields.insert("responseTimeMs");
+            bind(propSec, "underlap", tr("负遮盖比:"));
+            addExprEditor("commandExpression", tr("阀芯指令 (-1…1):"), {}, QStringLiteral("0"));
+        } else if (ctype == "ReliefValve") {
+            bind(propSec, "crackingPressureMPa", tr("开启压力:"), QStringLiteral("MPa"));
+            bind(propSec, "pressureOverrideMPa", tr("全开超调压差:"), QStringLiteral("MPa"));
+            bind(propSec, "ratedFlowLpm", tr("额定溢流流量:"), QStringLiteral("L/min"));
+        } else if (ctype == "PressureReducingValve") {
+            bind(propSec, "regulatedPressureMPa", tr("设定出口压力:"), QStringLiteral("MPa"));
+            bind(propSec, "pressureBandMPa", tr("调节带宽:"), QStringLiteral("MPa"));
+            bind(propSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+            bind(propSec, "ratedPressureDropMPa", tr("额定压差:"), QStringLiteral("MPa"));
+        } else if (ctype == "SequenceValve") {
+            bind(propSec, "sequencePressureMPa", tr("顺序开启压力:"), QStringLiteral("MPa"));
+            bind(propSec, "pressureBandMPa", tr("开启过渡带宽:"), QStringLiteral("MPa"));
+            bind(propSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+            bind(propSec, "ratedPressureDropMPa", tr("额定压差:"), QStringLiteral("MPa"));
+        } else if (ctype == "CheckValve") {
+            bind(propSec, "crackingPressureMPa", tr("开启压差:"), QStringLiteral("MPa"));
+            bind(propSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+            bind(propSec, "ratedPressureDropMPa", tr("额定压降:"), QStringLiteral("MPa"));
+        } else if (ctype == "ThrottleValve") {
+            bind(propSec, "ratedFlowLpm", tr("全开额定流量:"), QStringLiteral("L/min"));
+            bind(propSec, "ratedPressureDropMPa", tr("额定压差:"), QStringLiteral("MPa"));
+            addExprEditor("commandExpression", tr("节流开度 (0…1):"), {}, QStringLiteral("1"));
+        } else if (ctype == "Pipe") {
+            bind(propSec, "lengthMm", tr("管路长度:"), QStringLiteral("mm"));
+            bind(propSec, "diameterMm", tr("管路内径:"), QStringLiteral("mm"));
+            bind(propSec, "localLossCoeff", tr("局部阻力系数:"));
+        } else if (ctype == "Filter") {
+            bind(propSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+            bind(propSec, "cleanPressureDropMPa", tr("清洁压降:"), QStringLiteral("MPa"));
+            bind(propSec, "foulingFactor", tr("滤芯污堵系数:"));
+        } else if (ctype == "Accumulator") {
+            bind(propSec, "prechargePressureMPa", tr("预充气压力:"), QStringLiteral("MPa"));
+            bind(propSec, "gasVolumeL", tr("总气容积:"), QStringLiteral("L"));
+            bind(propSec, "polytropicGamma", tr("气体多变指数:"));
+        } else if (ctype == "PortConnection") {
+            bind(propSec, "conductanceLpm", tr("油口流通能力:"), QStringLiteral("L/min"));
+        }
     }
     if (collection == "sensors") for (const auto& key : {"sensorType", "variable"})
         if (auto* selector = panel->findChild<QComboBox*>(QStringLiteral("native_") + key))
@@ -2576,7 +3093,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         });
     }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    if (unilateralForce || hydraulicCylinder) {
+    if (unilateralForce || hydraulicPanel) {
         auto* actions = new QWidget;
         auto* layout = new QHBoxLayout(actions);
         const int inset = MxFunctions::UiMetrics::fieldInset();
@@ -2586,7 +3103,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     } else {
         form->addRow(buttons);
     }
-    if (bodyDrive || unilateralForce || hydraulicCylinder) {
+    if (bodyDrive || unilateralForce || hydraulicPanel) {
         buttons->button(QDialogButtonBox::Ok)->setText(tr("保存"));
         buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
     }
@@ -2662,7 +3179,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* scroll = new QScrollArea;
     scroll->setObjectName(QStringLiteral("nativeParameterScroll"));
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
-    if (bodyDrive || unilateralForce || hydraulicCylinder) {
+    if (bodyDrive || unilateralForce || hydraulicPanel) {
         scroll->setProperty("mxFitParameterDock", true);
         for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
             surface->setProperty("mxSurface", true);
@@ -2710,7 +3227,7 @@ void MotionWindow::removeNativeEntity(const QString& collection, int id)
     syncNativeMotionModel(model); commitRigid(std::move(model), {});
 }
 
-void MotionWindow::showModelDiagnostics(bool focusConstraints)
+void MotionWindow::showModelDiagnostics(bool focusConstraints, bool focusHydraulics)
 {
     if (motionBusy() || m_jobPart >= 0) return;
     if (!ensureNativeModel() || !m_model.nativeDocument) return;
@@ -2730,32 +3247,40 @@ void MotionWindow::showModelDiagnostics(bool focusConstraints)
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(MxFunctions::UiMetrics::rowGap());
 
-    auto* summarySec = new MechMainWindow::FoldSection(
-        focusConstraints ? tr("约束与自由度概览") : tr("模型检查概览"), panel);
+    const QString secTitle = focusHydraulics ? tr("机电液回路检查概览")
+                           : focusConstraints ? tr("约束与自由度概览")
+                                              : tr("模型检查概览");
+    auto* summarySec = new MechMainWindow::FoldSection(secTitle, panel);
     summarySec->setObjectName(QStringLiteral("diagnosticsSummarySection"));
     const auto addStat = [&](const QString& title, const QString& val) {
         auto* lbl = new QLabel(val, summarySec);
         lbl->setWordWrap(true);
         summarySec->addRow(new PanelLabel(title), lbl);
     };
-    addStat(tr("运动体:"), tr("%1 个（活动 %2 / 固定 %3 / 柔性 %4）")
-        .arg(report.totalBodies).arg(report.movingBodies).arg(report.fixedBodies).arg(report.flexBodies));
-    addStat(tr("连接与激励:"), tr("运动副 %1 / 驱动 %2 / 力元 %3")
-        .arg(report.activeJoints).arg(report.activeDrives).arg(report.activeForces));
-    if (report.hasJacobianAnalysis) {
-        addStat(tr("广义速度维数:"), QString::number(report.velocityDofs));
-        addStat(tr("约束方程总数:"), QString::number(report.constraintEquations));
-        addStat(tr("雅可比数值秩:"), QString::number(report.jacobianRank));
-        addStat(tr("有效自由度:"), tr("%1（理论计数 %2）").arg(report.effectiveDofs).arg(report.topologicalDofs));
-        addStat(tr("冗余约束数:"), QString::number(report.redundantEquations));
-        addStat(tr("最大初始残差:"), QStringLiteral("%1 mm/rad").arg(report.maxInitialViolation, 0, 'g', 4));
+    if (focusHydraulics || report.hydraulicActuators > 0 || report.hydraulicNodes > 0 || report.hydraulicComponents > 0) {
+        addStat(tr("机电液规模:"), tr("液压执行器 %1 / 回路节点 %2 / 回路元件 %3")
+            .arg(report.hydraulicActuators).arg(report.hydraulicNodes).arg(report.hydraulicComponents));
+    }
+    if (!focusHydraulics) {
+        addStat(tr("运动体:"), tr("%1 个（活动 %2 / 固定 %3 / 柔性 %4）")
+            .arg(report.totalBodies).arg(report.movingBodies).arg(report.fixedBodies).arg(report.flexBodies));
+        addStat(tr("连接与激励:"), tr("运动副 %1 / 驱动 %2 / 力元 %3")
+            .arg(report.activeJoints).arg(report.activeDrives).arg(report.activeForces));
+        if (report.hasJacobianAnalysis) {
+            addStat(tr("广义速度维数:"), QString::number(report.velocityDofs));
+            addStat(tr("约束方程总数:"), QString::number(report.constraintEquations));
+            addStat(tr("雅可比数值秩:"), QString::number(report.jacobianRank));
+            addStat(tr("有效自由度:"), tr("%1（理论计数 %2）").arg(report.effectiveDofs).arg(report.topologicalDofs));
+            addStat(tr("冗余约束数:"), QString::number(report.redundantEquations));
+            addStat(tr("最大初始残差:"), QStringLiteral("%1 mm/rad").arg(report.maxInitialViolation, 0, 'g', 4));
+        }
     }
     addStat(tr("检查结论:"), tr("错误 %1 项 · 警告 %2 项").arg(report.errorCount).arg(report.warningCount));
     auto* rerun = new QPushButton(tr("重新检查"), summarySec);
     rerun->setObjectName(QStringLiteral("rerunModelDiagnosticsButton"));
     summarySec->addRow(rerun);
-    connect(rerun, &QPushButton::clicked, this, [this, focusConstraints] {
-        showModelDiagnostics(focusConstraints);
+    connect(rerun, &QPushButton::clicked, this, [this, focusConstraints, focusHydraulics] {
+        showModelDiagnostics(focusConstraints, focusHydraulics);
     });
     outer->addWidget(summarySec);
 
@@ -2763,9 +3288,18 @@ void MotionWindow::showModelDiagnostics(bool focusConstraints)
     detailSec->setObjectName(QStringLiteral("diagnosticsDetailSection"));
     QVector<MotionDiagnosticItem> filtered;
     for (const auto& item : report.items) {
-        if (focusConstraints && item.severity == MotionDiagnosticItem::Severity::Pass
-            && item.category != QStringLiteral("约束与自由度")) continue;
+        if (focusHydraulics) {
+            if (item.category != QStringLiteral("液压回路") && item.severity != MotionDiagnosticItem::Severity::Error)
+                continue;
+        } else if (focusConstraints && item.severity == MotionDiagnosticItem::Severity::Pass
+                   && item.category != QStringLiteral("约束与自由度")) {
+            continue;
+        }
         filtered.push_back(item);
+    }
+    if (focusHydraulics && filtered.isEmpty()) {
+        filtered.push_back({MotionDiagnosticItem::Severity::Pass, QStringLiteral("液压回路"), {}, -1,
+                            tr("机电液回路"), tr("当前模型尚未添加液压执行器或回路元件。")});
     }
     auto* table = new QTableWidget(filtered.size(), 3, detailSec);
     table->setObjectName(QStringLiteral("nativeDiagnosticsTable"));
@@ -2821,13 +3355,19 @@ void MotionWindow::showModelDiagnostics(bool focusConstraints)
     scroll->setWidget(panel);
     showEditor(scroll);
 
-    const QString headline = report.hasJacobianAnalysis
+    const QString modeName = focusHydraulics ? tr("回路检查")
+                           : focusConstraints ? tr("约束诊断") : tr("模型检查");
+    const QString headline = focusHydraulics
+        ? tr("%1完成：执行器 %2，节点 %3，元件 %4，错误 %5，警告 %6。")
+              .arg(modeName).arg(report.hydraulicActuators).arg(report.hydraulicNodes)
+              .arg(report.hydraulicComponents).arg(report.errorCount).arg(report.warningCount)
+        : report.hasJacobianAnalysis
         ? tr("%1完成：有效自由度 %2，冗余约束 %3，错误 %4，警告 %5。")
-              .arg(focusConstraints ? tr("约束诊断") : tr("模型检查"))
+              .arg(modeName)
               .arg(report.effectiveDofs).arg(report.redundantEquations)
               .arg(report.errorCount).arg(report.warningCount)
         : tr("%1完成：错误 %2 项，警告 %3 项。")
-              .arg(focusConstraints ? tr("约束诊断") : tr("模型检查"))
+              .arg(modeName)
               .arg(report.errorCount).arg(report.warningCount);
     setStatusNotice(headline, report.errorCount > 0 ? NoticeLevel::Error
                             : report.warningCount > 0 ? NoticeLevel::Warning : NoticeLevel::Normal);

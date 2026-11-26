@@ -221,7 +221,7 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
     };
     std::vector<ForceHistory> forces;
     for(const auto& item:system.force_results){
-        if(item.second.id.rfind("HC_",0)==0)continue;
+        if(item.second.id.rfind("HC_",0)==0 || item.second.id.rfind("HM_",0)==0)continue;
         const auto collection=forceCollections.find(item.second.type);
         if(collection==forceCollections.end())throw std::runtime_error("未知引擎力元结果类型："+item.second.type);
         const bool torsion=item.second.type=="TORSION_SPRING";
@@ -372,6 +372,60 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
             channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),value.command);
             channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),value.mechPowerW);
             channels.scalar(src,id,QStringLiteral("FluidPower"),QStringLiteral("W"),value.fluidPowerW);
+        }
+        for(const auto& entry:system.hydraulicMotors){
+            const int id=entry.first;
+            const auto& history=entry.second->history;
+            if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                throw std::runtime_error("液压马达采样与结果帧时间轴不同步。");
+            const auto& value=history[fi];
+            const QString src=QStringLiteral("hydraulicMotors");
+            channels.scalar(src,id,QStringLiteral("PressureA"),QStringLiteral("MPa"),value.pressureA);
+            channels.scalar(src,id,QStringLiteral("PressureB"),QStringLiteral("MPa"),value.pressureB);
+            channels.scalar(src,id,QStringLiteral("Torque"),QStringLiteral("N·mm"),value.torqueNmm);
+            channels.scalar(src,id,QStringLiteral("Angle"),QStringLiteral("°"),value.angleDeg);
+            channels.scalar(src,id,QStringLiteral("Speed"),QStringLiteral("rpm"),value.speedRpm);
+            channels.scalar(src,id,QStringLiteral("FlowA"),QStringLiteral("L/min"),value.flowALpm);
+            channels.scalar(src,id,QStringLiteral("FlowB"),QStringLiteral("L/min"),value.flowBLpm);
+            channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),value.command);
+            channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),value.mechPowerW);
+            channels.scalar(src,id,QStringLiteral("FluidPower"),QStringLiteral("W"),value.fluidPowerW);
+        }
+        if(system.hydraulicCircuit){
+            const auto& net=*system.hydraulicCircuit;
+            for(const auto& entry:net.nodeHistories){
+                const int id=entry.first;
+                const auto& history=entry.second;
+                if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                    throw std::runtime_error("液压节点采样与结果帧时间轴不同步。");
+                const auto& value=history[fi];
+                const QString src=QStringLiteral("hydraulicNodes");
+                channels.scalar(src,id,QStringLiteral("Pressure"),QStringLiteral("MPa"),value.pressureMPa);
+                channels.scalar(src,id,QStringLiteral("NetFlow"),QStringLiteral("L/min"),value.netFlowLpm);
+            }
+            for(const auto& entry:net.componentHistories){
+                const int id=entry.first;
+                const auto& history=entry.second;
+                if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                    throw std::runtime_error("液压元件采样与结果帧时间轴不同步。");
+                const auto& value=history[fi];
+                const QString src=QStringLiteral("hydraulicComponents");
+                channels.scalar(src,id,QStringLiteral("Flow"),QStringLiteral("L/min"),value.flowLpm);
+                if(net.accumulatorIds.count(id)){
+                    channels.scalar(src,id,QStringLiteral("GasPressure"),QStringLiteral("MPa"),value.gasPressureMPa);
+                    channels.scalar(src,id,QStringLiteral("GasVolume"),QStringLiteral("L"),value.gasVolumeL);
+                    channels.scalar(src,id,QStringLiteral("OilVolume"),QStringLiteral("L"),value.oilVolumeL);
+                }else{
+                    channels.scalar(src,id,QStringLiteral("DeltaPressure"),QStringLiteral("MPa"),value.deltaPressureMPa);
+                    channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),value.powerW);
+                    channels.scalar(src,id,QStringLiteral("SpoolPosition"),QStringLiteral(""),value.spoolPosition);
+                    channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),value.command);
+                    if(net.fourWayIds.count(id)){
+                        channels.scalar(src,id,QStringLiteral("FlowA"),QStringLiteral("L/min"),value.flowALpm);
+                        channels.scalar(src,id,QStringLiteral("FlowB"),QStringLiteral("L/min"),value.flowBLpm);
+                    }
+                }
+            }
         }
         result.frames.push_back(std::move(frame));
     }

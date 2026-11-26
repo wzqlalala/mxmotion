@@ -4,6 +4,7 @@
 #include <Eigen/Eigenvalues>
 
 #include <QJsonArray>
+#include <QMap>
 #include <QSet>
 
 #include <algorithm>
@@ -63,7 +64,7 @@ bool checkBodyInertia(const QJsonObject& body, QString& detail)
         detail = QStringLiteral("无法求解主惯量特征值。");
         return false;
     }
-    const auto p = eig.eigenvalues(); // sorted ascending: p(0) <= p(1) <= p(2)
+    const auto p = eig.eigenvalues();
     const double scale = std::max(1e-12, p(2));
     if (p(0) <= 1e-12 * scale) {
         detail = QStringLiteral("惯量张量非正定（最小主惯量 = %1 kg·mm²，约定=%2）。请检查交叉项符号约定。")
@@ -76,6 +77,236 @@ bool checkBodyInertia(const QJsonObject& body, QString& detail)
         return false;
     }
     return true;
+}
+
+void checkHydraulicCircuit(const NativeMotionDocument& document, MotionDiagnosticReport& report)
+{
+    const auto fluid = document.root.value("motionData").toObject().value("hydraulicFluid").toObject();
+    const double defaultSupplyMPa = fluid.value("supplyPressure").toDouble(21.0);
+
+    QMap<int, QJsonObject> activeNodes;
+    bool hasReferenceBoundary = false;
+    for (const auto& v : document.collection("hydraulicNodes")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        const int id = o.value("id").toInt(-1);
+        activeNodes.insert(id, o);
+        ++report.hydraulicNodes;
+        const QString ntype = o.value("nodeType").toString();
+        if (ntype == QLatin1String("Tank") || ntype == QLatin1String("PressureSource"))
+            hasReferenceBoundary = true;
+    }
+
+    QSet<int> touchedNodes;
+    QSet<int> reliefProtectedNodes;
+    QMap<QString, int> boundPorts; // key: "C:1:A" or "M:2:B" -> nodeId
+
+    const auto markNode = [&](int nid) {
+        if (nid >= 0) touchedNodes.insert(nid);
+    };
+
+    for (const auto& v : document.collection("hydraulicCylinders")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        ++report.hydraulicActuators;
+        const int id = o.value("id").toInt(-1);
+        if (o.value("supplyMode").toString() == QLatin1String("ExternalCircuit")) {
+            const int na = o.value("portANodeId").toInt(-1);
+            const int nb = o.value("portBNodeId").toInt(-1);
+            if (na >= 0) { boundPorts.insert(QStringLiteral("C:%1:A").arg(id), na); markNode(na); }
+            if (nb >= 0) { boundPorts.insert(QStringLiteral("C:%1:B").arg(id), nb); markNode(nb); }
+        }
+    }
+    for (const auto& v : document.collection("hydraulicMotors")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        ++report.hydraulicActuators;
+        const int id = o.value("id").toInt(-1);
+        if (o.value("supplyMode").toString() == QLatin1String("ExternalCircuit")) {
+            const int na = o.value("portANodeId").toInt(-1);
+            const int nb = o.value("portBNodeId").toInt(-1);
+            if (na >= 0) { boundPorts.insert(QStringLiteral("M:%1:A").arg(id), na); markNode(na); }
+            if (nb >= 0) { boundPorts.insert(QStringLiteral("M:%1:B").arg(id), nb); markNode(nb); }
+        }
+    }
+
+    int hydIssuesBefore = report.errorCount + report.warningCount;
+    double maxReliefMPa = defaultSupplyMPa;
+
+    for (const auto& v : document.collection("hydraulicComponents")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        ++report.hydraulicComponents;
+        const int cid = o.value("id").toInt(-1);
+        const QString cname = o.value("name").toString();
+        const QString ctype = o.value("componentType").toString();
+
+        const auto checkPortNode = [&](const char* key, const QString& portTitle) -> int {
+            const int nid = o.value(QLatin1String(key)).toInt(-1);
+            if (nid < 0 || !activeNodes.contains(nid)) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("%1 未关联已启用的液压节点。").arg(portTitle));
+                return -1;
+            }
+            markNode(nid);
+            return nid;
+        };
+
+        if (ctype == QLatin1String("PortConnection")) {
+            const int nid = checkPortNode("targetNodeId", QStringLiteral("回路节点"));
+            const bool isMotor = o.value("actuatorType").toString("Cylinder") == QLatin1String("Motor");
+            const int actId = o.value("actuatorId").toInt(-1);
+            const QString port = o.value("actuatorPort").toString("A");
+            const auto actObj = document.entity(isMotor ? QStringLiteral("hydraulicMotors") : QStringLiteral("hydraulicCylinders"), actId);
+            if (actId < 0 || actObj.isEmpty() || !active(actObj)) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("端口连接未指定已启用的液压缸或液压马达。"));
+            } else if (nid >= 0) {
+                const QString pKey = QStringLiteral("%1:%2:%3").arg(isMotor ? QStringLiteral("M") : QStringLiteral("C")).arg(actId).arg(port);
+                if (boundPorts.contains(pKey) && boundPorts.value(pKey) != nid) {
+                    addItem(report, MotionDiagnosticItem::Severity::Error,
+                            QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                            cid, cname, QStringLiteral("执行器同一油口被重复绑定到不同的液压节点。"));
+                }
+                boundPorts.insert(pKey, nid);
+            }
+        } else if (ctype == QLatin1String("Accumulator")) {
+            const int nid = checkPortNode("targetNodeId", QStringLiteral("挂载节点"));
+            if (nid >= 0 && activeNodes.value(nid).value("nodeType").toString() != QLatin1String("Chamber")
+                && !boundPorts.values().contains(nid)) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("蓄能器需挂载在容腔节点或执行器油口节点上，不能直接挂在恒压边界节点。"));
+            }
+        } else if (ctype == QLatin1String("Pump")) {
+            const int suc = checkPortNode("suctionNodeId", QStringLiteral("吸油口"));
+            const int del = checkPortNode("deliveryNodeId", QStringLiteral("压油口"));
+            if (suc >= 0 && suc == del) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("液压泵吸油口与压油口不能连接到同一节点。"));
+            }
+        } else if (ctype == QLatin1String("DirectionalValve") || ctype == QLatin1String("ServoValve")) {
+            const int np = checkPortNode("portPNodeId", QStringLiteral("P口"));
+            const int nt = checkPortNode("portTNodeId", QStringLiteral("T口"));
+            const int na = checkPortNode("portANodeId", QStringLiteral("A口"));
+            const int nb = checkPortNode("portBNodeId", QStringLiteral("B口"));
+            if (np >= 0 && nt >= 0 && np == nt) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("四通阀供油口 P 与回油口 T 不能短接到同一节点。"));
+            }
+            if (na >= 0 && nb >= 0 && na == nb) {
+                addItem(report, MotionDiagnosticItem::Severity::Warning,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("四通阀工作口 A 与 B 连接到同一节点，形成差动或旁路短接。"));
+            }
+        } else {
+            const int n1 = checkPortNode("inletNodeId", QStringLiteral("入口节点"));
+            const int n2 = checkPortNode("outletNodeId", QStringLiteral("出口节点"));
+            if (n1 >= 0 && n1 == n2) {
+                addItem(report, MotionDiagnosticItem::Severity::Error,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname, QStringLiteral("支路元件入口与出口不能连接到同一节点。"));
+            }
+            if (ctype == QLatin1String("ReliefValve") && n1 >= 0) {
+                reliefProtectedNodes.insert(n1);
+                maxReliefMPa = std::max(maxReliefMPa, o.value("crackingPressureMPa").toDouble(21.0));
+            }
+        }
+    }
+
+    // Check ExternalCircuit actuators for unconnected ports
+    for (const auto& v : document.collection("hydraulicCylinders")) {
+        const auto o = v.toObject();
+        if (!active(o) || o.value("supplyMode").toString() != QLatin1String("ExternalCircuit")) continue;
+        const int id = o.value("id").toInt(-1);
+        const bool hasA = boundPorts.contains(QStringLiteral("C:%1:A").arg(id));
+        const bool hasB = boundPorts.contains(QStringLiteral("C:%1:B").arg(id));
+        if (!hasA && !hasB) {
+            addItem(report, MotionDiagnosticItem::Severity::Error,
+                    QStringLiteral("液压回路"), QStringLiteral("hydraulicCylinders"),
+                    id, o.value("name").toString(),
+                    QStringLiteral("已设为“外部液压回路”模式，但 A 口与 B 口均未连接任何回路节点。"));
+        } else if (!hasA || !hasB) {
+            addItem(report, MotionDiagnosticItem::Severity::Warning,
+                    QStringLiteral("液压回路"), QStringLiteral("hydraulicCylinders"),
+                    id, o.value("name").toString(),
+                    QStringLiteral("%1 口未连接外部回路节点，求解时该腔按封闭容腔处理。").arg(!hasA ? QStringLiteral("A") : QStringLiteral("B")));
+        }
+    }
+    for (const auto& v : document.collection("hydraulicMotors")) {
+        const auto o = v.toObject();
+        if (!active(o) || o.value("supplyMode").toString() != QLatin1String("ExternalCircuit")) continue;
+        const int id = o.value("id").toInt(-1);
+        const bool hasA = boundPorts.contains(QStringLiteral("M:%1:A").arg(id));
+        const bool hasB = boundPorts.contains(QStringLiteral("M:%1:B").arg(id));
+        if (!hasA && !hasB) {
+            addItem(report, MotionDiagnosticItem::Severity::Error,
+                    QStringLiteral("液压回路"), QStringLiteral("hydraulicMotors"),
+                    id, o.value("name").toString(),
+                    QStringLiteral("已设为“外部液压回路”模式，但 A 口与 B 口均未连接任何回路节点。"));
+        } else if (!hasA || !hasB) {
+            addItem(report, MotionDiagnosticItem::Severity::Warning,
+                    QStringLiteral("液压回路"), QStringLiteral("hydraulicMotors"),
+                    id, o.value("name").toString(),
+                    QStringLiteral("%1 口未连接外部回路节点，求解时该口按封闭口处理。").arg(!hasA ? QStringLiteral("A") : QStringLiteral("B")));
+        }
+    }
+
+    // Engineering topology warnings: Pump relief protection, isolated nodes, missing tank/reference, accumulator precharge
+    for (const auto& v : document.collection("hydraulicComponents")) {
+        const auto o = v.toObject();
+        if (!active(o)) continue;
+        const int cid = o.value("id").toInt(-1);
+        const QString cname = o.value("name").toString();
+        const QString ctype = o.value("componentType").toString();
+        if (ctype == QLatin1String("Pump")) {
+            const int del = o.value("deliveryNodeId").toInt(-1);
+            if (del >= 0 && activeNodes.contains(del)
+                && activeNodes.value(del).value("nodeType").toString() == QLatin1String("Chamber")
+                && !reliefProtectedNodes.contains(del)) {
+                addItem(report, MotionDiagnosticItem::Severity::Warning,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname,
+                        QStringLiteral("容积泵压油节点未配置溢流阀安全保护，换向阀中位封闭或行程到底时可能导致异常憋压。"));
+            }
+        } else if (ctype == QLatin1String("Accumulator")) {
+            const double p0 = o.value("prechargePressureMPa").toDouble(10.0);
+            if (p0 >= maxReliefMPa) {
+                addItem(report, MotionDiagnosticItem::Severity::Warning,
+                        QStringLiteral("液压回路"), QStringLiteral("hydraulicComponents"),
+                        cid, cname,
+                        QStringLiteral("蓄能器预充气压（%1 MPa）高于或等于系统供油/溢流压力（%2 MPa），油液可能无法充入蓄能器。")
+                            .arg(p0, 0, 'g', 5).arg(maxReliefMPa, 0, 'g', 5));
+            }
+        }
+    }
+
+    if ((report.hydraulicNodes > 0 || report.hydraulicComponents > 0) && !hasReferenceBoundary) {
+        addItem(report, MotionDiagnosticItem::Severity::Warning,
+                QStringLiteral("液压回路"), {}, -1, QStringLiteral("回路压力基准"),
+                QStringLiteral("当前液压回路未配置油箱或恒压源边界节点，建议添加油箱节点提供回油压力基准。"));
+    }
+
+    for (auto it = activeNodes.cbegin(); it != activeNodes.cend(); ++it) {
+        if (!touchedNodes.contains(it.key())) {
+            addItem(report, MotionDiagnosticItem::Severity::Warning,
+                    QStringLiteral("液压回路"), QStringLiteral("hydraulicNodes"),
+                    it.key(), it.value().value("name").toString(),
+                    QStringLiteral("孤立液压节点：未连接任何启用的液压元件或执行器端口。"));
+        }
+    }
+
+    if ((report.hydraulicActuators > 0 || report.hydraulicNodes > 0 || report.hydraulicComponents > 0)
+        && (report.errorCount + report.warningCount == hydIssuesBefore)) {
+        addItem(report, MotionDiagnosticItem::Severity::Pass,
+                QStringLiteral("液压回路"), {}, -1, QStringLiteral("机电液拓扑"),
+                QStringLiteral("液压回路拓扑与元件参数检查通过（执行器 %1，节点 %2，回路元件 %3）。")
+                    .arg(report.hydraulicActuators).arg(report.hydraulicNodes).arg(report.hydraulicComponents));
+    }
 }
 
 } // namespace
@@ -131,13 +362,18 @@ MotionDiagnosticReport diagnoseNativeMotion(const CadDocument& cad,
     }
     for (const auto* col : {"springs", "tensionCables", "softStops", "vectorForces",
                             "scalarForces", "scalarTorques", "threePointForces",
-                            "threePointTorques", "contacts", "hydraulicCylinders"}) {
+                            "threePointTorques", "contacts", "hydraulicCylinders", "hydraulicMotors"}) {
         for (const auto& v : document.collection(QLatin1String(col))) {
             const auto o = v.toObject();
             if (!active(o)) continue;
             ++report.activeForces;
             for (const auto* k : {"bodyIId", "bodyJId", "bodyId", "baseBodyId", "actionBodyId", "targetBodyId"})
                 if (o.contains(QLatin1String(k))) markBody(o.value(QLatin1String(k)).toInt(-1));
+            if (o.contains("targetJointId")) {
+                const auto jObj = document.entity("joints", o.value("targetJointId").toInt(-1));
+                markBody(jObj.value("actionBodyId").toInt(-1));
+                markBody(jObj.value("baseBodyId").toInt(-1));
+            }
         }
     }
 
@@ -179,7 +415,10 @@ MotionDiagnosticReport diagnoseNativeMotion(const CadDocument& cad,
         }
     }
 
-    // 3. Numerical Constraint Jacobian Rank, Redundant Constraints & Assembly Violation
+    // 3. Hydraulic Circuit & Actuator Topology Checks
+    checkHydraulicCircuit(document, report);
+
+    // 4. Numerical Constraint Jacobian Rank, Redundant Constraints & Assembly Violation
     int chosenScenario = scenarioId;
     if (chosenScenario < 0 && !document.collection("scenarios").isEmpty()) {
         chosenScenario = document.collection("scenarios").first().toObject().value("id").toInt(-1);
@@ -248,7 +487,7 @@ MotionDiagnosticReport diagnoseNativeMotion(const CadDocument& cad,
     if (report.errorCount == 0 && report.warningCount == 0) {
         addItem(report, MotionDiagnosticItem::Severity::Pass,
                 QStringLiteral("总结论"), {}, -1, QStringLiteral("全部检查项"),
-                QStringLiteral("模型质量惯量、几何绑定与约束雅可比检查全部通过。"));
+                QStringLiteral("模型质量惯量、几何绑定、机电液回路与约束雅可比检查全部通过。"));
     }
     return report;
 }

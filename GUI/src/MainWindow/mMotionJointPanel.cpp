@@ -1616,8 +1616,7 @@ namespace MechMainWindow
         data.enabled = m_chkEnableFriction->isChecked();
         data.staticCoefficient = m_spbStaticMu->text().toDouble();
         data.kineticCoefficient = m_spbDynamicMu->text().toDouble();
-        // 黏性摩擦系数界面不再提供，固定 0（数据类字段与旧工程文件保持兼容）
-        data.viscousCoefficient = 0.0;
+        // 保留扩展区或工程文件设定的黏性摩擦系数，不在同步静/动摩擦时清零
         data.effectiveRadius =
             m_motionJointData->getType() == JointType::Translational
             ? 0.0

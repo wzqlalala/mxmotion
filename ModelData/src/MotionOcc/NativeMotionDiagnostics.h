@@ -12,8 +12,8 @@ class CadDocument;
 
 struct MotionDiagnosticItem {
     enum class Severity { Pass, Warning, Error } severity = Severity::Pass;
-    QString category;   // "模型" / "质量惯量" / "几何拓扑" / "约束与自由度"
-    QString collection; // Optional model tree collection ("bodies", "joints", etc.)
+    QString category;   // "模型结构" / "质量惯量" / "几何拓扑" / "约束与自由度" / "液压回路"
+    QString collection; // Optional model tree collection ("bodies", "joints", "hydraulicComponents", etc.)
     int entityId = -1;
     QString entityName;
     QString message;
@@ -27,6 +27,10 @@ struct MotionDiagnosticReport {
     int activeJoints = 0;
     int activeDrives = 0;
     int activeForces = 0;
+
+    int hydraulicActuators = 0;
+    int hydraulicNodes = 0;
+    int hydraulicComponents = 0;
 
     bool hasJacobianAnalysis = false;
     int velocityDofs = 0;

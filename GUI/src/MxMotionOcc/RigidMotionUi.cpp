@@ -173,8 +173,9 @@ void MotionWindow::createRigidCommands()
         if (m_running) m_running->stop.store(true, std::memory_order_relaxed);
         updateActions();
     });
-    add(Command::ModelCheck, tr("模型检查"), "joint_fixed.png", [this] { showModelDiagnostics(false); });
-    add(Command::ConstraintDiagnostics, tr("约束诊断"), "joint_fixed.png", [this] { showModelDiagnostics(true); });
+    add(Command::ModelCheck, tr("模型检查"), "joint_fixed.png", [this] { showModelDiagnostics(false, false); });
+    add(Command::ConstraintDiagnostics, tr("约束诊断"), "joint_fixed.png", [this] { showModelDiagnostics(true, false); });
+    add(Command::HydraulicCircuitCheck, tr("回路检查"), "controlCalculation.png", [this] { showModelDiagnostics(false, true); });
     add(Command::LoadRigidExample, tr("刚体示例"), "movingBody.png", [this] { loadRigidExample(); });
     const auto addResult = [this](Command id, const QString& text, const char* icon, ModelNode::Kind kind) {
         auto* action = new QAction(TreeIcons::item(QString::fromLatin1(icon)), text, this);
@@ -398,9 +399,11 @@ void MotionWindow::updateRigidActions()
             Command::AddVectorForce, Command::AddScalarForce, Command::AddScalarTorque,
             Command::AddThreePointForce, Command::AddThreePointTorque, Command::AddContact,
             Command::AddMarker, Command::AddSensor, Command::AddController, Command::AddControlInput,
-            Command::AddAutoFlex, Command::AddSoftStop, Command::AddTensionCable, Command::AddHydraulicCylinder})
+            Command::AddAutoFlex, Command::AddSoftStop, Command::AddTensionCable,
+            Command::AddHydraulicCylinder, Command::AddHydraulicMotor})
         command(id)->setEnabled(idle && !m_model.bodies.empty());
     command(Command::EditHydraulicFluid)->setEnabled(idle);
+    command(Command::HydraulicCircuitCheck)->setEnabled(idle);
     if (m_model.nativeDocument) {
         const bool joints = !m_model.nativeDocument->collection(QStringLiteral("joints")).isEmpty();
         command(Command::AddSpeedDrive)->setEnabled(idle && joints);
