@@ -1130,9 +1130,6 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
             const double fReqN = (sol.size() > curCol && std::isfinite(sol(curCol))) ? sol(curCol) * 0.001 : 0.0;
             rt.actuator->ApplySteadyInitialLoad(fReqN);
         }
-        if (system.electricDrive && system.electricDrive->network) {
-            system.electricDrive->network->Finalize();
-        }
     } else {
         for (auto* rt : cylRuntimes) rt->cylinder->SetDisabled(false);
         for (auto* rt : motRuntimes) rt->motor->SetDisabled(false);

@@ -7,6 +7,8 @@
 #include "motion/physics/ContactContainer.h"
 #include "motion/physics/MaterialSurfaceSMC.h"
 #include "motion/physics/Force.h"
+#include "motion/physics/HydraulicCircuit.h"
+#include "motion/physics/ElectricDrive.h"
 #include "motion/physics/LinkMotorLinear.h"
 #include "motion/physics/LinkMotorRotation.h"
 #include "motion/physics/Link.h"
@@ -891,6 +893,21 @@ void assembleInitialState(NativeMotionSystem& system)
         acc.setZero(system.GetNcoords_v(), &system);
         reactions.setZero();
         if (system.StateSolveA(acc, reactions, position, compatible, time, 1e-6, false, true)) {
+            // Stiff 1st-order circuit/bus node states (stored in velocity slots) can have microsecond
+            // RC/orifice time constants tau << h when user-supplied initial pressures/voltages differ slightly
+            // across low-drop filters or valves. Zeroing their t=0 explicit Euler predictor rate prevents
+            // multi-MPa overshoot and square-root orifice period-2 Newton cycling on step 1 while preserving
+            // exact mechanical body accelerations and constraint reactions.
+            if (system.hydraulicCircuit && system.hydraulicCircuit->circuit && system.hydraulicCircuit->circuit->IsActive()) {
+                const int off = static_cast<int>(system.hydraulicCircuit->circuit->GetOffset_w());
+                const int nd = static_cast<int>(system.hydraulicCircuit->circuit->GetDOF_w());
+                if (off >= 0 && nd > 0 && off + nd <= acc.size()) acc.segment(off, nd).setZero();
+            }
+            if (system.electricDrive && system.electricDrive->network && system.electricDrive->network->IsActive()) {
+                const int off = static_cast<int>(system.electricDrive->network->GetOffset_w());
+                const int nd = static_cast<int>(system.electricDrive->network->GetDOF_w());
+                if (off >= 0 && nd > 0 && off + nd <= acc.size()) acc.segment(off, nd).setZero();
+            }
             system.StateScatter(position, compatible, time, true);
             system.StateScatterAcceleration(acc);
             system.StateScatterReactions(reactions);
@@ -995,6 +1012,8 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
                 config.use_preset = false;
                 config.integrator.type = motion::MotionTimestepper::Type::HHT;
                 config.integrator.alpha = -0.05;
+                config.integrator.max_iters = 50;
+                config.integrator.tol = 1e-4;
                 config.solver.type = motion::MotionSolver::Type::SPARSE_QR;
             } else {
                 if (config.integrator.type == motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED
@@ -1125,7 +1144,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
                 .arg(next.frames.back().seconds,0,'g',12).arg(input.scenario.duration,0,'g',12));
         result=std::move(next);error.clear();if(callbacks.progress)callbacks.progress(1);return SolveStatus::Completed;
     }catch(const NativeStaticCancelled&){error.clear();return SolveStatus::Stopped;}
-     catch(const std::exception& e){error=QString::fromUtf8(e.what());}
+     catch(const std::exception& e){error=QString::fromUtf8(e.what());if(error.isEmpty())error=QStringLiteral("std::exception(%1)").arg(QString::fromLatin1(typeid(e).name()));}
      catch(...){error=QStringLiteral("原生运动求解失败（未知引擎异常）。");}
     return SolveStatus::Failed;
 }
