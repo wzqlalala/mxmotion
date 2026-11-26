@@ -1456,16 +1456,20 @@ void MotionWindow::createNativeCommands()
         auto* item = new QAction(QIcon(QStringLiteral(":/mMainWidgets/Icon/Motion/") + QLatin1String(icon)), text, this);
         m_commands.emplace(command, item); connect(item, &QAction::triggered, this, action);
     };
-    add(Command::ImportMotionJson, tr("导入运动 JSON"), "movingBody.png", [this] {
+    add(Command::ImportMotionJson, tr("导入运动数据"), "movingBody.png", [this] {
         const auto path = QFileDialog::getOpenFileName(this, tr("导入运动数据"), {}, tr("Motion 运动数据 (*.motion.json *.json)"));
         if (!path.isEmpty()) startMotionJsonImport(path);
     });
-    add(Command::ExportMotionJson, tr("导出运动 JSON"), "movingBody.png", [this] {
+    add(Command::ExportMotionJson, tr("导出运动数据"), "movingBody.png", [this] {
+        if (m_model.bodies.empty() && !m_model.nativeDocument) {
+            setNotice(tr("当前没有可导出的运动数据。"), true);
+            return;
+        }
         if (!ensureNativeModel()) return;
         if(m_original)m_original->flush();
         snapshotNativeFlexMeshes();
         if(!m_original)for (const auto& scenario : m_model.scenarios) syncNativeScenarioCurves(m_model, scenario.id);
-        auto path = QFileDialog::getSaveFileName(this, tr("导出运动数据"), "model.motion.json", tr("Motion 运动数据 (*.motion.json)"));
+        auto path = QFileDialog::getSaveFileName(this, tr("导出运动数据"), "model.motion.json", tr("Motion 运动数据 (*.motion.json *.json)"));
         if (path.isEmpty()) return;
         if (!path.endsWith(".json", Qt::CaseInsensitive)) path += ".motion.json";
         QString error;

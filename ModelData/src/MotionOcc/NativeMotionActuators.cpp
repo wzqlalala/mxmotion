@@ -1138,6 +1138,9 @@ QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJson
         for (auto* rt : emaRuntimes) rt->actuator->SetDisabled(false);
     }
 
+    if (system.electricDrive && system.electricDrive->network) {
+        system.electricDrive->network->Finalize();
+    }
     system.Setup();
     system.Update(0.0, true);
     return QStringLiteral("液压稳态初始化已完成：按 t=0 静载平衡 %1 个机电液执行器初始腔压/电流。")

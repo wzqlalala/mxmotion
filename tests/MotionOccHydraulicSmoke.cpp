@@ -1,21 +1,17 @@
 #include "CadDocument.h"
 #include "NativeMotionDiagnostics.h"
+#include "NativeMotionDocument.h"
+#include "NativeMotionExchange.h"
 #include "NativeMotionSolver.h"
 #include "RigidProject.h"
-
-#include <BRepBuilderAPI_MakeSolid.hxx>
-#include <BRepPrimAPI_MakeBox.hxx>
-#include <BRepPrimAPI_MakeCylinder.hxx>
-#include <BRepTools.hxx>
-#include <BRep_Builder.hxx>
-#include <TopoDS_Compound.hxx>
-#include <gp_Ax2.hxx>
-#include <gp_Pnt.hxx>
 
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <algorithm>
 #include <cmath>
@@ -867,461 +863,616 @@ void testIntegratedEhaAndEmaServoActuators()
     }
 }
 
-int importBrepShape(CadDocument& cad, const QTemporaryDir& tmpDir, const QString& name, const TopoDS_Shape& shape)
+void copyCompanionStepIfNeeded(const QString& srcStep, const QString& dstStep)
 {
-    const QString path = QDir(tmpDir.path()).filePath(name + QStringLiteral(".brep"));
-    require(BRepTools::Write(shape, path.toUtf8().constData()), "Failed to write temporary BREP: " + name);
-    std::vector<int> ids;
-    QString error;
-    require(cad.importFile(path, ids, error) && ids.size() == 1, "Failed to import temporary BREP " + name + ": " + error);
-    return ids.front();
+    const QFileInfo srcInfo(srcStep);
+    require(srcInfo.isFile() && srcInfo.size() > 0, "Missing source engineering STEP file: " + srcStep);
+    const QFileInfo dstInfo(dstStep);
+    if (dstInfo.isFile() && dstInfo.size() == srcInfo.size()) return;
+    if (dstInfo.exists()) require(QFile::remove(dstStep), "Cannot overwrite old STEP file: " + dstStep);
+    require(QDir().mkpath(dstInfo.absolutePath()), "Cannot create case directory: " + dstInfo.absolutePath());
+    require(QFile::copy(srcStep, dstStep), "Failed to copy companion STEP file to: " + dstStep);
 }
 
-void exportMultiphysicsShowcaseProjects(const QString& examplesDirPath)
+QJsonObject readRawJsonObject(const QString& path)
 {
-    QDir outDir(examplesDirPath);
-    require(outDir.exists() || QDir().mkpath(outDir.absolutePath()), "Cannot create examples directory: " + examplesDirPath);
-    QTemporaryDir tmpDir;
-    require(tmpDir.isValid(), "Cannot create temporary CAD directory");
+    QFile f(path);
+    require(f.open(QIODevice::ReadOnly), "Cannot open source motion JSON: " + path);
+    QJsonParseError err{};
+    const auto doc = QJsonDocument::fromJson(f.readAll(), &err);
+    require(err.error == QJsonParseError::NoError && doc.isObject(),
+            "Invalid source motion JSON " + path + ": " + err.errorString());
+    return doc.object();
+}
+
+QString formatDiagIssues(const MotionDiagnosticReport& r)
+{
+    QStringList msgs;
+    for (const auto& item : r.items) {
+        if (item.severity != MotionDiagnosticItem::Severity::Pass)
+            msgs << QStringLiteral("[%1|%2] %3: %4")
+                        .arg(int(item.severity)).arg(item.category, item.entityName, item.message);
+    }
+    return msgs.join(QStringLiteral("; "));
+}
+
+void saveAndReloadPortableCase(const QString& outJsonPath,
+                               const QJsonObject& origExchange,
+                               NativeMotionDocument& doc,
+                               CadDocument& outCad,
+                               int scenarioId,
+                               bool allowCadRedundantLoopWarnings = false)
+{
+    QString error;
+    doc.root.insert(QStringLiteral("geometryExchange"), origExchange);
+    require(writeNativeMotionDocument(outJsonPath, doc, error, false),
+            "writeNativeMotionDocument failed for " + outJsonPath + ": " + error);
+
+    NativeMotionDocument reloaded;
+    require(readNativeMotionDocument(outJsonPath, reloaded, error),
+            "readNativeMotionDocument failed for " + outJsonPath + ": " + error);
+    bool hasGeo = false;
+    require(readNativeMotionExchange(outJsonPath, reloaded, outCad, hasGeo, error) && hasGeo,
+            "readNativeMotionExchange failed for " + outJsonPath + ": " + error);
+    doc = std::move(reloaded);
+
+    const auto diag = diagnoseNativeMotion(outCad, doc, scenarioId);
+    require(diag.errorCount == 0,
+            QStringLiteral("Diagnostics errors in %1: %2").arg(outJsonPath, formatDiagIssues(diag)));
+    if (!allowCadRedundantLoopWarnings) {
+        require(diag.warningCount == 0,
+                QStringLiteral("Unexpected diagnostic warnings in %1: %2").arg(outJsonPath, formatDiagIssues(diag)));
+    }
+}
+
+void buildRealMultiphysicsCases(const QString& workspaceRoot)
+{
+    const QDir ws(workspaceRoot);
+    require(ws.exists(), "Workspace root does not exist: " + workspaceRoot);
+    const QDir outBase(ws.filePath(QStringLiteral("机电液算例")));
+    require(QDir().mkpath(outBase.absolutePath()), "Cannot create 机电液算例 root directory");
 
     // =========================================================================
-    // Project 1: electro-hydraulic-boom-circuit.mxmotion
+    // Case 3 (Fastest first): Real Two-Stage Gear Reducer & Rack driven by
+    // Proportional Servo-Valve Hydraulic Circuit + Rotary Hydraulic Motor
     // =========================================================================
     {
-        CadDocument cad;
-        BRep_Builder builder;
-        TopoDS_Compound baseComp;
-        builder.MakeCompound(baseComp);
-        // Note: keep each body a single Solid so CadDocument imports 1 part per body
-        const int basePart = importBrepShape(cad, tmpDir, QStringLiteral("电液机架底座"),
-            BRepPrimAPI_MakeBox(gp_Pnt(-90, -55, 0), gp_Pnt(125, 55, 160)).Shape());
-        const int boomPart = importBrepShape(cad, tmpDir, QStringLiteral("举升动臂"),
-            BRepPrimAPI_MakeBox(gp_Pnt(0, -24, 142), gp_Pnt(280, 24, 178)).Shape());
-        const int winchPart = importBrepShape(cad, tmpDir, QStringLiteral("液压卷扬滚筒"),
-            BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-55, -62, 95), gp_Dir(0, -1, 0)), 38.0, 56.0).Shape());
+        const QString srcDir = ws.filePath(QStringLiteral("机构算例/两级齿轮减速与齿条受载往复"));
+        const QString dstDir = outBase.filePath(QStringLiteral("03_两级齿轮齿条_比例阀控液压马达回路"));
+        copyCompanionStepIfNeeded(QDir(srcDir).filePath(QStringLiteral("gear-rack.step")),
+                                  QDir(dstDir).filePath(QStringLiteral("gear-rack.step")));
 
+        const QJsonObject raw = readRawJsonObject(QDir(srcDir).filePath(QStringLiteral("gear-rack.motion.json")));
+        const QJsonObject origExchange = raw.value(QStringLiteral("geometryExchange")).toObject();
         NativeMotionDocument doc;
-        doc.root = {{"formatVersion", 1}, {"motionData", QJsonObject{}}};
-        doc.bodyPartBindings.insert(0, {basePart});
-        doc.bodyPartBindings.insert(1, {boomPart});
-        doc.bodyPartBindings.insert(2, {winchPart});
+        doc.root = raw;
+        doc.root.remove(QStringLiteral("geometryExchange"));
 
+        setCollection(doc, "drives", {});
         setHydraulicFluid(doc, {
             {"bulkModulus", 1450.0}, {"density", 860.0},
             {"kinematicViscosity", 46.0},
-            {"supplyPressure", 21.0}, {"tankPressure", 0.1}
-        });
-
-        setCollection(doc, "bodies", {
-            QJsonObject{
-                {"id", 0}, {"name", "电液机架底座"}, {"enabled", true}, {"isFixed", true},
-                {"geoEntityIds", QJsonArray{basePart}}, {"isCustomMassProps", true},
-                {"mass", 260.0}, {"centerOfMass", xyz(15, 0, 80)},
-                {"inertia", QJsonArray{8.0e5, 9.0e5, 7.0e5, 0, 0, 0}}
-            },
-            QJsonObject{
-                {"id", 1}, {"name", "重型举升动臂"}, {"enabled", true}, {"isFixed", false},
-                {"geoEntityIds", QJsonArray{boomPart}}, {"isCustomMassProps", true},
-                {"mass", 85.0}, {"centerOfMass", xyz(140, 0, 160)},
-                {"inertia", QJsonArray{4.2e4, 5.8e5, 5.8e5, 0, 0, 0}},
-                {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
-            },
-            QJsonObject{
-                {"id", 2}, {"name", "液压卷扬滚筒"}, {"enabled", true}, {"isFixed", false},
-                {"geoEntityIds", QJsonArray{winchPart}}, {"isCustomMassProps", true},
-                {"mass", 24.0}, {"centerOfMass", xyz(-55, -90, 95)},
-                {"inertia", QJsonArray{1.8e5, 2.6e5, 1.8e5, 0, 0, 0}},
-                {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
-            }
-        });
-
-        setCollection(doc, "joints", {
-            QJsonObject{
-                {"id", 1}, {"name", "动臂主铰接副"}, {"enabled", true}, {"jointType", "Revolute"},
-                {"actionBodyId", 1}, {"baseBodyId", 0},
-                {"origin", xyz(0, 0, 160)}, {"axis", xyz(0, -1, 0)}
-            },
-            QJsonObject{
-                {"id", 2}, {"name", "卷扬主轴旋转副"}, {"enabled", true}, {"jointType", "Revolute"},
-                {"actionBodyId", 2}, {"baseBodyId", 0},
-                {"origin", xyz(-55, -90, 95)}, {"axis", xyz(0, 1, 0)}
-            }
+            {"supplyPressure", 12.0}, {"tankPressure", 0.1}
         });
 
         setCollection(doc, "hydraulicNodes", {
-            QJsonObject{{"id", 1}, {"name", "主油箱"}, {"enabled", true}, {"nodeType", "Tank"},
-                        {"pressureMPa", 0.1}, {"schemX", -480.0}, {"schemY", 0.0}},
+            QJsonObject{{"id", 1}, {"name", "主回油箱"}, {"enabled", true}, {"nodeType", "Tank"},
+                        {"pressureMPa", 0.1}, {"schemX", -520.0}, {"schemY", 0.0}},
             QJsonObject{{"id", 2}, {"name", "泵出口高压母管"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 220.0}, {"initialPressureMPa", 18.0}, {"schemX", -50.0}, {"schemY", -95.0}},
-            QJsonObject{{"id", 3}, {"name", "阀前精滤腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 100.0}, {"initialPressureMPa", 17.8}, {"schemX", 175.0}, {"schemY", -160.0}},
-            QJsonObject{{"id", 4}, {"name", "举升无杆腔节点"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 80.0}, {"initialPressureMPa", 0.8}, {"schemX", 455.0}, {"schemY", -205.0}},
-            QJsonObject{{"id", 5}, {"name", "举升有杆腔节点"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 80.0}, {"initialPressureMPa", 0.5}, {"schemX", 455.0}, {"schemY", -105.0}},
-            QJsonObject{{"id", 6}, {"name", "卷扬减压供油腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 100.0}, {"initialPressureMPa", 9.5}, {"schemX", 175.0}, {"schemY", 85.0}},
-            QJsonObject{{"id", 7}, {"name", "卷扬马达B口腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 80.0}, {"initialPressureMPa", 0.5}, {"schemX", 455.0}, {"schemY", 140.0}},
-            QJsonObject{{"id", 8}, {"name", "卷扬马达A口腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 80.0}, {"initialPressureMPa", 0.5}, {"schemX", 455.0}, {"schemY", 40.0}}
+                        {"volumeMl", 180.0}, {"initialPressureMPa", 11.2}, {"schemX", -180.0}, {"schemY", -80.0}},
+            QJsonObject{{"id", 3}, {"name", "高压精滤后腔"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 11.2}, {"schemX", 30.0}, {"schemY", -80.0}},
+            QJsonObject{{"id", 4}, {"name", "支路减压稳压腔"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 100.0}, {"initialPressureMPa", 7.8}, {"schemX", 240.0}, {"schemY", -80.0}},
+            QJsonObject{{"id", 5}, {"name", "输油管末端阀前腔"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 80.0}, {"initialPressureMPa", 7.8}, {"schemX", 450.0}, {"schemY", -80.0}},
+            QJsonObject{{"id", 6}, {"name", "马达正向A口腔"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 45.0}, {"initialPressureMPa", 0.6}, {"schemX", 730.0}, {"schemY", -135.0}},
+            QJsonObject{{"id", 7}, {"name", "马达反向B口腔"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 45.0}, {"initialPressureMPa", 0.6}, {"schemX", 730.0}, {"schemY", -20.0}}
         });
 
         setCollection(doc, "hydraulicComponents", {
             QJsonObject{
-                {"id", 1}, {"name", "定量主液压泵"}, {"enabled", true}, {"componentType", "Pump"},
+                {"id", 1}, {"name", "定量供油齿轮泵"}, {"enabled", true}, {"componentType", "Pump"},
                 {"suctionNodeId", 1}, {"deliveryNodeId", 2},
-                {"displacementCcRev", 24.0}, {"speedExpression", "1500"},
-                {"volumetricEfficiency", 0.95}, {"mechanicalEfficiency", 0.91}, {"ratedPressureMPa", 21.0},
-                {"schemX", -265.0}, {"schemY", -95.0}
+                {"displacementCcRev", 6.0}, {"speedExpression", "1500"},
+                {"volumetricEfficiency", 0.95}, {"mechanicalEfficiency", 0.90}, {"ratedPressureMPa", 14.0},
+                {"schemX", -355.0}, {"schemY", -80.0}
             },
             QJsonObject{
-                {"id", 2}, {"name", "系统安全溢流阀"}, {"enabled", true}, {"componentType", "ReliefValve"},
+                {"id", 2}, {"name", "先导式安全溢流阀"}, {"enabled", true}, {"componentType", "ReliefValve"},
                 {"inletNodeId", 2}, {"outletNodeId", 1},
-                {"crackingPressureMPa", 20.0}, {"pressureOverrideMPa", 1.2}, {"ratedFlowLpm", 60.0},
-                {"schemX", -265.0}, {"schemY", 35.0}
+                {"crackingPressureMPa", 11.5}, {"pressureOverrideMPa", 0.8}, {"ratedFlowLpm", 24.0},
+                {"schemX", -355.0}, {"schemY", 65.0}
             },
             QJsonObject{
-                {"id", 3}, {"name", "囊式稳压蓄能器"}, {"enabled", true}, {"componentType", "Accumulator"},
+                {"id", 3}, {"name", "隔膜式稳压蓄能器"}, {"enabled", true}, {"componentType", "Accumulator"},
                 {"targetNodeId", 2},
-                {"prechargePressureMPa", 12.0}, {"gasVolumeL", 0.65}, {"polytropicGamma", 1.3},
-                {"schemX", -50.0}, {"schemY", 35.0}
+                {"prechargePressureMPa", 7.0}, {"gasVolumeL", 0.35}, {"polytropicGamma", 1.3},
+                {"schemX", -180.0}, {"schemY", 65.0}
             },
             QJsonObject{
                 {"id", 4}, {"name", "高压管路过滤器"}, {"enabled", true}, {"componentType", "Filter"},
                 {"inletNodeId", 2}, {"outletNodeId", 3},
-                {"ratedFlowLpm", 80.0}, {"cleanPressureDropMPa", 0.15}, {"foulingFactor", 1.05},
-                {"schemX", 65.0}, {"schemY", -160.0}
+                {"ratedFlowLpm", 30.0}, {"cleanPressureDropMPa", 0.12}, {"foulingFactor", 1.05},
+                {"schemX", -75.0}, {"schemY", -80.0}
             },
             QJsonObject{
-                {"id", 5}, {"name", "动臂电液伺服阀"}, {"enabled", true}, {"componentType", "ServoValve"},
-                {"portPNodeId", 3}, {"portTNodeId", 1}, {"portANodeId", 4}, {"portBNodeId", 5},
-                {"ratedFlowLpm", 24.0}, {"ratedPressureDropMPa", 3.5},
-                {"centerMode", "ClosedCenter"}, {"responseTimeMs", 20.0}, {"underlap", 0.0},
+                {"id", 5}, {"name", "定值减压阀"}, {"enabled", true}, {"componentType", "PressureReducingValve"},
+                {"inletNodeId", 3}, {"outletNodeId", 4},
+                {"regulatedPressureMPa", 7.8}, {"pressureBandMPa", 0.6},
+                {"ratedFlowLpm", 18.0}, {"ratedPressureDropMPa", 1.0},
+                {"schemX", 135.0}, {"schemY", -80.0}
+            },
+            QJsonObject{
+                {"id", 6}, {"name", "高压输油无缝钢管"}, {"enabled", true}, {"componentType", "Pipe"},
+                {"inletNodeId", 4}, {"outletNodeId", 5},
+                {"lengthMm", 850.0}, {"diameterMm", 10.0}, {"localLossCoeff", 0.5},
+                {"schemX", 345.0}, {"schemY", -80.0}
+            },
+            QJsonObject{
+                {"id", 7}, {"name", "四通电液比例伺服换向阀"}, {"enabled", true}, {"componentType", "ServoValve"},
+                {"portPNodeId", 5}, {"portTNodeId", 1}, {"portANodeId", 6}, {"portBNodeId", 7},
+                {"ratedFlowLpm", 2.4}, {"ratedPressureDropMPa", 3.0},
+                {"centerMode", "ClosedCenter"}, {"responseTimeMs", 18.0}, {"underlap", 0.0},
                 {"commandExpression", "0"},
-                {"commandTableX", QJsonArray{0.0, 0.08, 0.12, 0.45}},
-                {"commandTableY", QJsonArray{0.0, 0.0, 0.35, 0.35}},
-                {"schemX", 310.0}, {"schemY", -160.0}
-            },
-            QJsonObject{
-                {"id", 6}, {"name", "卷扬支路减压阀"}, {"enabled", true}, {"componentType", "PressureReducingValve"},
-                {"inletNodeId", 2}, {"outletNodeId", 6},
-                {"regulatedPressureMPa", 9.5}, {"pressureBandMPa", 0.8},
-                {"ratedFlowLpm", 40.0}, {"ratedPressureDropMPa", 1.5},
-                {"schemX", 65.0}, {"schemY", 85.0}
-            },
-            QJsonObject{
-                {"id", 7}, {"name", "卷扬比例换向阀"}, {"enabled", true}, {"componentType", "DirectionalValve"},
-                {"portPNodeId", 6}, {"portTNodeId", 1}, {"portANodeId", 8}, {"portBNodeId", 7},
-                {"ratedFlowLpm", 38.0}, {"ratedPressureDropMPa", 3.0},
-                {"centerMode", "ClosedCenter"}, {"responseTimeMs", 0.0}, {"underlap", 0.0},
-                {"commandExpression", "0"},
-                {"commandTableX", QJsonArray{0.0, 0.05, 0.12, 0.45}},
-                {"commandTableY", QJsonArray{0.0, 0.0, 0.80, 0.80}},
-                {"schemX", 310.0}, {"schemY", 85.0}
+                {"commandTableX", QJsonArray{0.0, 0.08, 0.14, 0.64, 0.70, 0.90, 0.96, 1.46, 1.52, 1.60}},
+                {"commandTableY", QJsonArray{0.0, 0.0, 0.72, 0.72, 0.0, 0.0, -0.72, -0.72, 0.0, 0.0}},
+                {"schemX", 590.0}, {"schemY", -80.0}
             }
         });
 
-        setCollection(doc, "hydraulicCylinders", {QJsonObject{
-            {"id", 1}, {"name", "动臂举升液压缸"}, {"enabled", true},
-            {"mountMode", "Points"},
-            {"bodyIId", 1}, {"bodyJId", 0},
-            {"localI", xyz(120, 0, 148)}, {"localJ", xyz(90, 0, 12)},
-            {"pistonDiameter", 70.0}, {"rodDiameter", 40.0},
-            {"stroke", 260.0}, {"initialStroke", 100.0},
-            {"deadVolumeA", 60000.0}, {"deadVolumeB", 60000.0},
-            {"viscousFriction", 3.0}, {"internalLeakage", 0.0},
-            {"supplyMode", "ExternalCircuit"},
-            {"portANodeId", 4}, {"portBNodeId", 5},
-            {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
-            {"commandExpression", "0"},
-            {"initialPressureA", 0.8}, {"initialPressureB", 0.5},
-            {"schemX", 665.0}, {"schemY", -155.0}
-        }});
-
         setCollection(doc, "hydraulicMotors", {QJsonObject{
-            {"id", 1}, {"name", "卷扬定量液压马达"}, {"enabled", true},
-            {"targetJointId", 2},
-            {"displacementCcRev", 45.0},
+            {"id", 1}, {"name", "主动轴定量摆线液压马达"}, {"enabled", true},
+            {"targetJointId", 1},
+            {"displacementCcRev", 15.0},
             {"mechanicalEfficiency", 0.92}, {"volumetricEfficiency", 0.95},
-            {"chamberVolumeA", 60000.0}, {"chamberVolumeB", 60000.0},
-            {"viscousDamping", 2600.0}, {"internalLeakage", 0.02},
+            {"chamberVolumeA", 35000.0}, {"chamberVolumeB", 35000.0},
+            {"viscousDamping", 35.0}, {"internalLeakage", 0.01},
             {"supplyMode", "ExternalCircuit"},
-            {"portANodeId", 8}, {"portBNodeId", 7},
-            {"ratedFlowLpm", 35.0}, {"ratedPressureDrop", 3.5},
+            {"portANodeId", 6}, {"portBNodeId", 7},
+            {"ratedFlowLpm", 10.0}, {"ratedPressureDrop", 3.0},
             {"commandExpression", "0"},
-            {"initialPressureA", 0.5}, {"initialPressureB", 0.5},
-            {"schemX", 665.0}, {"schemY", 90.0}
+            {"initialPressureA", 0.6}, {"initialPressureB", 0.6},
+            {"schemX", 910.0}, {"schemY", -80.0}
         }});
 
         const QJsonArray curves{
-            QJsonObject{{"id", 1}, {"name", "动臂举升缸 · 行程 (mm)"}, {"sourceType", "hydraulicCylinders"},
-                        {"sourceId", 1}, {"variable", "Stroke"}, {"component", 0}, {"color", "#1890FF"}, {"visible", true}},
-            QJsonObject{{"id", 2}, {"name", "泵出口母管 · 压力 (MPa)"}, {"sourceType", "hydraulicNodes"},
-                        {"sourceId", 2}, {"variable", "Pressure"}, {"component", 0}, {"color", "#E6550D"}, {"visible", true}},
-            QJsonObject{{"id", 3}, {"name", "稳压蓄能器 · 气压 (MPa)"}, {"sourceType", "hydraulicComponents"},
-                        {"sourceId", 3}, {"variable", "GasPressure"}, {"component", 0}, {"color", "#2CA02C"}, {"visible", true}},
-            QJsonObject{{"id", 4}, {"name", "卷扬液压马达 · 转速 (rpm)"}, {"sourceType", "hydraulicMotors"},
-                        {"sourceId", 1}, {"variable", "Speed"}, {"component", 0}, {"color", "#756BB1"}, {"visible", true}}
+            QJsonObject{{"id", 1}, {"name", "齿条滑座 · 往复行程 X (mm)"}, {"metric", "native_channel"},
+                        {"sourceType", "joints"}, {"sourceId", 4}, {"variable", "Coordinate"}, {"component", 0}, {"color", "#1890FF"}, {"visible", true}},
+            QJsonObject{{"id", 2}, {"name", "主动轴液压马达 · 转速 (rpm)"}, {"metric", "native_channel"},
+                        {"sourceType", "hydraulicMotors"}, {"sourceId", 1}, {"variable", "Speed"}, {"component", 0}, {"color", "#756BB1"}, {"visible", true}},
+            QJsonObject{{"id", 3}, {"name", "减压稳压腔 · 压力 (MPa)"}, {"metric", "native_channel"},
+                        {"sourceType", "hydraulicNodes"}, {"sourceId", 4}, {"variable", "Pressure"}, {"component", 0}, {"color", "#E6550D"}, {"visible", true}},
+            QJsonObject{{"id", 4}, {"name", "齿条负载弹簧 · 恢复力 (N)"}, {"metric", "native_channel"},
+                        {"sourceType", "springs"}, {"sourceId", 1}, {"variable", "Force"}, {"component", 0}, {"color", "#2CA02C"}, {"visible", true}}
         };
 
         setCollection(doc, "scenarios", {QJsonObject{
-            {"id", 0}, {"name", "阀控举升与卷扬全回路联合仿真"},
-            {"endTime", 0.45}, {"stepSize", 0.001},
+            {"id", 1}, {"name", "比例伺服阀控液压马达驱动两级齿轮齿条往复"},
+            {"analysisType", "Dynamic"},
+            {"endTime", 1.60}, {"stepSize", 0.002},
             {"gravity", xyz(0, 0, -9810.0)},
             {"hydraulicSteadyInit", true},
             {"usePreset", true}, {"presetMode", "ROBUST"},
-            {"analysisType", "Dynamic"},
             {"curveRequests", curves},
             {"currentCurveRequest", curves.first().toObject()}
         }});
 
-        const auto formatDiagIssues = [](const MotionDiagnosticReport& r) {
-            QStringList msgs;
-            for (const auto& item : r.items) {
-                if (item.severity != MotionDiagnosticItem::Severity::Pass)
-                    msgs << QStringLiteral("[%1] %2: %3").arg(item.category, item.entityName, item.message);
-            }
-            return msgs.join(QStringLiteral("; "));
-        };
-        const auto diag = diagnoseNativeMotion(cad, doc, 0);
-        require(diag.errorCount == 0 && diag.warningCount == 0,
-                QStringLiteral("Boom showcase reported diagnostics: errors=%1 warnings=%2 -> %3")
-                    .arg(diag.errorCount).arg(diag.warningCount).arg(formatDiagIssues(diag)));
-        QString error;
-        require(validateNativeMotionDocument(doc, error), error);
-        NativeMotionInput input;
-        require(prepareNativeMotion(cad, doc, 0, input, error), "P1 prepare: " + error);
-        RigidResult res;
-        const auto st1 = solveNativeMotion(input, res, error);
-        require(st1 == SolveStatus::Completed, QStringLiteral("P1 solve(status=%1): %2").arg(int(st1)).arg(error));
-        const auto& stroke = channel(res, "hydraulicCylinders", 1, "Stroke").values;
-        const auto& motorRpm = channel(res, "hydraulicMotors", 1, "Speed").values;
-        expectNear(stroke[70], 100.0, 0.25, "Boom cylinder holds steady during closed-valve phase");
-        require(stroke.back() > 112.0 && motorRpm.back() > 40.0,
-                QStringLiteral("Boom showcase expected upward stroke (%1 mm) and winch spin (%2 rpm)").arg(stroke.back()).arg(motorRpm.back()));
+        const QString outJson = QDir(dstDir).filePath(QStringLiteral("gear-rack-hydraulic-motor.motion.json"));
+        CadDocument cad;
+        saveAndReloadPortableCase(outJson, origExchange, doc, cad, 1, false);
 
-        RigidModel model;
-        model.nativeDocument = std::make_shared<NativeMotionDocument>(doc);
-        syncNativeMotionModel(model);
-        const QString outPath = outDir.filePath(QStringLiteral("electro-hydraulic-boom-circuit.mxmotion"));
-        require(saveRigidProject(outPath, cad, model, error), error);
-        qInfo().noquote() << "Saved verified showcase:" << outPath
-                          << "finalStroke=" << stroke.back() << "mm winchSpeed=" << motorRpm.back() << "rpm";
+        QString error;
+        NativeMotionInput input;
+        require(prepareNativeMotion(cad, doc, 1, input, error), "Gear-Rack prepare: " + error);
+        RigidResult res;
+        require(solveNativeMotion(input, res, error) == SolveStatus::Completed, "Gear-Rack solve: " + error);
+        const auto& motAng = channel(res, "hydraulicMotors", 1, "Angle").values;
+        const auto& rackX = channel(res, "joints", 4, "Coordinate").values;
+        const double maxMotDeg = *std::max_element(motAng.begin(), motAng.end());
+        const double maxRackMm = std::max(std::abs(*std::max_element(rackX.begin(), rackX.end())),
+                                          std::abs(*std::min_element(rackX.begin(), rackX.end())));
+        require(maxMotDeg > 120.0 && maxRackMm > 6.0,
+                QStringLiteral("Gear-Rack hydraulic motor expected significant travel: maxAngle=%1 deg, maxRack=%2 mm")
+                    .arg(maxMotDeg).arg(maxRackMm));
+        qInfo().noquote() << "Verified Case 03 (Gear-Rack Hydraulic Motor):" << outJson
+                          << "maxMotorDeg=" << maxMotDeg << "maxRackMm=" << maxRackMm;
     }
 
     // =========================================================================
-    // Project 2: more-electric-flight-actuation.mxmotion
+    // Case 2: Source Robotics PAROL6 6-Axis Robot Arm driven by 48V DC Bus +
+    // Regenerative Chopper + 6 Closed-Loop Inverters + 6 Geared PMSM Motors
     // =========================================================================
     {
-        CadDocument cad;
-        const int wingPart = importBrepShape(cad, tmpDir, QStringLiteral("机翼主梁固定盒"),
-            BRepPrimAPI_MakeBox(gp_Pnt(-85, -200, -14), gp_Pnt(70, 200, 14)).Shape());
-        const int ehaFlapPart = importBrepShape(cad, tmpDir, QStringLiteral("内侧主舵面_EHA"),
-            BRepPrimAPI_MakeBox(gp_Pnt(74, -185, -8), gp_Pnt(234, -25, 8)).Shape());
-        const int emaFlapPart = importBrepShape(cad, tmpDir, QStringLiteral("外侧副翼面_EMA"),
-            BRepPrimAPI_MakeBox(gp_Pnt(74, 25, -8), gp_Pnt(234, 185, 8)).Shape());
-        const int turretPart = importBrepShape(cad, tmpDir, QStringLiteral("机载伺服转塔_PMSM"),
-            BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-25, 0, 14), gp_Dir(0, 0, 1)), 40.0, 38.0).Shape());
+        const QString srcDir = ws.filePath(QStringLiteral("在线算例/PAROL6_六轴机械臂/模型"));
+        const QString dstDir = outBase.filePath(QStringLiteral("02_PAROL6六轴机械臂_直流母线伺服驱动"));
+        copyCompanionStepIfNeeded(QDir(srcDir).filePath(QStringLiteral("parol6.step")),
+                                  QDir(dstDir).filePath(QStringLiteral("parol6.step")));
 
+        const QJsonObject raw = readRawJsonObject(QDir(srcDir).filePath(QStringLiteral("parol6.motion.json")));
+        const QJsonObject origExchange = raw.value(QStringLiteral("geometryExchange")).toObject();
         NativeMotionDocument doc;
-        doc.root = {{"formatVersion", 1}, {"motionData", QJsonObject{}}};
-        doc.bodyPartBindings.insert(0, {wingPart});
-        doc.bodyPartBindings.insert(1, {ehaFlapPart});
-        doc.bodyPartBindings.insert(2, {emaFlapPart});
-        doc.bodyPartBindings.insert(3, {turretPart});
+        doc.root = raw;
+        doc.root.remove(QStringLiteral("geometryExchange"));
 
-        setHydraulicFluid(doc, {
-            {"bulkModulus", 1500.0}, {"density", 850.0},
-            {"kinematicViscosity", 32.0},
-            {"supplyPressure", 28.0}, {"tankPressure", 0.2}
-        });
-
-        setCollection(doc, "bodies", {
-            QJsonObject{
-                {"id", 0}, {"name", "机翼主梁固定盒"}, {"enabled", true}, {"isFixed", true},
-                {"geoEntityIds", QJsonArray{wingPart}}, {"isCustomMassProps", true},
-                {"mass", 180.0}, {"centerOfMass", xyz(-8, 0, 0)},
-                {"inertia", QJsonArray{9.0e5, 3.0e5, 1.1e6, 0, 0, 0}}
-            },
-            QJsonObject{
-                {"id", 1}, {"name", "内侧主舵面_EHA驱动"}, {"enabled", true}, {"isFixed", false},
-                {"geoEntityIds", QJsonArray{ehaFlapPart}}, {"isCustomMassProps", true},
-                {"mass", 32.0}, {"centerOfMass", xyz(154, -105, 0)},
-                {"inertia", QJsonArray{6.8e4, 7.0e4, 1.35e5, 0, 0, 0}},
-                {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
-            },
-            QJsonObject{
-                {"id", 2}, {"name", "外侧副翼面_EMA驱动"}, {"enabled", true}, {"isFixed", false},
-                {"geoEntityIds", QJsonArray{emaFlapPart}}, {"isCustomMassProps", true},
-                {"mass", 26.0}, {"centerOfMass", xyz(154, 105, 0)},
-                {"inertia", QJsonArray{5.5e4, 5.8e4, 1.1e5, 0, 0, 0}},
-                {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
-            },
-            QJsonObject{
-                {"id", 3}, {"name", "机载光电转塔_PMSM"}, {"enabled", true}, {"isFixed", false},
-                {"geoEntityIds", QJsonArray{turretPart}}, {"isCustomMassProps", true},
-                {"mass", 18.0}, {"centerOfMass", xyz(-25, 0, 33)},
-                {"inertia", QJsonArray{1.2e5, 1.2e5, 2.2e5, 0, 0, 0}},
-                {"initialVelocity", xyz(0, 0, 0)}, {"initialAngularVelocity", xyz(0, 0, 0)}
-            }
-        });
-
-        setCollection(doc, "joints", {
-            QJsonObject{
-                {"id", 1}, {"name", "内侧舵面铰链"}, {"enabled", true}, {"jointType", "Revolute"},
-                {"actionBodyId", 1}, {"baseBodyId", 0},
-                {"origin", xyz(72, -105, 0)}, {"axis", xyz(0, -1, 0)}
-            },
-            QJsonObject{
-                {"id", 2}, {"name", "外侧副翼铰链"}, {"enabled", true}, {"jointType", "Revolute"},
-                {"actionBodyId", 2}, {"baseBodyId", 0},
-                {"origin", xyz(72, 105, 0)}, {"axis", xyz(0, -1, 0)}
-            },
-            QJsonObject{
-                {"id", 3}, {"name", "光电转塔方位副"}, {"enabled", true}, {"jointType", "Revolute"},
-                {"actionBodyId", 3}, {"baseBodyId", 0},
-                {"origin", xyz(-25, 0, 33)}, {"axis", xyz(0, 0, 1)}
-            }
-        });
+        QMap<int, QString> jointTrajExpr;
+        for (const auto& dv : doc.collection("drives")) {
+            const auto d = dv.toObject();
+            jointTrajExpr.insert(d.value("targetJointId").toInt(-1), d.value("expression").toString("0"));
+        }
+        require(jointTrajExpr.size() == 6, "Expected 6 reference joint trajectories in PAROL6");
+        setCollection(doc, "drives", {});
 
         setCollection(doc, "powerSupplies", {QJsonObject{
-            {"id", 1}, {"name", "270V航空高压直流母线"}, {"enabled", true},
-            {"nominalVoltage", 270.0}, {"internalResistance", 0.22},
-            {"capacitanceMf", 3.2}, {"maxCurrent", 180.0},
-            {"chopperVoltage", 278.0}, {"chopperResistance", 4.0},
-            {"schemX", -380.0}, {"schemY", 0.0}
+            {"id", 1}, {"name", "48V工业六轴共母线直流电源"}, {"enabled", true},
+            {"nominalVoltage", 48.0}, {"voltageExpression", "48"},
+            {"internalResistance", 0.25}, {"capacitanceMf", 4.7},
+            {"maxCurrent", 80.0}, {"chopperVoltage", 52.0}, {"chopperResistance", 4.0},
+            {"schemX", -430.0}, {"schemY", 0.0}
         }});
 
-        setCollection(doc, "inverters", {QJsonObject{
-            {"id", 1}, {"name", "转塔四象限伺服逆变器"}, {"enabled", true},
-            {"supplyId", 1}, {"nominalBusVoltage", 270.0},
-            {"efficiency", 0.96}, {"maxCurrent", 80.0},
-            {"controlMode", "SpeedClosedLoop"},
-            {"kpSpeed", 0.65}, {"kiSpeed", 8.0}, {"kpCurrent", 5.0},
-            {"commandExpression", "0"},
-            {"commandTableX", QJsonArray{0.0, 0.03, 0.07, 0.24, 0.28, 0.45}},
-            {"commandTableY", QJsonArray{0.0, 0.0, 420.0, 420.0, 0.0, 0.0}},
-            {"schemX", -95.0}, {"schemY", -120.0}
-        }});
-
-        setCollection(doc, "electricMotors", {QJsonObject{
-            {"id", 1}, {"name", "转塔永磁同步伺服电机"}, {"enabled", true},
-            {"targetJointId", 3},
-            {"resistance", 0.25}, {"inductanceMh", 1.8},
-            {"torqueConstant", 0.65}, {"backEmfConstant", 0.65},
-            {"rotorInertia", 1800.0},
-            {"gearRatio", 4.0}, {"gearEfficiency", 0.95}, {"viscousDamping", 4.0},
-            {"busVoltage", 270.0}, {"maxCurrent", 75.0},
-            {"controlMode", "ExternalInverter"}, {"inverterId", 1},
-            {"commandExpression", "0"},
-            {"schemX", 220.0}, {"schemY", -120.0}
-        }});
-
-        setCollection(doc, "ehaActuators", {QJsonObject{
-            {"id", 1}, {"name", "内侧主舵面EHA作动器"}, {"enabled", true},
-            {"mountMode", "Points"}, {"bodyIId", 1}, {"bodyJId", 0},
-            {"localI", xyz(152, -105, -20)}, {"localJ", xyz(10, -105, -90)},
-            {"pistonDiameter", 65.0}, {"rodDiameter", 36.0},
-            {"stroke", 260.0}, {"initialStroke", 140.0}, {"deadVolume", 38000.0},
-            {"pumpDisplacementCcRev", 12.0}, {"boostPressureMPa", 1.5}, {"maxReliefPressureMPa", 28.0},
-            {"internalLeakage", 0.0}, {"pumpEfficiency", 0.94},
-            {"resistance", 0.28}, {"torqueConstant", 0.65}, {"backEmfConstant", 0.50},
-            {"rotorInertia", 380.0}, {"busVoltage", 270.0}, {"maxCurrent", 65.0},
-            {"viscousFriction", 3.5},
-            {"controlMode", "PositionServo"}, {"inverterId", -1},
-            {"kpPosition", 160.0}, {"kpSpeed", 0.35}, {"kiSpeed", 4.0}, {"kpCurrent", 5.0},
-            {"commandExpression", "140"},
-            {"commandTableX", QJsonArray{0.0, 0.04, 0.08, 0.45}},
-            {"commandTableY", QJsonArray{140.0, 140.0, 156.0, 156.0}},
-            {"schemX", 220.0}, {"schemY", 15.0}
-        }});
-
-        setCollection(doc, "emaActuators", {QJsonObject{
-            {"id", 1}, {"name", "外侧副翼面EMA作动器"}, {"enabled", true},
-            {"mountMode", "Points"}, {"bodyIId", 2}, {"bodyJId", 0},
-            {"localI", xyz(152, 105, -20)}, {"localJ", xyz(10, 105, -90)},
-            {"screwLead", 10.0}, {"gearRatio", 2.5},
-            {"stroke", 260.0}, {"initialStroke", 140.0},
-            {"mechanicalEfficiency", 0.91}, {"viscousFriction", 3.0},
-            {"resistance", 0.32}, {"inductanceMh", 1.8},
-            {"torqueConstant", 0.70}, {"backEmfConstant", 0.70},
-            {"busVoltage", 270.0}, {"maxCurrent", 55.0},
-            {"controlMode", "PositionServo"}, {"inverterId", -1},
-            {"kpPosition", 18.0}, {"kpSpeed", 0.50}, {"kiSpeed", 4.0}, {"kpCurrent", 6.0},
-            {"commandExpression", "140"},
-            {"commandTableX", QJsonArray{0.0, 0.04, 0.08, 0.45}},
-            {"commandTableY", QJsonArray{140.0, 140.0, 155.0, 155.0}},
-            {"schemX", 220.0}, {"schemY", 150.0}
-        }});
+        const QStringList axisLabels{
+            QStringLiteral("J1腰部回转"), QStringLiteral("J2大臂俯仰"), QStringLiteral("J3小臂肘部"),
+            QStringLiteral("J4前臂滚转"), QStringLiteral("J5手腕俯仰"), QStringLiteral("J6法兰回转")
+        };
+        const std::array<double, 6> gearRatios{10.0, 12.0, 10.0, 5.0, 4.0, 2.0};
+        const std::array<double, 6> ktValues{0.15, 0.18, 0.12, 0.08, 0.06, 0.03};
+        const std::array<double, 6> maxCurrents{12.0, 15.0, 10.0, 6.0, 5.0, 4.0};
+        const std::array<double, 6> viscousVals{120.0, 160.0, 80.0, 25.0, 15.0, 10.0};
+        const std::array<double, 6> kpSpeeds{0.15, 0.15, 0.08, 0.025, 0.015, 0.006};
+        const std::array<double, 6> kiSpeeds{1.20, 1.50, 0.80, 0.25, 0.15, 0.06};
+        const std::array<double, 6> kpCurrents{5.0, 5.0, 5.0, 4.0, 4.0, 3.0};
+        QJsonArray inverters, motors;
+        for (int idx = 0; idx < 6; ++idx) {
+            const int id = idx + 1;
+            const double sy = -275.0 + idx * 110.0;
+            inverters.append(QJsonObject{
+                {"id", id}, {"name", axisLabels[idx] + QStringLiteral("伺服驱动器")}, {"enabled", true},
+                {"supplyId", 1}, {"nominalBusVoltage", 48.0},
+                {"controlMode", "PositionClosedLoop"},
+                {"efficiency", 0.96}, {"maxCurrent", maxCurrents[idx]},
+                {"kpPosition", 8.0}, {"kpSpeed", kpSpeeds[idx]}, {"kiSpeed", kiSpeeds[idx]}, {"kpCurrent", kpCurrents[idx]},
+                {"commandExpression", jointTrajExpr.value(idx)},
+                {"schemX", -70.0}, {"schemY", sy}
+            });
+            motors.append(QJsonObject{
+                {"id", id}, {"name", axisLabels[idx] + QStringLiteral("减速伺服电机")}, {"enabled", true},
+                {"targetJointId", idx},
+                {"resistance", 0.45}, {"inductanceMh", 2.0},
+                {"torqueConstant", ktValues[idx]}, {"backEmfConstant", ktValues[idx]},
+                {"gearRatio", gearRatios[idx]}, {"gearEfficiency", 0.94},
+                {"viscousDamping", viscousVals[idx]},
+                {"busVoltage", 48.0}, {"maxCurrent", maxCurrents[idx]},
+                {"controlMode", "ExternalInverter"}, {"inverterId", id},
+                {"commandExpression", "0"},
+                {"schemX", 290.0}, {"schemY", sy}
+            });
+        }
+        setCollection(doc, "inverters", inverters);
+        setCollection(doc, "electricMotors", motors);
 
         const QJsonArray curves{
-            QJsonObject{{"id", 1}, {"name", "内侧主舵面EHA · 行程 (mm)"}, {"sourceType", "ehaActuators"},
-                        {"sourceId", 1}, {"variable", "Stroke"}, {"component", 0}, {"color", "#1890FF"}, {"visible", true}},
-            QJsonObject{{"id", 2}, {"name", "外侧副翼面EMA · 行程 (mm)"}, {"sourceType", "emaActuators"},
-                        {"sourceId", 1}, {"variable", "Stroke"}, {"component", 0}, {"color", "#2CA02C"}, {"visible", true}},
-            QJsonObject{{"id", 3}, {"name", "270V高压直流母线 · 电压 (V)"}, {"sourceType", "powerSupplies"},
-                        {"sourceId", 1}, {"variable", "BusVoltage"}, {"component", 0}, {"color", "#D62728"}, {"visible", true}},
-            QJsonObject{{"id", 4}, {"name", "光电转塔伺服电机 · 转速 (rpm)"}, {"sourceType", "electricMotors"},
-                        {"sourceId", 1}, {"variable", "Speed"}, {"component", 0}, {"color", "#9467BD"}, {"visible", true}}
+            QJsonObject{{"id", 1}, {"name", "J1 腰部伺服电机 · 转角 (°)"}, {"metric", "native_channel"},
+                        {"sourceType", "electricMotors"}, {"sourceId", 1}, {"variable", "Angle"}, {"component", 0}, {"color", "#1890FF"}, {"visible", true}},
+            QJsonObject{{"id", 2}, {"name", "J2 大臂伺服电机 · 转角 (°)"}, {"metric", "native_channel"},
+                        {"sourceType", "electricMotors"}, {"sourceId", 2}, {"variable", "Angle"}, {"component", 0}, {"color", "#E6550D"}, {"visible", true}},
+            QJsonObject{{"id", 3}, {"name", "J3 肘部伺服电机 · 转角 (°)"}, {"metric", "native_channel"},
+                        {"sourceType", "electricMotors"}, {"sourceId", 3}, {"variable", "Angle"}, {"component", 0}, {"color", "#2CA02C"}, {"visible", true}},
+            QJsonObject{{"id", 4}, {"name", "48V共直流母线 · 电压 (V)"}, {"metric", "native_channel"},
+                        {"sourceType", "powerSupplies"}, {"sourceId", 1}, {"variable", "BusVoltage"}, {"component", 0}, {"color", "#D62728"}, {"visible", true}},
+            QJsonObject{{"id", 5}, {"name", "J2 大臂伺服电机 · 关节输出力矩 (N·mm)"}, {"metric", "native_channel"},
+                        {"sourceType", "electricMotors"}, {"sourceId", 2}, {"variable", "Torque"}, {"component", 0}, {"color", "#756BB1"}, {"visible", true}}
         };
 
         setCollection(doc, "scenarios", {QJsonObject{
-            {"id", 0}, {"name", "多电飞机双舵面作动与直流母线制动仿真"},
-            {"endTime", 0.45}, {"stepSize", 0.001},
+            {"id", 0}, {"name", "PAROL6六轴共直流母线闭环伺服定位与复位"},
+            {"analysisType", "Dynamic"},
+            {"endTime", 6.5}, {"stepSize", 0.005},
             {"gravity", xyz(0, 0, -9810.0)},
             {"hydraulicSteadyInit", true},
             {"usePreset", true}, {"presetMode", "ROBUST"},
-            {"analysisType", "Dynamic"},
             {"curveRequests", curves},
             {"currentCurveRequest", curves.first().toObject()}
         }});
 
-        const auto formatDiagIssues = [](const MotionDiagnosticReport& r) {
-            QStringList msgs;
-            for (const auto& item : r.items) {
-                if (item.severity != MotionDiagnosticItem::Severity::Pass)
-                    msgs << QStringLiteral("[%1] %2: %3").arg(item.category, item.entityName, item.message);
-            }
-            return msgs.join(QStringLiteral("; "));
-        };
-        const auto diag = diagnoseNativeMotion(cad, doc, 0);
-        require(diag.errorCount == 0 && diag.warningCount == 0,
-                QStringLiteral("Flight actuation showcase reported diagnostics: errors=%1 warnings=%2 -> %3")
-                    .arg(diag.errorCount).arg(diag.warningCount).arg(formatDiagIssues(diag)));
+        const QString outJson = QDir(dstDir).filePath(QStringLiteral("parol6-servo-drive.motion.json"));
+        CadDocument cad;
+        saveAndReloadPortableCase(outJson, origExchange, doc, cad, 0, false);
+
         QString error;
-        require(validateNativeMotionDocument(doc, error), error);
         NativeMotionInput input;
-        require(prepareNativeMotion(cad, doc, 0, input, error), "P2 prepare: " + error);
+        require(prepareNativeMotion(cad, doc, 0, input, error), "PAROL6 prepare: " + error);
         RigidResult res;
-        const auto st2 = solveNativeMotion(input, res, error);
-        require(st2 == SolveStatus::Completed, QStringLiteral("P2 solve(status=%1): %2").arg(int(st2)).arg(error));
-        const auto& ehaS = channel(res, "ehaActuators", 1, "Stroke").values;
-        const auto& emaS = channel(res, "emaActuators", 1, "Stroke").values;
+        require(solveNativeMotion(input, res, error) == SolveStatus::Completed, "PAROL6 solve: " + error);
+        const auto& j1 = channel(res, "electricMotors", 1, "Angle").values;
+        const auto& j2 = channel(res, "electricMotors", 2, "Angle").values;
+        const auto& j3 = channel(res, "electricMotors", 3, "Angle").values;
         const auto& busV = channel(res, "powerSupplies", 1, "BusVoltage").values;
-        expectNear(ehaS.back(), 156.0, 2.0, "EHA flap stroke tracking to 156 mm");
-        expectNear(emaS.back(), 155.0, 1.5, "EMA aileron stroke tracking to 155 mm");
-        require(*std::max_element(busV.begin(), busV.end()) > 270.02, "Expected regenerative braking bus voltage rise above 270 V during turret deceleration");
+        // At t = 3.0 s (frame 600), targets are +36, -32, +58 deg; at t = 6.5 s (end), all return near 0 deg
+        expectNear(j1[600], 36.0, 2.0, "PAROL6 J1 closed-loop servo tracking at dwell");
+        expectNear(j2[600], -32.0, 2.5, "PAROL6 J2 closed-loop servo tracking under gravity at dwell");
+        expectNear(j3[600], 58.0, 2.5, "PAROL6 J3 closed-loop servo tracking at dwell");
+        expectNear(j1.back(), 0.0, 2.0, "PAROL6 J1 return to zero");
+        expectNear(j2.back(), 0.0, 2.5, "PAROL6 J2 return to zero");
+        require(*std::min_element(busV.begin(), busV.end()) < 47.995, "Expected DC bus droop under multi-axis acceleration/gravity load");
+        qInfo().noquote() << "Verified Case 02 (PAROL6 6-Axis Servo Drive):" << outJson
+                          << "J1@3s=" << j1[600] << "J2@3s=" << j2[600] << "J3@3s=" << j3[600];
+    }
 
-        RigidModel model;
-        model.nativeDocument = std::make_shared<NativeMotionDocument>(doc);
-        syncNativeMotionModel(model);
-        const QString outPath = outDir.filePath(QStringLiteral("more-electric-flight-actuation.mxmotion"));
-        require(saveRigidProject(outPath, cad, model, error), error);
+    // =========================================================================
+    // Case 1: Airbus A380 V8 Body Landing Gear & Bay Doors (114-Part Real CAD)
+    // 2H/2E Architecture: 34.5 MPa (5000 psi) Hydraulic Power Unit + Twin Parallel
+    // Main Outer Door Cylinders + 270V HVDC Bus + Center Door EHA + Folding Door EMA
+    // =========================================================================
+    {
+        const QString srcDir = ws.filePath(QStringLiteral("航空算例/A380/01_V8_单侧收架_24s"));
+        const QString dstDir = outBase.filePath(QStringLiteral("01_A380起落架舱门_2H2E电液与EHA作动"));
+        copyCompanionStepIfNeeded(QDir(srcDir).filePath(QStringLiteral("takeoff.step")),
+                                  QDir(dstDir).filePath(QStringLiteral("takeoff.step")));
 
-        // Verify both exported .mxmotion files reload cleanly via loadRigidProject
-        for (const auto& fn : {QStringLiteral("electro-hydraulic-boom-circuit.mxmotion"),
-                               QStringLiteral("more-electric-flight-actuation.mxmotion")}) {
-            CadDocument reloadedCad;
-            RigidModel reloadedModel;
-            require(loadRigidProject(outDir.filePath(fn), reloadedCad, reloadedModel, error),
-                    "Reload failed for " + fn + ": " + error);
-            require(reloadedModel.nativeDocument && !reloadedCad.parts().empty(),
-                    "Reloaded project missing CAD or nativeDocument: " + fn);
+        const QJsonObject raw = readRawJsonObject(QDir(srcDir).filePath(QStringLiteral("takeoff.motion.json")));
+        const QJsonObject origExchange = raw.value(QStringLiteral("geometryExchange")).toObject();
+        NativeMotionDocument doc;
+        doc.root = raw;
+        doc.root.remove(QStringLiteral("geometryExchange"));
+
+        // Hold all 5 independent downlock coordinates of the 45-tonne 6-wheel main landing gear
+        // (Drives 18..22 give exact 45/45 full rank on the gear linkage; remove kinematic door Drives 15..17)
+        QJsonArray downlockDrives;
+        for (const auto& dv : doc.collection("drives")) {
+            auto d = dv.toObject();
+            const int did = d.value("id").toInt();
+            if (did >= 18 && did <= 22) {
+                d.remove("driveTableX");
+                d.remove("driveTableY");
+                d.remove("hasTable");
+                d["expression"] = QStringLiteral("0");
+                downlockDrives.append(d);
+            }
         }
-        qInfo().noquote() << "Saved verified showcase:" << outPath
-                          << "ehaStroke=" << ehaS.back() << "mm emaStroke=" << emaS.back()
-                          << "mm peakBusV=" << *std::max_element(busV.begin(), busV.end()) << "V";
+        setCollection(doc, "drives", downlockDrives);
+
+        // Airbus A380 5000-psi (34.5 MPa) Skydrol LD-4 phosphate-ester aviation fluid
+        setHydraulicFluid(doc, {
+            {"bulkModulus", 1550.0}, {"density", 1005.0},
+            {"kinematicViscosity", 11.5},
+            {"supplyPressure", 34.5}, {"tankPressure", 0.35}
+        });
+
+        setCollection(doc, "hydraulicNodes", {
+            QJsonObject{{"id", 1}, {"name", "增压液压油箱_0.35MPa"}, {"enabled", true}, {"nodeType", "Tank"},
+                        {"pressureMPa", 0.35}, {"schemX", -520.0}, {"schemY", -150.0}},
+            QJsonObject{{"id", 2}, {"name", "EDP_5000psi高压供油母管"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 400.0}, {"initialPressureMPa", 33.8}, {"schemX", -160.0}, {"schemY", -210.0}},
+            QJsonObject{{"id", 3}, {"name", "高压管路精滤后腔"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 220.0}, {"initialPressureMPa", 33.8}, {"schemX", 75.0}, {"schemY", -210.0}},
+            QJsonObject{{"id", 4}, {"name", "前作动筒OD1无杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 2.0}, {"schemX", 485.0}, {"schemY", -310.0}},
+            QJsonObject{{"id", 5}, {"name", "前作动筒OD1有杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 1.5}, {"schemX", 485.0}, {"schemY", -235.0}},
+            QJsonObject{{"id", 6}, {"name", "后作动筒OD2无杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 2.0}, {"schemX", 485.0}, {"schemY", -145.0}},
+            QJsonObject{{"id", 7}, {"name", "后作动筒OD2有杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 1.5}, {"schemX", 485.0}, {"schemY", -70.0}}
+        });
+
+        setCollection(doc, "hydraulicComponents", {
+            QJsonObject{
+                {"id", 1}, {"name", "发动机驱动主液压泵_EDP"}, {"enabled", true}, {"componentType", "Pump"},
+                {"suctionNodeId", 1}, {"deliveryNodeId", 2},
+                {"displacementCcRev", 32.0}, {"speedExpression", "3000"},
+                {"volumetricEfficiency", 0.96}, {"mechanicalEfficiency", 0.92}, {"ratedPressureMPa", 35.0},
+                {"schemX", -345.0}, {"schemY", -210.0}
+            },
+            QJsonObject{
+                {"id", 2}, {"name", "34.5MPa高压安全溢流阀"}, {"enabled", true}, {"componentType", "ReliefValve"},
+                {"inletNodeId", 2}, {"outletNodeId", 1},
+                {"crackingPressureMPa", 34.5}, {"pressureOverrideMPa", 1.2}, {"ratedFlowLpm", 140.0},
+                {"schemX", -345.0}, {"schemY", -65.0}
+            },
+            QJsonObject{
+                {"id", 3}, {"name", "氮气隔膜稳压蓄能器"}, {"enabled", true}, {"componentType", "Accumulator"},
+                {"targetNodeId", 2},
+                {"prechargePressureMPa", 21.0}, {"gasVolumeL", 1.25}, {"polytropicGamma", 1.35},
+                {"schemX", -160.0}, {"schemY", -65.0}
+            },
+            QJsonObject{
+                {"id", 4}, {"name", "高压管路精滤器"}, {"enabled", true}, {"componentType", "Filter"},
+                {"inletNodeId", 2}, {"outletNodeId", 3},
+                {"ratedFlowLpm", 150.0}, {"cleanPressureDropMPa", 0.18}, {"foulingFactor", 1.05},
+                {"schemX", -40.0}, {"schemY", -210.0}
+            },
+            QJsonObject{
+                {"id", 5}, {"name", "主外舱门前通道电液伺服阀"}, {"enabled", true}, {"componentType", "ServoValve"},
+                {"portPNodeId", 3}, {"portTNodeId", 1}, {"portANodeId", 4}, {"portBNodeId", 5},
+                {"ratedFlowLpm", 38.0}, {"ratedPressureDropMPa", 3.5},
+                {"centerMode", "ClosedCenter"}, {"responseTimeMs", 25.0}, {"underlap", 0.0},
+                {"commandExpression", "0"},
+                {"commandTableX", QJsonArray{0.0, 0.15, 0.25, 1.85, 1.95, 2.40}},
+                {"commandTableY", QJsonArray{0.0, 0.0, 0.65, 0.65, 0.0, 0.0}},
+                {"schemX", 280.0}, {"schemY", -270.0}
+            },
+            QJsonObject{
+                {"id", 6}, {"name", "主外舱门后通道电液伺服阀"}, {"enabled", true}, {"componentType", "ServoValve"},
+                {"portPNodeId", 3}, {"portTNodeId", 1}, {"portANodeId", 6}, {"portBNodeId", 7},
+                {"ratedFlowLpm", 38.0}, {"ratedPressureDropMPa", 3.5},
+                {"centerMode", "ClosedCenter"}, {"responseTimeMs", 25.0}, {"underlap", 0.0},
+                {"commandExpression", "0"},
+                {"commandTableX", QJsonArray{0.0, 0.15, 0.25, 1.85, 1.95, 2.40}},
+                {"commandTableY", QJsonArray{0.0, 0.0, 0.65, 0.65, 0.0, 0.0}},
+                {"schemX", 280.0}, {"schemY", -110.0}
+            }
+        });
+
+        // Twin parallel Main Outer Door Hydraulic Cylinders mounted at exact CAD clevis pins:
+        // OD1: Body 23 (J30) <-> Body 1 (J39), L0 = 585.000 mm
+        // OD2: Body 23 (J31) <-> Body 1 (J40), L0 = 585.000 mm
+        setCollection(doc, "hydraulicCylinders", {
+            QJsonObject{
+                {"id", 1}, {"name", "主外舱门前液压作动筒_OD1"}, {"enabled", true},
+                {"mountMode", "Points"}, {"bodyIId", 23}, {"bodyJId", 1},
+                {"localI", xyz(46466.347, 3707.1095, -1948.8662)},
+                {"localJ", xyz(46393.9651648398, 3811.253452449565, -1377.7795733848761)},
+                {"pistonDiameter", 85.0}, {"rodDiameter", 45.0},
+                {"stroke", 440.0}, {"initialStroke", 40.0},
+                {"deadVolumeA", 95000.0}, {"deadVolumeB", 95000.0},
+                {"viscousFriction", 15.0}, {"internalLeakage", 0.0},
+                {"supplyMode", "ExternalCircuit"},
+                {"portANodeId", 4}, {"portBNodeId", 5},
+                {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
+                {"commandExpression", "0"},
+                {"initialPressureA", 1.5}, {"initialPressureB", 1.5},
+                {"schemX", 715.0}, {"schemY", -270.0}
+            },
+            QJsonObject{
+                {"id", 2}, {"name", "主外舱门后液压作动筒_OD2"}, {"enabled", true},
+                {"mountMode", "Points"}, {"bodyIId", 23}, {"bodyJId", 1},
+                {"localI", xyz(43084.9024, 3848.0899, -2390.1065)},
+                {"localJ", xyz(43012.52051099906, 3952.2338578366407, -1819.0198630595073)},
+                {"pistonDiameter", 85.0}, {"rodDiameter", 45.0},
+                {"stroke", 440.0}, {"initialStroke", 40.0},
+                {"deadVolumeA", 95000.0}, {"deadVolumeB", 95000.0},
+                {"viscousFriction", 15.0}, {"internalLeakage", 0.0},
+                {"supplyMode", "ExternalCircuit"},
+                {"portANodeId", 6}, {"portBNodeId", 7},
+                {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
+                {"commandExpression", "0"},
+                {"initialPressureA", 1.5}, {"initialPressureB", 1.5},
+                {"schemX", 715.0}, {"schemY", -110.0}
+            }
+        });
+
+        // 270V HVDC More-Electric Bus + Center Door EHA (J32 <-> J41, L0 = 445.0 mm) +
+        // Folding Door EMA (J29 <-> J28, L0 = 563.570 mm)
+        setCollection(doc, "powerSupplies", {QJsonObject{
+            {"id", 1}, {"name", "270V航空高压直流母线_HVDC"}, {"enabled", true},
+            {"nominalVoltage", 270.0}, {"voltageExpression", "270"},
+            {"internalResistance", 0.08}, {"capacitanceMf", 6.0},
+            {"maxCurrent", 220.0}, {"chopperVoltage", 282.0}, {"chopperResistance", 4.0},
+            {"schemX", -345.0}, {"schemY", 155.0}
+        }});
+
+        setCollection(doc, "inverters", {
+            QJsonObject{
+                {"id", 1}, {"name", "中舱门LEHGS四象限逆变器"}, {"enabled", true},
+                {"supplyId", 1}, {"nominalBusVoltage", 270.0},
+                {"controlMode", "PositionClosedLoop"},
+                {"efficiency", 0.96}, {"maxCurrent", 120.0},
+                {"kpPosition", 60.0}, {"kpSpeed", 0.30}, {"kiSpeed", 3.5}, {"kpCurrent", 5.0},
+                {"commandExpression", "40"},
+                {"commandTableX", QJsonArray{0.0, 0.15, 2.00, 2.40}},
+                {"commandTableY", QJsonArray{40.0, 40.0, 220.0, 220.0}},
+                {"schemX", 15.0}, {"schemY", 95.0}
+            },
+            QJsonObject{
+                {"id", 2}, {"name", "折叠舱门EMA四象限逆变器"}, {"enabled", true},
+                {"supplyId", 1}, {"nominalBusVoltage", 270.0},
+                {"controlMode", "PositionClosedLoop"},
+                {"efficiency", 0.96}, {"maxCurrent", 85.0},
+                {"kpPosition", 4.5}, {"kpSpeed", 0.35}, {"kiSpeed", 2.5}, {"kpCurrent", 5.0},
+                {"commandExpression", "20"},
+                {"commandTableX", QJsonArray{0.0, 0.35, 2.05, 2.40}},
+                {"commandTableY", QJsonArray{20.0, 20.0, 110.0, 110.0}},
+                {"schemX", 15.0}, {"schemY", 225.0}
+            }
+        });
+
+        setCollection(doc, "ehaActuators", {QJsonObject{
+            {"id", 1}, {"name", "中舱门电静液作动器_CD_EHA"}, {"enabled", true},
+            {"mountMode", "Points"}, {"bodyIId", 25}, {"bodyJId", 1},
+            {"localI", xyz(46534.5259, 962.4173, -2555.1726)},
+            {"localJ", xyz(46534.52588342265, 517.417304113, -2555.172567978575)},
+            {"pistonDiameter", 90.0}, {"rodDiameter", 48.0},
+            {"stroke", 320.0}, {"initialStroke", 40.0}, {"deadVolume", 75000.0},
+            {"pumpDisplacementCcRev", 18.0}, {"boostPressureMPa", 2.0}, {"maxReliefPressureMPa", 34.5},
+            {"internalLeakage", 0.0}, {"pumpEfficiency", 0.94},
+            {"resistance", 0.22}, {"torqueConstant", 0.75}, {"backEmfConstant", 0.55},
+            {"rotorInertia", 550.0}, {"busVoltage", 270.0}, {"maxCurrent", 120.0},
+            {"viscousFriction", 8.0},
+            {"controlMode", "ExternalInverter"}, {"inverterId", 1},
+            {"commandExpression", "40"},
+            {"schemX", 390.0}, {"schemY", 95.0}
+        }});
+
+        setCollection(doc, "emaActuators", {QJsonObject{
+            {"id", 1}, {"name", "折叠舱门滚珠丝杠作动器_FD_EMA"}, {"enabled", true},
+            {"mountMode", "Points"}, {"bodyIId", 24}, {"bodyJId", 23},
+            {"localI", xyz(43113.086894479835, 3290.479954721727, -2738.050244152272)},
+            {"localJ", xyz(43101.377, 3811.698, -2524.0282)},
+            {"screwLead", 10.0}, {"gearRatio", 3.0},
+            {"stroke", 420.0}, {"initialStroke", 20.0},
+            {"mechanicalEfficiency", 0.90}, {"viscousFriction", 15.0},
+            {"resistance", 0.26}, {"inductanceMh", 2.0},
+            {"torqueConstant", 0.70}, {"backEmfConstant", 0.70},
+            {"busVoltage", 270.0}, {"maxCurrent", 85.0},
+            {"controlMode", "ExternalInverter"}, {"inverterId", 2},
+            {"commandExpression", "20"},
+            {"schemX", 390.0}, {"schemY", 225.0}
+        }});
+
+        const QJsonArray curves{
+            QJsonObject{{"id", 1}, {"name", "主外舱门前作动筒_OD1 · 行程 (mm)"}, {"metric", "native_channel"},
+                        {"sourceType", "hydraulicCylinders"}, {"sourceId", 1}, {"variable", "Stroke"}, {"component", 0}, {"color", "#1890FF"}, {"visible", true}},
+            QJsonObject{{"id", 2}, {"name", "中舱门EHA · 行程 (mm)"}, {"metric", "native_channel"},
+                        {"sourceType", "ehaActuators"}, {"sourceId", 1}, {"variable", "Stroke"}, {"component", 0}, {"color", "#2CA02C"}, {"visible", true}},
+            QJsonObject{{"id", 3}, {"name", "折叠舱门EMA · 行程 (mm)"}, {"metric", "native_channel"},
+                        {"sourceType", "emaActuators"}, {"sourceId", 1}, {"variable", "Stroke"}, {"component", 0}, {"color", "#9467BD"}, {"visible", true}},
+            QJsonObject{{"id", 4}, {"name", "EDP_5000psi高压母管 · 压力 (MPa)"}, {"metric", "native_channel"},
+                        {"sourceType", "hydraulicNodes"}, {"sourceId", 2}, {"variable", "Pressure"}, {"component", 0}, {"color", "#E6550D"}, {"visible", true}},
+            QJsonObject{{"id", 5}, {"name", "270V航空直流母线 · 电压 (V)"}, {"metric", "native_channel"},
+                        {"sourceType", "powerSupplies"}, {"sourceId", 1}, {"variable", "BusVoltage"}, {"component", 0}, {"color", "#D62728"}, {"visible", true}}
+        };
+
+        auto origScen = doc.collection("scenarios").first().toObject();
+        origScen["id"] = 1;
+        origScen["name"] = QStringLiteral("A380主起落架舱门_2H2E高压液压与EHA_EMA协同开启");
+        origScen["analysisType"] = QStringLiteral("Dynamic");
+        origScen["endTime"] = 2.40;
+        origScen["stepSize"] = 0.005;
+        origScen["gravity"] = xyz(0, 0, -9810.0);
+        origScen["hydraulicSteadyInit"] = true;
+        origScen["usePreset"] = false;
+        origScen["integratorType"] = QStringLiteral("EULER_IMPLICIT");
+        origScen["integratorMaxIters"] = 10;
+        origScen["integratorTol"] = 1e-3;
+        origScen["solverType"] = QStringLiteral("SPARSE_QR");
+        origScen["curveRequests"] = curves;
+        origScen["currentCurveRequest"] = curves.first().toObject();
+        setCollection(doc, "scenarios", {origScen});
+
+        const QString outJson = QDir(dstDir).filePath(QStringLiteral("a380-2h2e-doors-actuation.motion.json"));
+        CadDocument cad;
+        // Real 3D CAD parallel hinge-cylinder loops have expected planar redundant constraint warnings
+        saveAndReloadPortableCase(outJson, origExchange, doc, cad, 1, true);
+
+        QString error;
+        NativeMotionInput input;
+        require(prepareNativeMotion(cad, doc, 1, input, error), "A380 prepare: " + error);
+        RigidResult res;
+        const SolveStatus a380Status = solveNativeMotion(input, res, error);
+        require(a380Status == SolveStatus::Completed,
+                QStringLiteral("A380 solve (status=%1, frames=%2): %3")
+                    .arg(int(a380Status)).arg(res.frames.size()).arg(error));
+        const auto& od1S = channel(res, "hydraulicCylinders", 1, "Stroke").values;
+        const auto& od2S = channel(res, "hydraulicCylinders", 2, "Stroke").values;
+        const auto& cdEhaS = channel(res, "ehaActuators", 1, "Stroke").values;
+        const auto& fdEmaS = channel(res, "emaActuators", 1, "Stroke").values;
+        const auto& edpP = channel(res, "hydraulicNodes", 2, "Pressure").values;
+        const auto& hvdcV = channel(res, "powerSupplies", 1, "BusVoltage").values;
+        require(od1S.back() > 200.0 && od2S.back() > 200.0 && std::abs(od1S.back() - od2S.back()) < 10.0,
+                QStringLiteral("A380 twin outer door cylinders expected synchronized opening >200 mm: OD1=%1 OD2=%2")
+                    .arg(od1S.back()).arg(od2S.back()));
+        expectNear(cdEhaS.back(), 220.0, 10.0, "A380 Center Door EHA closed-loop stroke tracking");
+        expectNear(fdEmaS.back(), 110.0, 8.0, "A380 Folding Door EMA closed-loop stroke tracking");
+        const auto [minEdp, maxEdp] = std::minmax_element(edpP.begin(), edpP.end());
+        const auto [minHvdc, maxHvdc] = std::minmax_element(hvdcV.begin(), hvdcV.end());
+        qInfo().noquote() << QStringLiteral("Verified Case 01 (A380 2H/2E): OD1=%1 mm, OD2=%2 mm, CD_EHA=%3 mm, FD_EMA=%4 mm, EDP=[%5..%6] MPa, HVDC=[%7..%8] V")
+                                 .arg(od1S.back(), 0, 'f', 2).arg(od2S.back(), 0, 'f', 2)
+                                 .arg(cdEhaS.back(), 0, 'f', 2).arg(fdEmaS.back(), 0, 'f', 2)
+                                 .arg(*minEdp, 0, 'f', 2).arg(*maxEdp, 0, 'f', 2)
+                                 .arg(*minHvdc, 0, 'f', 2).arg(*maxHvdc, 0, 'f', 2);
     }
 }
 
@@ -1331,8 +1482,8 @@ int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
     try {
-        if (argc >= 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--export-examples")) {
-            exportMultiphysicsShowcaseProjects(QString::fromLocal8Bit(argv[2]));
+        if (argc >= 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--build-real-cases")) {
+            buildRealMultiphysicsCases(QString::fromLocal8Bit(argv[2]));
             return 0;
         }
         testModelDiagnosticsAndConstraintRank();
@@ -1349,8 +1500,11 @@ int main(int argc, char* argv[])
         qInfo().noquote() << "PASS MotionOccHydraulicSmoke (Stage 1-4 multiphysics: hydraulics + electric drives + EHA/EMA + engine extensions)";
         return 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "FAIL: %s\n", e.what());
-        std::fflush(stderr);
+        const QByteArray msg = QByteArray("FAIL: ")
+                             + QByteArray(e.what()).toPercentEncoding(" :/_.-()[]=,;|+-*")
+                             + QByteArray("\n");
+        std::fwrite(msg.constData(), 1, static_cast<std::size_t>(msg.size()), stdout);
+        std::fflush(stdout);
         return 1;
     }
 }

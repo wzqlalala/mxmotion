@@ -241,6 +241,8 @@ void buildHome(RibbonPage* page, MotionWindow& window)
     actionButton(files, window, Command::SaveAs, false, 1, 4, "homepage/lingcunwei3x.png");
     originalButton(files, window, {"导入几何模型", "homepage/daoru3x.png", "slot_importGeoFile"}, 0, 5, false);
     originalButton(files, window, {"导出几何模型", "homepage/daochu3x.png", "slot_exportGeoFile"}, 1, 5, false);
+    originalButton(files, window, {"导入运动数据", "homepage/daoru3x.png", "slot_importMotionJsonFile"}, 0, 6, false);
+    originalButton(files, window, {"导出运动数据", "homepage/daochu3x.png", "slot_exportMotionJsonFile"}, 1, 6, false);
     auto* create = group(page, "创建");
     auto* unit = originalButton(create, window, {"单位", "homepage/danwei3x.png"}, 0, 2, true, 2);
     auto* unitMenu = new mUiMenu(unit);

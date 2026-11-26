@@ -31,7 +31,7 @@ void addItem(MotionDiagnosticReport& report,
     report.items.push_back({severity, category, collection, entityId, entityName, message});
 }
 
-bool checkBodyInertia(const QJsonObject& body, QString& detail)
+bool checkBodyInertia(const QJsonObject& body, const NativeMotionDocument& document, QString& detail)
 {
     if (body.value("isFixed").toBool(false)) return true;
     const double mass = body.value("mass").toDouble(0.0);
@@ -52,7 +52,17 @@ bool checkBodyInertia(const QJsonObject& body, QString& detail)
             return false;
         }
     }
-    const QString conv = body.value("inertiaConvention").toString("tensor");
+    QString conv = body.value("inertiaConvention").toString("auto");
+    if (conv == QLatin1String("auto")) {
+        const QString decl = document.root.value("generatorNotes").toObject()
+                                 .value("coordinateAndInertiaConvention").toObject()
+                                 .value("inertia").toString();
+        QString compact;
+        for (QChar c : decl) if (!c.isSpace()) compact += c;
+        conv = compact.contains(QStringLiteral("[Ixx,Iyy,Izz,-CAD_tensor_xy,-CAD_tensor_xz,-CAD_tensor_yz]"))
+                   ? QStringLiteral("products")
+                   : QStringLiteral("tensor");
+    }
     const double sign = conv == QLatin1String("products") ? -1.0 : 1.0;
     Eigen::Matrix3d J;
     J << vals[0], sign * vals[3], sign * vals[4],
@@ -488,7 +498,7 @@ MotionDiagnosticReport diagnoseNativeMotion(const CadDocument& cad,
         else ++report.movingBodies;
 
         QString inertiaIssue;
-        if (!checkBodyInertia(b, inertiaIssue)) {
+        if (!checkBodyInertia(b, document, inertiaIssue)) {
             addItem(report, MotionDiagnosticItem::Severity::Error,
                     QStringLiteral("质量惯量"), QStringLiteral("bodies"), id, name, inertiaIssue);
         }

@@ -1032,7 +1032,8 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         if(system.GetSolver()->GetType()!=system.config.solver.type||system.GetTimestepper()->GetType()!=system.config.integrator.type)
             fail("底层引擎没有安装方案指定的求解器或积分器，已中止；不能用默认类型代替所请求的算法。");
         const bool equilibratedQr = analysisType == "Dynamic" &&
-            (system.linearizedMnf || (!hasMnf && useEquilibratedMotionQr(input, system, config)));
+            (system.linearizedMnf || (!hasMnf && (useEquilibratedMotionQr(input, system, config)
+                || (system.hasNativeHydraulics() && system.config.solver.type == motion::MotionSolver::Type::SPARSE_QR))));
         if (equilibratedQr) {
             auto solver = makeNativeEquilibratedQr();
             solver->SetVerbose(config.solver.verbose);

@@ -395,7 +395,7 @@ void MotionWindow::updateRigidActions()
     for (const auto id : {Command::ShowAnimation, Command::ShowResultCurves, Command::ExportResult})
         command(id)->setEnabled(hasResult);
     command(Command::ImportMotionJson)->setEnabled(idle);
-    command(Command::ExportMotionJson)->setEnabled(idle && !m_model.bodies.empty());
+    command(Command::ExportMotionJson)->setEnabled(idle && (!m_model.bodies.empty() || m_model.nativeDocument != nullptr));
     for (const auto id : {Command::AddNativeJoint, Command::AddCoupling, Command::AddSpring,
             Command::AddVectorForce, Command::AddScalarForce, Command::AddScalarTorque,
             Command::AddThreePointForce, Command::AddThreePointTorque, Command::AddContact,

@@ -309,6 +309,24 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
             require(node(tree, pair.second, -1, true) != nullptr, "Stage 4 group missing in model tree: " + pair.second);
         }
 
+        {
+            QToolButton *impGeo = nullptr, *expGeo = nullptr, *impMot = nullptr, *expMot = nullptr;
+            for (auto* btn : window.findChildren<QToolButton*>()) {
+                const QString act = btn->property("mxOriginalAction").toString();
+                if (act == QLatin1String("slot_importGeoFile") && btn->text() == QStringLiteral("导入几何模型")) impGeo = btn;
+                else if (act == QLatin1String("slot_exportGeoFile") && btn->text() == QStringLiteral("导出几何模型")) expGeo = btn;
+                else if (act == QLatin1String("slot_importMotionJsonFile") && btn->text() == QStringLiteral("导入运动数据")) impMot = btn;
+                else if (act == QLatin1String("slot_exportMotionJsonFile") && btn->text() == QStringLiteral("导出运动数据")) expMot = btn;
+            }
+            require(impGeo && expGeo && impMot && expMot,
+                "Home ribbon File group is missing 导入运动数据 / 导出运动数据 buttons");
+            require(impMot->parentWidget() == impGeo->parentWidget() && expMot->parentWidget() == expGeo->parentWidget(),
+                "导入/导出运动数据 buttons must reside in the same 文件 ribbon group as 导入/导出几何模型");
+            require(impMot->geometry().left() >= impGeo->geometry().right() - 4
+                && expMot->geometry().left() >= expGeo->geometry().right() - 4,
+                "导入/导出运动数据 buttons must be placed immediately after 导入/导出几何模型");
+        }
+
         window.dispatchOriginalMotionAction("openMultiphysicsSchematic");
         auto* schem = window.findChild<MultiphysicsSchematicDialog*>("multiphysicsSchematicDialog");
         require(schem && schem->isVisible(), "Multiphysics 2D circuit schematic dialog did not open");
