@@ -79,6 +79,7 @@ public:
     void setScene(const CadDocument& document, const std::map<int, FemMesh>& meshes,
                   const std::set<int>& hidden = {}, const std::shared_ptr<const PreparedCadScene>& prepared = {},
                   const std::vector<int>& preparedPartIds = {});
+    void setPartTransparency(int partId, int percent);
     // Replaces the transient poses for the current document. Rigid matrices map
     // rest CAD world to animated world in mm. Missing or invalid poses mean
     // identity; unknown part IDs are ignored. Does not refit or modify geometry.

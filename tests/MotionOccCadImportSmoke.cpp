@@ -9,7 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
-#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeWidget>
@@ -126,7 +126,7 @@ int runMotionOccCadImportSmoke(const QString& outputDirectory, const QString& ca
         if (timer.elapsed() > 2000)
             require(dispatch < 1000 && ticks >= 10 && longestGap < 2000,
                 QStringLiteral("大型 CAD 导入期间界面事件循环长时间停顿"));
-        const auto* console = window.findChild<QPlainTextEdit*>();
+        const auto* console = window.findChild<QTextEdit*>(QStringLiteral("motionOutput"));
         const QString notices = console ? console->toPlainText().right(4000) : QString{};
         if (!notices.isEmpty()) log << notices << '\n';
         require(imported, QStringLiteral("CAD 导入失败"));

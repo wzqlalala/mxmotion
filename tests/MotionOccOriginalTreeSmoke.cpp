@@ -2,6 +2,7 @@
 #include "OccViewport.h"
 #include "NativeMotionDocument.h"
 #include "NativeBodyMass.h"
+#include "RigidProject.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "compat/mViewportModelManager.h"
 #include "mMotionJointBase.h"
@@ -14,10 +15,13 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QImage>
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
+#include <QSlider>
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeWidget>
@@ -27,6 +31,10 @@
 using namespace MotionOcc;
 using namespace MxFunctions;
 namespace {
+constexpr const char* legacyOnlyCollections[] = {
+    "electroImports", "electroExports", "hydraulics", "rlTasks", "mechanisms", "transmissions", "mechElecHyd"
+};
+
 void require(bool ok,const QString& reason) { if(!ok)throw std::runtime_error(reason.toStdString()); }
 bool waitFor(const std::function<bool()>& predicate,int milliseconds=5000) {
     if(predicate())return true;QEventLoop loop;QTimer poll;poll.start(10);
@@ -47,6 +55,19 @@ QTreeWidgetItem* node(QTreeWidget* tree,const QString& collection,int id,bool gr
 void select(QTreeWidget* tree,const QString& collection,int id) {
     auto* item=node(tree,collection,id);require(item,"Missing original tree object: "+collection);
     tree->setCurrentItem(item);QApplication::processEvents();
+}
+bool hasJointGlyph(OccViewport& view, const QImage& frame, const std::array<double, 3>& origin) {
+    require(!frame.isNull(), "Joint glyph check requires a rendered viewport");
+    const auto point = view.projectPoint(origin);
+    const double sx = double(frame.width()) / view.width(), sy = double(frame.height()) / view.height();
+    const auto sample = QRectF((point.x() - 18) * sx, (point.y() - 18) * sy, 36 * sx, 36 * sy)
+        .toAlignedRect().intersected(frame.rect());
+    int gold = 0;
+    for (int y = sample.top(); y <= sample.bottom(); ++y) for (int x = sample.left(); x <= sample.right(); ++x) {
+        const auto pixel = frame.pixel(x, y);
+        if (qRed(pixel) > qGreen(pixel) + 22 && qGreen(pixel) > qBlue(pixel) + 28) ++gold;
+    }
+    return gold >= 4;
 }
 QStringList menu(QTreeWidget* tree,QTreeWidgetItem* item,const QString& chosen={},const QString& type={}) {
     require(item,"Missing original tree menu target");tree->scrollToItem(item);QApplication::processEvents();
@@ -104,14 +125,16 @@ NativeMotionDocument fixture(const QDir& directory,QString& geometry,QString& js
             {"isCustomMassProps",true},{"mass",mass.massKg},{"centerOfMass",xyz(mass.centerMm[0],mass.centerMm[1],mass.centerMm[2])},
             {"inertia",inertia},{"inertiaConvention","tensor"},{"futureData",extra}}}},
         {"joints",QJsonArray{QJsonObject{{"id",23},{"name","树测试运动副"},{"jointType","Revolute"},
-            {"actionBodyId",0},{"baseBodyId",-1},{"origin",xyz(0,0,0)},{"axis",xyz(0,0,1)},{"futureData",extra}}}},
+            {"actionBodyId",0},{"baseBodyId",-1},{"origin",xyz(0,0,0)},{"axis",xyz(0,0,1)},{"futureData",extra}},
+            QJsonObject{{"id",47},{"name","第二个运动副"},{"jointType","Revolute"},
+            {"actionBodyId",0},{"baseBodyId",-1},{"origin",xyz(27,7,8)},{"axis",xyz(0,0,1)}}}},
         {"drives",QJsonArray{QJsonObject{{"id",9},{"name","树测试驱动"},{"targetType","Joint"},{"driveType","JointDrive"},
             {"targetJointId",23},{"motionType","Rotation"},{"controlMode","Velocity"},{"expression","0"}}}},
         {"markers",QJsonArray{QJsonObject{{"id",11},{"name","树测试标记点"},{"bodyId",0},
             {"localPosition",xyz(1.2345678901234567,2,3)},{"futureData",extra}}}},
         {"scenarios",QJsonArray{QJsonObject{{"id",1},{"name","树测试求解方案"},{"endTime",.1},{"stepSize",.01},{"gravity",xyz(0,0,0)}}}}
     };
-    for(const auto* key:{"electroImports","electroExports","hydraulics","rlTasks"})
+    for(const auto* key:legacyOnlyCollections)
         data.insert(key,QJsonArray{QJsonObject{{"id",17},{"name",QString::fromLatin1(key)},{"futureData",extra}}});
     auto scenarios=data.value("scenarios").toArray();auto scenario=scenarios[0].toObject();
     const QJsonObject request{{"requestId",71},{"requestName","标记点位移"},{"sourceType","Marker"},{"sourceId",11},
@@ -131,12 +154,46 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
         require(view&&waitFor([&] { return view->glReady(); }),"Tree test requires actual OpenGL viewport");
         require(window.importCad(geometry),"Tree fixture STEP failed");require(window.importMotionJson(json,false),"Tree fixture JSON failed");
         auto* tree=window.findChild<QTreeWidget*>("mTreeView");require(tree,"Original tree is absent");
+        view->viewTop();
+        const auto expectGlyphs = [&](bool first, bool second, const QString& message, const QString& screenshot = {}) {
+            QApplication::processEvents();
+            const auto frame = view->grabFramebuffer();
+            if (!screenshot.isEmpty()) require(frame.save(output.filePath(screenshot)), "Cannot save joint glyph screenshot");
+            require(hasJointGlyph(*view, frame, {0,0,0}) == first && hasJointGlyph(*view, frame, {27,7,8}) == second, message);
+        };
+        expectGlyphs(false, false, "Imported project rendered unselected joint glyphs");
+        auto* group = node(tree, "joints", -1, true);
+        require(group, "Joint group is absent");
+        tree->setCurrentItem(group);
+        expectGlyphs(true, true, "Joint group did not render both joints", "joint-group.png");
+        require(tree->currentItem() == group && group->isSelected(), "Joint group lost its tree selection");
+        select(tree, "joints", 23);
+        expectGlyphs(true, false, "Joint leaf rendered a sibling glyph", "joint-child.png");
+        const QPointF blank(view->width() - 30, view->height() - 60);
+        QMouseEvent press(QEvent::MouseButtonPress, blank, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, blank, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(view, &press);
+        QApplication::sendEvent(view, &release);
+        require(tree->currentItem() == node(tree, "joints", 23) && tree->currentItem()->isSelected(),
+            "Blank viewport click changed model tree selection");
+        expectGlyphs(true, false, "Blank viewport click changed joint glyphs");
+        select(tree, "joints", 47);
+        expectGlyphs(false, true, "Joint change left the prior editor's cached glyph visible");
+        select(tree, "drives", 9);
+        expectGlyphs(true, false, "Drive did not restrict glyphs to its target joint");
         select(tree,"markers",11);
+        expectGlyphs(false, false, "Unrelated tree node left a cached joint glyph visible", "joint-hidden.png");
+        menu(tree, node(tree, "joints", 47), "删除");
+        log << "PASS framebuffer joint group/leaf/drive/unrelated node and blank viewport click\n";log.flush();
         for(const auto* key:{"bodies","autoFlexBodies","joints","couplings","drives","springs","forceElements",
-                "sensors","controllers","markers","contacts","controlInputs","electroImports","electroExports","hydraulics","rlTasks"}) {
+                "sensors","controllers","markers","contacts","controlInputs"}) {
             auto* group=node(tree,key,-1,true);require(group,"Missing original group: "+QString::fromLatin1(key));
             require(!group->icon(0).pixmap(16,16).isNull(),"Original tree group icon missing");
             const auto actions=menu(tree,group);require(actions.size()>=2 && actions.last().startsWith("删除所有"),"Original group creation/delete menu missing");
+        }
+        for(const auto* key:legacyOnlyCollections) {
+            require(!node(tree,key,-1,true) && !node(tree,key,17),"旧配置没有从模型树隐藏："+QString::fromLatin1(key));
+            require(context()->document().collection(key)==source.collection(key),"导入旧工程时丢失配置："+QString::fromLatin1(key));
         }
         auto rootActions=menu(tree,node(tree,"__motionRoot",-1,true));
 #if defined(MX_HAS_BODY_DRIVES)
@@ -145,12 +202,15 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
             "Body drive creation submenu is missing from the root context menu");
         rootActions.removeAt(bodyDriveAction);
 #endif
+        const int hydraulicAction = rootActions.indexOf(QStringLiteral("新建液压缸"));
+        require(hydraulicAction > 0, "Hydraulic cylinder creation action is missing from the root context menu");
+        rootActions.removeAt(hydraulicAction);
         require(rootActions.size()==11&&rootActions.first()=="新建运动体"&&rootActions.last()=="删除运动数据","Original root context menu changed");
         require(menu(tree,node(tree,"markers",11))==QStringList{"删除","重命名","复制"},"Original child context menu changed");
         require(menu(tree,node(tree,"scenarios",1))==QStringList{"删除","重命名","求解"},"Original scenario context menu changed");
-        log<<"PASS fixed/dynamic original groups, icons, root/group/entity/scenario menu structure\n";log.flush();
-        for(const auto* key:{"markers","joints","electroImports","electroExports","hydraulics","rlTasks"}) {
-            const QString collection=QString::fromLatin1(key);const int original=collection=="markers"?11:collection=="joints"?23:17;
+        log<<"PASS original tree groups, icons, root/group/entity/scenario menus and hidden legacy configurations\n";log.flush();
+        for(const auto* key:{"markers","joints"}) {
+            const QString collection=QString::fromLatin1(key);const int original=collection=="markers"?11:23;
             select(tree,collection,original);const auto originalRow=context()->document().entity(collection,original);
             menu(tree,node(tree,collection,original),"复制");const int copy=copiedId(context()->document(),collection,original);
             require(copy>=0,"Typed tree copy did not create an object");
@@ -193,10 +253,6 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
             menu(tree,node(tree,"forceElements",-1,true),"删除所有力元");
             require(context()->document().collection(test.collection).isEmpty(),"Typed force group delete did not remove this force subtype");
         }
-        for(const auto* key:{"electroImports","electroExports","hydraulics","rlTasks"}) {
-            auto* group=node(tree,key,-1,true);const auto actions=menu(tree,group);menu(tree,node(tree,key,-1,true),actions.last());
-            require(context()->document().collection(key).isEmpty()&&!node(tree,key,-1,true),"Empty dynamic original group did not disappear");
-        }
         menu(tree,node(tree,"markers",-1,true),"删除所有标记点");
         auto* markerGroup=node(tree,"markers",-1,true);require(markerGroup&&markerGroup->childCount()==0,"Empty fixed original group was removed");
         const auto scenario=context()->document().entity("scenarios",1);
@@ -214,9 +270,31 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
         QObject::disconnect(statusConnection);
         const auto* solved=context()->model()->getManager<MechMotionData::mMotionScenarioManager>(Physical_MotionScenario).getData(1);
         require(solverStates.contains("finished")&&solved&&solved->hasResult(),"Tree solve did not return actual engine results through the original solver adapter");
+        auto* solvedScenario = node(tree, "scenarios", 1);
+        require(solvedScenario && solvedScenario->childCount() > 0 && !solvedScenario->child(0)->isDisabled(),
+            "Solved scenario has no animation row");
+        tree->setCurrentItem(solvedScenario->child(0));
+        auto* playback = window.findChild<QWidget*>("originalMotionAnimationPanel");
+        auto* timeline = playback ? playback->findChild<QSlider*>() : nullptr;
+        require(timeline && timeline->maximum() > timeline->minimum(), "Original animation timeline did not open");
+        timeline->setValue(timeline->maximum());
+        expectGlyphs(false, false, "Playback restored unselected joint glyphs");
+        tree->setCurrentItem(node(tree, "joints", -1, true));
+        expectGlyphs(true, false, "Leaving animation did not restore requested joint group glyphs");
         require(window.grab().save(output.filePath("restored-original-tree.png")),"Cannot save original tree screenshot");
-        log<<"PASS Planar/PointLine actual constructors/enums, unknown-type rejection, all four force subtype creation/selection/copy/delete, lazy/fixed group rules, curve-source cleanup\n";
+        log<<"PASS Planar/PointLine actual constructors/enums, unknown-type rejection, all four force subtype creation/selection/copy/delete, fixed group rules, curve-source cleanup\n";
         log<<"PASS original scenario tree solve -> original onStartSolve started/finished -> actual solver adapter and engine results\n";
+        const auto path=output.filePath("legacy-configurations.mxmotion");
+        RigidModel model;model.nativeDocument=std::make_shared<NativeMotionDocument>(context()->document());
+        syncNativeMotionModel(model);
+        QString error;
+        require(saveRigidProject(path,context()->picks()->document(),model,error),error);
+        CadDocument reopenedCad;RigidModel reopened;
+        require(loadRigidProject(path,reopenedCad,reopened,error),error);
+        require(bool(reopened.nativeDocument),"重开工程时丢失运动数据");
+        for(const auto* key:legacyOnlyCollections)
+            require(reopened.nativeDocument->collection(key)==source.collection(key),"工程往返丢失旧配置："+QString::fromLatin1(key));
+        log<<"PASS project round-trip preserves all hidden legacy configurations and extension fields\n";
         return 0;
     } catch(const std::exception& error) { log<<"FAIL "<<error.what()<<'\n';return 1; }
 }

@@ -34,6 +34,7 @@ add_executable(MxMotion WIN32
     "${common_dir}/mUiStyle.cpp"
     "${common_dir}/ThemeManager.cpp"
     "${foundation_dir}/mFloatingDockFrameless.cpp"
+    "${window_dir}/mChineseTextEdit.h"
     "${window_dir}/ViewportWidget.cpp"
     "${window_dir}/ViewportContainer.cpp" "${window_dir}/ViewportLayoutEngine.cpp"
     "${gui_root}/src/CommonWidgets/mFoldSection.cpp")
@@ -123,6 +124,8 @@ if(BUILD_TESTING AND MX_TEST_DESKTOP)
     file(MAKE_DIRECTORY "${native_desktop_output}")
     add_test(NAME MotionOcc.NativeDesktop COMMAND MxMotion --native-desktop-smoke "${native_desktop_output}")
     set_tests_properties(MotionOcc.NativeDesktop PROPERTIES TIMEOUT 180 LABELS desktop)
+    add_test(NAME MotionOcc.ForceEditorDesktop COMMAND MxMotion --force-editor-smoke "${PROJECT_BINARY_DIR}/force-panel-check")
+    set_tests_properties(MotionOcc.ForceEditorDesktop PROPERTIES TIMEOUT 90 LABELS desktop)
     get_target_property(engine_features MotionEngine::Core INTERFACE_COMPILE_DEFINITIONS)
     if("MX_HAS_BODY_DRIVES=1" IN_LIST engine_features)
         add_test(NAME MotionOcc.BodyDriveDesktop COMMAND MxMotion --body-drive-desktop-smoke "${PROJECT_BINARY_DIR}/body-drive-desktop-smoke")

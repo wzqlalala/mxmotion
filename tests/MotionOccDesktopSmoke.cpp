@@ -17,6 +17,7 @@
 #include <QDoubleSpinBox>
 #include <QListWidget>
 #include <QLineEdit>
+#include <QMenu>
 #include <QSlider>
 
 #include <QAction>
@@ -30,9 +31,14 @@
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QStatusBar>
 #include <QTabBar>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
+#include <QTextEdit>
+#include <QTextLayout>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -80,6 +86,23 @@ QTreeWidgetItem* findNode(QTreeWidget& tree, ModelNode::Kind kind)
 {
     for (QTreeWidgetItemIterator it(&tree); *it; ++it)
         if ((*it)->data(0, Qt::UserRole + 1).toInt() == int(kind)) return *it;
+    return nullptr;
+}
+
+int ribbonTabIndex(const QTabBar& tabs, const QString& title)
+{
+    for (int index = 0; index < tabs.count(); ++index)
+        if (tabs.tabText(index) == title) return index;
+    return -1;
+}
+
+QToolButton* resultRibbonButton(MotionWindow& window, Command id)
+{
+    const auto* action = window.command(id);
+    const auto* ribbon = window.findChild<QWidget*>(QStringLiteral("mMenuWidget"));
+    if (!action || !ribbon) return nullptr;
+    for (auto* button : ribbon->findChildren<QToolButton*>())
+        if (button->isVisible() && button->accessibleName() == action->text()) return button;
     return nullptr;
 }
 
@@ -146,7 +169,7 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         int id = -1;
         QString error;
         require(fixture.addPrimitive(Primitive::Box, 30, 20, 16, id, error), QStringLiteral("Could not create CAD fixture"));
-        const auto step = temp.filePath(QStringLiteral("OCC 桌面测试.step"));
+        const auto step = temp.filePath(QStringLiteral("桌面测试.step"));
         require(fixture.exportFile(step, id, error), QStringLiteral("Could not write STEP fixture: %1").arg(error));
 
         // A project opened from the command line has its requests before the
@@ -175,6 +198,16 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
             auto* storedTree = storedWindow.findChild<QTreeWidget*>(QStringLiteral("mTreeView"));
             require(storedTree && findNode(*storedTree, ModelNode::Scenario), QStringLiteral("Saved scenario is missing"));
             storedTree->setCurrentItem(findNode(*storedTree, ModelNode::Scenario));
+            auto* resultTabs = storedWindow.findChild<QTabBar*>(QStringLiteral("MenuTabBar"));
+            require(resultTabs && ribbonTabIndex(*resultTabs, QStringLiteral("结果")) >= 0,
+                QStringLiteral("Result ribbon tab is missing"));
+            resultTabs->setCurrentIndex(ribbonTabIndex(*resultTabs, QStringLiteral("结果")));
+            QApplication::processEvents();
+            for (const auto command : {Command::ShowAnimation, Command::ShowResultCurves, Command::ExportResult}) {
+                const auto* button = resultRibbonButton(storedWindow, command);
+                require(button && !button->isEnabled() && !storedWindow.command(command)->isEnabled(),
+                    QStringLiteral("Unsolved project has an enabled result ribbon command"));
+            }
             storedWindow.command(Command::Solve)->trigger();
             require(waitFor([&] {
                 const auto* node = findNode(*storedTree, ModelNode::Curves);
@@ -185,17 +218,24 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
             auto* storedPlot = storedCurveDock ? storedCurveDock->widget()->findChild<QwtPlot*>() : nullptr;
             require(storedPlot, QStringLiteral("Saved project curve dock has no plot"));
             require(storedCurveDock->isClosed() && !storedPlot->isVisible(), QStringLiteral("Saved requests opened the plot before curve selection"));
-            storedTree->setCurrentItem(findNode(*storedTree, ModelNode::Curves));
+            resultTabs->setCurrentIndex(ribbonTabIndex(*resultTabs, QStringLiteral("结果")));
+            QApplication::processEvents();
+            for (const auto command : {Command::ShowAnimation, Command::ShowResultCurves, Command::ExportResult}) {
+                const auto* button = resultRibbonButton(storedWindow, command);
+                require(button && button->isEnabled() && storedWindow.command(command)->isEnabled(),
+                    QStringLiteral("Solved project is missing an enabled result ribbon command"));
+            }
+            resultRibbonButton(storedWindow, Command::ShowResultCurves)->click();
             QApplication::processEvents();
             require(storedPlot->isVisible() && storedPlot->itemList(QwtPlotItem::Rtti_PlotCurve).size() == 2,
-                    QStringLiteral("First saved-project curve display lost visible requests"));
+                    QStringLiteral("Ribbon did not open the original saved-project curve display and requests"));
             require(storedWindow.grab().save(output.filePath(QStringLiteral("persisted-curve-configuration.png"))),
                     QStringLiteral("Could not capture saved-project curve configuration"));
             requireLegend(*storedPlot);
             auto* storedList = storedWindow.findChild<QListWidget*>(QStringLiteral("motionCurveList"));
             require(storedList && storedList->count() == 3, QStringLiteral("Saved curve list lost a hidden request"));
             requireCurveRows(*storedList);
-            line(QStringLiteral("Saved requests loaded before first display: visible legends, hidden request and accessible row controls passed"));
+            line(QStringLiteral("Result ribbon stayed disabled before solve and opened saved curves with their original requests after solve"));
         }
 
         MotionWindow window;
@@ -212,9 +252,86 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         const auto gl = viewport->context()->format();
         line(QStringLiteral("Desktop OpenGL %1.%2 core initialized").arg(gl.majorVersion()).arg(gl.minorVersion()));
 
-        const auto* tabs = window.findChild<QTabBar*>(QStringLiteral("MenuTabBar"));
-        require(tabs && tabs->count() == 10 && tabs->tabText(1) == QStringLiteral("几何")
-            && tabs->tabText(7) == QStringLiteral("求解"), QStringLiteral("Original Motion tabs missing"));
+        auto* tabs = window.findChild<QTabBar*>(QStringLiteral("MenuTabBar"));
+        const QStringList expectedTabs{"主页", "几何", "体定义", "运动副与约束", "驱动", "连接与力元", "传感与控制", "机电液",
+            "求解", "显示", "选择", "柔性体", "航空", "车辆", "传动", "机器人", "结果", "振动耐久", "设计分析", "自动化"};
+        require(tabs && tabs->count() == expectedTabs.size(), QStringLiteral("Motion ribbon tab count changed"));
+        for (const auto& title : expectedTabs)
+            require(ribbonTabIndex(*tabs, title) >= 0, QStringLiteral("Motion ribbon tab is missing: %1").arg(title));
+        const int startingTab = tabs->currentIndex();
+        auto* ribbon = window.findChild<QWidget*>(QStringLiteral("mMenuWidget"));
+        require(ribbon, QStringLiteral("Motion ribbon is missing"));
+        const auto ribbonButtons = ribbon->findChildren<QToolButton*>();
+        for (const auto* button : ribbonButtons) {
+            if (!button->property("mxPlannedFeature").toBool()) continue;
+            require(!button->isEnabled() && button->property("mxOriginalAction").toString().isEmpty(),
+                QStringLiteral("Planned command has a live action: %1").arg(button->text()));
+        }
+        const QStringList expectedMultiphysics{
+            "液压马达", "液压泵", "油箱", "压力源", "流量源",
+            "换向阀", "伺服阀", "溢流阀", "减压阀", "单向阀", "节流阀", "顺序阀",
+            "管路", "蓄能器", "过滤器", "液压容腔", "电机", "电源", "逆变器",
+            "EHA", "EMA", "端口连接", "回路图", "回路检查"
+        };
+        const struct {
+            QString tab;
+            QString image;
+            QStringList commands;
+        } previews[]{
+            {"柔性体", "planned-flexible-bodies-ribbon.png", {"MNF 生成向导", "ANCF 梁"}},
+            {"航空", "planned-aircraft-ribbon.png", {"舱门模板", "应急放下"}},
+            {"车辆", "planned-vehicle-ribbon.png", {"轮胎力学", "路面不平度"}},
+            {"传动", "planned-transmission-ribbon.png", {"带传动模板"}},
+            {"机器人", "planned-robotics-ribbon.png", {"末端定位"}},
+            {"结果", "planned-results-ribbon.png", {"频谱分析"}},
+            {"振动耐久", "planned-vibration-ribbon.png", {"疲劳分析"}},
+            {"设计分析", "planned-design-analysis-ribbon.png", {"试验设计", "灵敏度分析"}},
+            {"自动化", "planned-automation-ribbon.png", {"宏录制", "任务队列"}},
+            {"机电液", "planned-multiphysics-ribbon.png", expectedMultiphysics}
+        };
+        for (const auto* menu : window.findChildren<QMenu*>()) {
+            require(menu->title() != QStringLiteral("后处理常驻菜单栏")
+                && menu->title() != QStringLiteral("曲线常驻菜单栏"),
+                QStringLiteral("Unused post-processing ribbon settings leaked into Motion"));
+        }
+        const auto originalSize = window.size();
+        window.resize(1600, originalSize.height());
+        for (const auto& preview : previews) {
+            tabs->setCurrentIndex(ribbonTabIndex(*tabs, preview.tab));
+            QApplication::processEvents();
+            QStringList plannedCommands;
+            int plannedClicks = 0;
+            for (auto* button : ribbonButtons) {
+                if (!button->isVisible() || !button->property("mxPlannedFeature").toBool()) continue;
+                plannedCommands.append(button->text());
+                const auto connection = QObject::connect(button, &QToolButton::clicked, button,
+                    [&plannedClicks] { ++plannedClicks; });
+                button->click();
+                QObject::disconnect(connection);
+            }
+            require(plannedClicks == 0, QStringLiteral("Planned ribbon command responded to a click in %1").arg(preview.tab));
+            for (const auto& command : preview.commands)
+                require(plannedCommands.count(command) == 1,
+                    QStringLiteral("Planned ribbon command missing or duplicated in %1: %2").arg(preview.tab, command));
+            if (preview.tab == QStringLiteral("机电液")) {
+                require(plannedCommands.size() == expectedMultiphysics.size(), QStringLiteral("Unexpected multiphysics ribbon command"));
+                bool hasCylinderBtn = false, hasFluidBtn = false;
+                for (auto* button : ribbonButtons) {
+                    if (!button->isVisible() || button->property("mxPlannedFeature").toBool()) continue;
+                    if (button->text() == QStringLiteral("液压缸")) hasCylinderBtn = true;
+                    if (button->text() == QStringLiteral("油液设置")) {
+                        hasFluidBtn = true;
+                        require(button->isEnabled(), QStringLiteral("Hydraulic fluid settings button should be enabled"));
+                    }
+                }
+                require(hasCylinderBtn && hasFluidBtn, QStringLiteral("Active hydraulic ribbon commands missing"));
+            }
+            require(ribbon->grab().save(output.filePath(preview.image)),
+                QStringLiteral("Could not capture ribbon tab: %1").arg(preview.tab));
+        }
+        window.resize(originalSize);
+        tabs->setCurrentIndex(startingTab);
+        QApplication::processEvents();
         const auto* docks = window.findChild<ads::CDockManager*>();
         require(docks != nullptr, QStringLiteral("ADS manager missing"));
         const auto panes = docks->dockWidgetsMap();
@@ -222,14 +339,91 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
             auto* pane = panes.value(key);
             require(pane && pane->isVisible() && !pane->isClosed(), QStringLiteral("ADS pane not visible: %1").arg(key));
         }
-        line(QStringLiteral("ADS model, parameters and viewport visible; 10 Motion ribbon tabs"));
+        line(QStringLiteral("ADS model, parameters and viewport visible; 20 verified tabs and 10 module previews"));
+
+        auto* outputDock = panes.value(QStringLiteral("Output"));
+        auto* messages = window.findChild<QTextEdit*>(QStringLiteral("motionOutput"));
+        const auto* status = window.statusBar()->findChild<QLabel*>(QStringLiteral("motionStatusNotice"));
+        require(status && status->text().isEmpty() && outputDock && messages && messages->isReadOnly()
+            && messages->document()->isEmpty(), QStringLiteral("The idle status or information output shows startup details"));
 
         const auto empty = frame(*viewport);
         require(window.importCad(step), QStringLiteral("STEP import failed through the window"));
         require(waitFor([&] { return frame(*viewport) != empty; }, 4000), QStringLiteral("No CAD frame after import"));
+        const auto importNotice = status->text();
+        const QRegularExpression dated(QStringLiteral(R"(^>>  .+  \[  [0-9]{2}:[0-9]{2}:[0-9]{2}  \]$)"));
+        const auto importLine = messages->document()->lastBlock().text();
+        require(importNotice.startsWith(QStringLiteral("已导入")) && importLine.contains(importNotice)
+            && dated.match(importLine).hasMatch(), QStringLiteral("The console lost its dated message formatting"));
+        require(!window.importCad(temp.filePath(QStringLiteral("不存在.step"))),
+            QStringLiteral("Missing CAD fixture did not generate an error"));
+        require(messages->document()->lastBlock().text().contains(status->text()),
+            QStringLiteral("The failed import was not reported in the status bar and information output"));
+        outputDock->toggleView(true);
+        outputDock->dockAreaWidget()->setCurrentDockWidget(outputDock);
+        QApplication::processEvents();
+        const auto selection = messages->document()->lastBlock().layout()->formats();
+        require(!selection.isEmpty() && selection.front().format.foreground().color().red() == 255
+            && messages->font().pixelSize() == 14, QStringLiteral("Information output lost the original font size or error styling"));
+        require(outputDock->grab().save(output.filePath(QStringLiteral("information-output.png")))
+            && window.statusBar()->grab().save(output.filePath(QStringLiteral("motion-status.png"))),
+            QStringLiteral("Could not capture the information output and status bar"));
+        outputDock->toggleView(false);
+        line(QStringLiteral("Status bar and information output verified: empty at startup, dated notices and colored errors"));
+
         auto* tree = window.findChild<QTreeWidget*>(QStringLiteral("mTreeView"));
         require(tree && tree->currentItem() && tree->currentItem()->parent()
             && tree->currentItem()->parent()->text(0) == QStringLiteral("部件"), QStringLiteral("No imported part selected in tree"));
+
+        auto* transparency = window.findChild<QSlider*>(QStringLiteral("partTransparencySlider"));
+        auto* transparencySpin = window.findChild<QDoubleSpinBox*>(QStringLiteral("partTransparencySpin"));
+        require(transparency && transparency->isVisible() && transparencySpin && transparencySpin->isVisible()
+            && transparency->value() == 0, QStringLiteral("CAD part transparency controls are missing or not opaque by default"));
+        const int transparentPart = tree->currentItem()->data(0, Qt::UserRole).toInt();
+        const auto centerColor = [](const QImage& image) { return image.pixelColor(image.rect().center()); };
+        const auto colorDistance = [](const QColor& a, const QColor& b) {
+            return std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue());
+        };
+        const auto opaqueColor = centerColor(frame(*viewport));
+        transparency->setValue(65);
+        require(std::abs(transparencySpin->value() - 0.65) < 1e-9, QStringLiteral("Slider and numeric transparency values differ"));
+        const auto mixed = frame(*viewport);
+        transparencySpin->setValue(1.0);
+        const auto clearColor = centerColor(frame(*viewport));
+        require(transparency->value() == 100 && colorDistance(clearColor, centerColor(empty)) < 8
+            && colorDistance(centerColor(mixed), opaqueColor) > 10 && colorDistance(centerColor(mixed), clearColor) > 10,
+            QStringLiteral("The CAD face did not blend between opaque and fully transparent"));
+        require(viewport->pickAt(viewport->rect().center()).partId == transparentPart && tree->currentItem()->isSelected(),
+            QStringLiteral("Transparency changed CAD picking or cleared the model tree selection"));
+        require(mixed.save(output.filePath(QStringLiteral("cad-transparency.png"))), QStringLiteral("Could not save the transparent CAD frame"));
+
+        transparencySpin->setValue(0.65);
+        const auto presentationProject = temp.filePath(QStringLiteral("cad-transparency.mxmotion"));
+        QTimer selectPresentationPath;
+        QObject::connect(&selectPresentationPath, &QTimer::timeout, &window, [&] {
+            if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+                dialog->selectFile(presentationProject);
+                if (auto* name = dialog->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"))) name->setText(presentationProject);
+                QMetaObject::invokeMethod(dialog, "accept", Qt::DirectConnection);
+            }
+        });
+        QTimer stopPresentationDialog;
+        stopPresentationDialog.setSingleShot(true);
+        QObject::connect(&stopPresentationDialog, &QTimer::timeout, &window, [] {
+            if (auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) dialog->reject();
+        });
+        stopPresentationDialog.start(8000);
+        selectPresentationPath.start(20);
+        window.command(Command::SaveAs)->trigger();
+        selectPresentationPath.stop();
+        stopPresentationDialog.stop();
+        require(window.openRigidProject(presentationProject) && findNode(*tree, ModelNode::Part),
+            QStringLiteral("Could not reopen the project saved through CAD part properties"));
+        tree->setCurrentItem(findNode(*tree, ModelNode::Part));
+        require(transparency->value() == 65 && std::abs(transparencySpin->value() - 0.65) < 1e-9,
+            QStringLiteral("Saved CAD transparency was not restored to the property controls"));
+        transparencySpin->setValue(0.0);
+        line(QStringLiteral("CAD part transparency slider, actual framebuffer, picking and project save/reopen passed"));
 
         auto* toolbar = window.findChild<QToolBar*>(QStringLiteral("viewToolBar"));
         auto* pickMode = window.findChild<QToolButton*>(QStringLiteral("viewportPickMode"));
@@ -311,6 +505,9 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         auto* grid = window.command(Command::MeshDisplay);
         require(grid->isEnabled() && grid->isChecked(), QStringLiteral("Real mesh display not selected"));
         const auto mesh = frame(*viewport);
+        transparencySpin->setValue(0.75);
+        require(frame(*viewport) == mesh, QStringLiteral("CAD transparency modified the finite element mesh display"));
+        transparencySpin->setValue(0.0);
         window.command(Command::ShadedEdges)->trigger();
         require(frame(*viewport) != mesh, QStringLiteral("Finite-element grid did not change the OpenGL frame"));
         grid->trigger();

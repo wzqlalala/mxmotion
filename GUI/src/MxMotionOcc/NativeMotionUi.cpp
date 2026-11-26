@@ -6,9 +6,15 @@
 #include "NativeTopologyBinding.h"
 #include "NativeMotionPickWidgets.h"
 #include "NativeBodyMass.h"
+#include "NativeMotionDiagnostics.h"
 #include "NativeFunctionEditor.h"
 #include "NativeMotionTypedPanels.h"
 #include "mFoldSection.h"
+#include "mDirectionSelectorWidget.h"
+#include "mCalcLineEdit.h"
+#include "mGetSetTypeTemplate.h"
+#include "mPointPickerWidget.h"
+#include "mPickWidgetController.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "mUiMenu.h"
 #include "ThemeManager.h"
@@ -42,7 +48,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -68,11 +73,10 @@ QString label(const QString& key)
         {"frameAngles", "初始坐标系内禀 XYZ 角 (°)"}, {"guide", "约束其余五个自由度"},
         {"springs", "弹簧"}, {"vectorForces", "力 / 力矩 / 衬套"}, {"scalarForces", "标量力"},
         {"scalarTorques", "标量力矩"}, {"threePointForces", "三点力"}, {"threePointTorques", "三点力矩"},
-        {"tensionCables", "只拉绳索"}, {"softStops", "止挡"}, {"contacts", "接触"}, {"markers", "标记点"},
+        {"tensionCables", "只拉绳索"}, {"softStops", "止挡"}, {"hydraulicCylinders", "液压缸"},
+        {"contacts", "接触"}, {"markers", "标记点"},
         {"sensors", "传感器"}, {"controllers", "控制器"}, {"controlInputs", "控制输入"},
         {"autoFlexBodies", "自动柔性体"}, {"importedMnfBodies", "导入柔性体"}, {"scenarios", "求解方案"},
-        {"electroImports", "机电导入"}, {"electroExports", "机电导出"},
-        {"hydraulics", "液压协同"}, {"rlTasks", "强化学习"},
         {"name", "名称"}, {"id", "编号"}, {"enabled", "启用"}, {"isFixed", "固定参考体"},
         {"bodyIId", "连接体 I"}, {"bodyJId", "连接体 J"}, {"bodyId", "运动体"},
         {"actionBodyId", "动作体"}, {"baseBodyId", "基本体"}, {"targetBodyId", "目标体"},
@@ -87,7 +91,7 @@ QString label(const QString& key)
         {"isCustomMassProps", "指定质量属性"}, {"initialVelocity", "初始速度 (mm/s)"},
         {"densityKgMm3", "质量密度 (kg/mm³)"},
         {"initialAngularVelocity", "初始角速度 (°/s)"},
-        {"jointType", "运动副类型"}, {"origin", "原点 (mm)"}, {"axis", "轴方向"},
+        {"jointType", "运动副类型"}, {"origin", "指定原点"}, {"axis", "轴方向"},
         {"lead", "螺距 (mm/转)"}, {"actionSpin", "动作体转轴"}, {"actionPin", "动作体销轴"},
         {"baseSpin", "基本体转轴"}, {"basePin", "基本体销轴"},
         {"actionVector", "动作体方向"}, {"baseVector", "基本体方向"},
@@ -152,7 +156,14 @@ QString label(const QString& key)
         {"interfaceMode", "接口耦合方式"}, {"interfaceJointGroups", "独立接口的运动副分组"},
         {"occSurfaceFaces", "曲面绑定 (部件 / 面序号)"}, {"occCurveEdges", "曲线绑定 (部件 / 边序号)"},
         {"occCurveIEdges", "曲线 I 绑定"}, {"occCurveJEdges", "曲线 J 绑定"},
-        {"partId", "部件编号"}, {"index", "面 / 边序号 (从 1 开始)"}
+        {"partId", "部件编号"}, {"index", "面 / 边序号 (从 1 开始)"},
+        {"mountMode", "连接方式"}, {"pistonDiameter", "缸径 (mm)"}, {"rodDiameter", "杆径 (mm)"},
+        {"stroke", "总行程 (mm)"}, {"initialStroke", "初始行程 (mm)"},
+        {"deadVolumeA", "A腔死容积 (mm³)"}, {"deadVolumeB", "B腔死容积 (mm³)"},
+        {"viscousFriction", "黏性摩擦 (N·s/mm)"}, {"internalLeakage", "内泄漏系数 (L/min/MPa)"},
+        {"supplyMode", "供油控制模式"}, {"ratedFlowLpm", "阀额定流量 (L/min)"},
+        {"ratedPressureDrop", "阀额定压降 (MPa)"}, {"commandExpression", "控制指令函数"},
+        {"initialPressureA", "A腔初始压力 (MPa)"}, {"initialPressureB", "B腔初始压力 (MPa)"}
     };
     return names.value(key, key);
 }
@@ -183,7 +194,9 @@ QString enumLabel(const QString& value)
         {"JointReaction", "运动副反力"}, {"DriveActuation", "驱动力"}, {"Distance", "距离"}, {"Angle", "角度"},
         {"Magnitude", "幅值"}, {"All", "所有分量"}, {"DriveDof", "驱动自由度"}, {"Sensor", "传感器"},
         {"auto", "按原文档与几何核对"}, {"tensor", "惯量矩阵项"}, {"products", "正号惯量积"},
-        {"Linear", "一次多项式"}, {"Quadratic", "二次多项式"}, {"Cubic", "三次多项式"}, {"CustomCurve", "自定义曲线"}};
+        {"Linear", "一次多项式"}, {"Quadratic", "二次多项式"}, {"Cubic", "三次多项式"}, {"CustomCurve", "自定义曲线"},
+        {"Points", "两点连接"}, {"Joint", "关联移动副"},
+        {"DirectionalValve", "四通比例换向阀"}, {"FlowCommand", "指定流量输入"}, {"ClosedPort", "封闭容腔 (液气弹簧)"}};
     return names.value(value, value);
 }
 
@@ -419,6 +432,31 @@ QJsonObject templateRecord(const NativeMotionDocument& doc, const QString& colle
         merge(pair); merge({{"enabled", true}, {"direction", vec(0, 0, 1)}, {"directionMode", 1}, {"side", 1},
             {"stopPosition", 110.0}, {"stiffness", 100.0}, {"exponent", 1.0}, {"damping", 1.0},
             {"dampingDepth", 0.1}, {"hasTable", false}, {"tableX", QJsonArray{}}, {"tableY", QJsonArray{}}});
+    } else if (collection == "hydraulicCylinders") {
+        int movable = body;
+        for (const auto& item : doc.collection("bodies")) {
+            const auto candidate = item.toObject();
+            if (!candidate.value("isFixed").toBool()) { movable = candidate.value("id").toInt(-1); break; }
+        }
+        int linearJoint = -1;
+        for (const auto& item : doc.collection("joints")) {
+            const auto candidate = item.toObject();
+            const auto jt = candidate.value("jointType").toString();
+            if (jt == "Translational" || jt == "Cylindrical") { linearJoint = candidate.value("id").toInt(-1); break; }
+        }
+        merge({{"enabled", true},
+            {"mountMode", linearJoint >= 0 ? "Joint" : "Points"},
+            {"targetJointId", linearJoint >= 0 ? linearJoint : joint},
+            {"bodyIId", movable}, {"bodyJId", -1},
+            {"localI", vec(0, 0, 200)}, {"localJ", vec(0, 0, 0)},
+            {"pistonDiameter", 80.0}, {"rodDiameter", 45.0},
+            {"stroke", 400.0}, {"initialStroke", 200.0},
+            {"deadVolumeA", 50000.0}, {"deadVolumeB", 50000.0},
+            {"viscousFriction", 1.0}, {"internalLeakage", 0.0},
+            {"supplyMode", "DirectionalValve"},
+            {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
+            {"commandExpression", "0"}, {"commandTableX", QJsonArray{}}, {"commandTableY", QJsonArray{}},
+            {"initialPressureA", 1.0}, {"initialPressureB", 1.0}});
     } else if (collection == "springs") {
         merge(pair); merge({{"springType", type.isEmpty() ? "BodyPoint" : type}, {"jointId", joint},
             {"localRotI", quat()}, {"localRotJ", quat()}, {"stiffness", 10.0}, {"damping", 0.1}, {"dampingEnabled", true},
@@ -502,6 +540,8 @@ QStringList choices(const QString& key)
         {"componentMode", {"X", "Y", "Z", "Magnitude", "All"}}, {"feedbackSource", {"DriveDof", "Sensor"}},
         {"feedbackType", {"Position", "Velocity"}}, {"inputType", {"Constant", "Linear", "Quadratic", "Cubic", "CustomCurve"}},
         {"presetMode", {"FAST", "CONTACT", "ROBUST", "HIGH_PRECISION"}},
+        {"mountMode", {"Points", "Joint"}},
+        {"supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort"}},
         {"solverType", {"SPARSE_QR", "SPARSE_LU", "PSOR", "PSSOR", "PJACOBI", "PMINRES", "APGD", "GMRES", "MINRES"}},
         {"integratorType", {"EULER_IMPLICIT", "EULER_IMPLICIT_LINEARIZED", "EULER_IMPLICIT_PROJECTED", "TRAPEZOIDAL", "TRAPEZOIDAL_LINEARIZED", "HHT", "HEUN", "RUNGEKUTTA45", "EULER_EXPLICIT", "LEAPFROG", "NEWMARK"}}
     };
@@ -510,11 +550,14 @@ QStringList choices(const QString& key)
 
 ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& value,
                    const NativeMotionDocument& doc, const QString& collection, int depth = 0,
-                   NativePickSession* picker = nullptr, const QString& parentPath = {}, const QString& fieldLabel = {})
+                   NativePickSession* picker = nullptr, const QString& parentPath = {}, const QString& fieldLabel = {},
+                   const QString& unit = {})
 {
     const QString text = fieldLabel.isEmpty() ? label(key) : fieldLabel;
+    const bool forceElement = collection == "softStops" || collection == "tensionCables";
+    const bool aligned = depth == 0 && (collection == "bodyDrives" || forceElement || collection == "hydraulicCylinders");
     const auto addLabeledRow = [&](QWidget* editor) {
-        if (collection == "bodyDrives" && depth == 0) form->addRow(new PanelLabel(text), editor);
+        if (aligned) form->addRow(new PanelLabel(text), editor);
         else form->addRow(text, editor);
     };
     const QString path = parentPath.isEmpty() ? key : parentPath + "." + key;
@@ -522,7 +565,7 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
         "referencePoint","localPos","position","axis","direction","fixedDirection","fixedAxis","actionSpin","actionPin","baseSpin","basePin",
         "actionVector","baseVector","axisDirection","gravity","initialVelocity","initialAngularVelocity"};
     if (value.isArray() && value.toArray().size()==3 && vectorKeys.contains(key)) {
-        const auto values=value.toArray(); const auto read=addField(form,key,vec(values[0].toDouble(),values[1].toDouble(),values[2].toDouble()),doc,collection,depth,picker,parentPath);
+        const auto values=value.toArray(); const auto read=addField(form,key,vec(values[0].toDouble(),values[1].toDouble(),values[2].toDouble()),doc,collection,depth,picker,parentPath,fieldLabel);
         return [read] { const auto v=read().toObject(); return QJsonArray{v.value("x"),v.value("y"),v.value("z")}; };
     }
     if (value.isObject() && depth < 8) {
@@ -535,7 +578,7 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
         QWidget* pickWidget = nullptr;
         if (picker && original.size()==3 && original.contains("x") && original.contains("y") && original.contains("z"))
             pickWidget = picker->decorateVector(nested,box,key,path);
-        if (collection == "bodyDrives" && depth == 0 && pickWidget) {
+        if (aligned && pickWidget) {
             // 直接使用原拾取控件自己的边框。隐藏容器只保留序列化使用的坐标字段。
             nested->removeWidget(pickWidget);
             form->addRow(pickWidget);
@@ -556,23 +599,36 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
     if (key == "targetDriveId") references = "drives";
     if (key == "targetInputId") references = "controlInputs";
     if (key == "feedbackSensorId") references = "sensors";
-    if (!references.isEmpty() && value.isDouble()) {
+    if (forceElement && (key == "markerIId" || key == "markerJId")) references = "markers";
+    if (!references.isEmpty() && (value.isDouble() || references == "markers")) {
         auto* combo = new QComboBox; combo->setObjectName("native_" + key);
-        combo->addItem(references == "bodies" ? QStringLiteral("大地 (-1)") : QStringLiteral("无 (-1)"), -1);
+        const bool cleanBodyEndpoint = references == "bodies"
+            && (forceElement || collection == "bodyDrives" || collection == "hydraulicCylinders")
+            && (key == "bodyIId" || key == "bodyJId" || key == "targetBodyId" || key == "referenceBodyId");
+        if (references == "markers") combo->addItem(QStringLiteral("请选择标记点"));
+        else if (cleanBodyEndpoint) combo->addItem(QStringLiteral(" "), -1);
+        else combo->addItem(references == "bodies" ? QStringLiteral("大地 (-1)") : QStringLiteral("无 (-1)"), -1);
         for (const auto& item : doc.collection(references)) { const auto row = item.toObject();
-            combo->addItem(QStringLiteral("%1 [%2]").arg(row.value("name").toString()).arg(row.value("id").toInt()), row.value("id").toInt()); }
-        int index = combo->findData(value.toInt());
+            const auto name = row.value("name").toString();
+            const int id = row.value("id").toInt();
+            combo->addItem(cleanBodyEndpoint ? name : QStringLiteral("%1 [%2]").arg(name).arg(id), id);
+        }
+        int index = value.isDouble() ? combo->findData(value.toInt()) : 0;
         if (index < 0) { combo->addItem(QStringLiteral("缺失引用 [%1]").arg(value.toInt()), value.toInt()); index = combo->count() - 1; }
-        combo->setCurrentIndex(index); addLabeledRow(combo); return [combo] { return combo->currentData().toInt(); };
+        combo->setCurrentIndex(index); addLabeledRow(combo); return [combo] {
+            return combo->currentData().isValid() ? QJsonValue(combo->currentData().toInt()) : QJsonValue(QJsonValue::Undefined);
+        };
     }
     if ((key == "directionMode" || key == "axisMode" || key == "side") && value.isDouble()) {
         auto* combo = new QComboBox; combo->setObjectName("native_" + key);
         if (key == "side") { combo->addItem(QStringLiteral("上止挡 (+1)"), 1); combo->addItem(QStringLiteral("下止挡 (-1)"), -1); }
         else {
             if (collection != "softStops") combo->addItem(QStringLiteral("连接线方向"), 0);
-            combo->addItem(QStringLiteral("全局固定"), 1); combo->addItem(QStringLiteral("随 I 体转动"), 2); combo->addItem(QStringLiteral("随 J 体转动"), 3);
+            combo->addItem(QStringLiteral("全局固定"), 1);
+            combo->addItem(collection == "softStops" ? QStringLiteral("随运动体(1)转动") : QStringLiteral("随 I 体转动"), 2);
+            combo->addItem(collection == "softStops" ? QStringLiteral("随运动体(2)转动") : QStringLiteral("随 J 体转动"), 3);
         }
-        combo->setCurrentIndex(combo->findData(value.toInt())); form->addRow(text, combo);
+        combo->setCurrentIndex(combo->findData(value.toInt())); addLabeledRow(combo);
         return [combo] { return combo->currentData().toInt(); };
     }
     const auto options = choices(key);
@@ -587,7 +643,13 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
     }
     if (value.isString() || value.isDouble()) {
         const QString original = value.isDouble() ? QString::number(value.toDouble(), 'g', 17) : value.toString();
-        auto* edit = new QLineEdit(original); edit->setObjectName("native_" + key); edit->setMinimumWidth(70);
+        auto* numberEdit = (forceElement || collection == "hydraulicCylinders") && depth == 0 && value.isDouble()
+            ? new MxFunctions::mCalcLineEdit(original) : nullptr;
+        QLineEdit* edit = numberEdit ? numberEdit : new QLineEdit(original);
+        if (numberEdit) numberEdit->setUnit(unit);
+        const auto shown = edit->text();
+        edit->setObjectName("native_" + key);
+        edit->setMinimumWidth(70);
         const bool law=value.isString()&&collection!="drives"
             &&QStringList{"expression","forceFunction","torqueFunction","dampingFunction"}.contains(key)
             &&QStringList{"springs","vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques"}.contains(collection);
@@ -623,10 +685,13 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
                     if(auto* enabled=editor->findChild<QCheckBox*>("native_dampingEnabled"))enabled->setChecked(true);
             });
         }else addLabeledRow(edit);
-        return [edit, value, original, text] {
-            if (edit->text() == original) return value;
+        return [edit, numberEdit, value, shown, text] {
+            if (edit->text() == shown) return value;
             if (value.isString()) return QJsonValue(edit->text());
-            bool ok = false; const double number = edit->text().toDouble(&ok);
+            bool ok = false;
+            double number = 0.0;
+            if (numberEdit) ok = MxFunctions::mCalcLineEdit::calculate(edit->text(), number);
+            else number = edit->text().toDouble(&ok);
             if (!ok || !std::isfinite(number)) throw std::runtime_error((text + QStringLiteral("：请输入有限数值")).toStdString());
             return QJsonValue(number);
         };
@@ -677,6 +742,193 @@ ReadValue addField(QFormLayout* form, const QString& key, const QJsonValue& valu
     }
     form->addRow(text, new QLabel(value.isArray() ? QStringLiteral("%1 项，保留原始数据").arg(value.toArray().size()) : QStringLiteral("保留原始数据")));
     return [value] { return value; };
+}
+
+QSet<QString> addUnilateralForceSections(QWidget* panel, QFormLayout* form, const QJsonObject& row,
+    const QJsonObject& defaults, const NativeMotionDocument& document, const QString& collection,
+    NativePickSession* picker, QMap<QString, ReadValue>& fields)
+{
+    using namespace MechMainWindow;
+    using MxFunctions::UiMetrics;
+    const bool stop = collection == "softStops";
+    QSet<QString> owned;
+    const auto section = [&](const QString& title, const QString& name) {
+        auto* fold = new FoldSection(title, panel);
+        fold->setObjectName(name);
+        form->addRow(fold);
+        return fold;
+    };
+    const auto bind = [&](QFormLayout* target, const QString& key, const QString& title = QString(), const QString& unit = QString()) {
+        fields.insert(key, addField(target, key, row.value(key), document, collection, 0, picker, {}, title, unit));
+        owned.insert(key);
+    };
+
+    auto* type = section(QStringLiteral("类型"), QStringLiteral("forceTypeSection"));
+    auto* typeValue = new QComboBox(type);
+    typeValue->setObjectName(QStringLiteral("native_forceType"));
+    typeValue->addItem(label(collection), collection);
+    typeValue->setEnabled(false);
+    type->addRow(new PanelLabel(QStringLiteral("类型:")), typeValue);
+    // 旧工程仍保留启用状态，跳过通用表单中的这一行。
+    owned.insert("enabled");
+
+    auto* action = section(QStringLiteral("动作"), QStringLiteral("forceActionSection"));
+    auto* base = section(QStringLiteral("基本"), QStringLiteral("forceBaseSection"));
+    if (row.contains("markerIId") || row.contains("markerJId")) {
+        bind(action->layout(), "markerIId", QStringLiteral("标记点(1):"));
+        bind(base->layout(), "markerJId", QStringLiteral("标记点(2):"));
+        for (const auto* key : {"bodyIId", "bodyJId", "localI", "localJ"}) owned.insert(key);
+    } else {
+        bind(action->layout(), "bodyIId", QStringLiteral("选择运动体(1):"));
+        bind(action->layout(), "localI", QStringLiteral("动作点"));
+        bind(base->layout(), "bodyJId", QStringLiteral("选择运动体(2):"));
+        bind(base->layout(), "localJ", QStringLiteral("基本点"));
+        for (const auto* key : {"localI", "localJ"})
+            if (auto* point = panel->findChild<mPointPickerWidget*>("originalPointPicker_" + QString::fromLatin1(key)))
+                point->pickController()->setAllowedTypes(&MechCommon::pickGeoPointEdgeFaceSolidNodePart);
+    }
+    if (stop) {
+        bind(action->layout(), "directionMode");
+        bind(action->layout(), "direction", QStringLiteral("指定矢量"));
+        if (auto* direction = panel->findChild<mDirectionSelectorWidget*>("originalDirectionPicker_direction"))
+            QObject::connect(direction, &mDirectionSelectorWidget::layoutRefreshRequested,
+                action, [action] { action->refreshLayout(); });
+    }
+
+    auto* parameters = section(stop ? QStringLiteral("止挡参数") : QStringLiteral("绳索参数"),
+        QStringLiteral("forceParametersSection"));
+    if (stop) {
+        bind(parameters->layout(), "side");
+        bind(parameters->layout(), "stopPosition", QStringLiteral("止挡坐标"), QStringLiteral("mm"));
+        auto* mode = new QComboBox;
+        mode->setObjectName(QStringLiteral("native_hasTable"));
+        mode->addItem(QStringLiteral("幂函数"), false);
+        mode->addItem(QStringLiteral("力—压入量表"), true);
+        const auto originalX = row.value("tableX"), originalY = row.value("tableY");
+        const auto x = originalX.toArray(), y = originalY.toArray();
+        mode->setCurrentIndex(mode->findData(row.value("hasTable").toBool(!x.isEmpty() || !y.isEmpty())));
+        parameters->addRow(new PanelLabel(QStringLiteral("恢复力")), mode);
+        fields.insert("hasTable", [mode] { return mode->currentData().toBool(); });
+        owned.insert("hasTable");
+
+        auto* response = new QWidget;
+        auto* responseLayout = new QVBoxLayout(response);
+        responseLayout->setContentsMargins(0, 0, 0, 0);
+        responseLayout->setSpacing(0);
+        auto* power = new QWidget(response);
+        auto* powerForm = new QFormLayout(power);
+        powerForm->setContentsMargins(0, 0, 0, 0);
+        powerForm->setHorizontalSpacing(UiMetrics::columnGap());
+        powerForm->setVerticalSpacing(UiMetrics::rowGap());
+        powerForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        for (const auto* key : {"stiffness", "exponent"}) {
+            const auto original = row.value(key);
+            const auto initial = original.isUndefined() ? defaults.value(key) : original;
+            const auto unit = QLatin1String(key) == QLatin1String("stiffness") ? QStringLiteral("N/mmⁿ") : QString{};
+            auto read = addField(powerForm, key, initial, document, collection, 0, nullptr, {}, {}, unit);
+            fields.insert(key, [read, original, initial, mode] {
+                if (!mode->currentData().toBool()) return read();
+                try {
+                    const auto value = read();
+                    return original.isUndefined() && value == initial ? original : value;
+                } catch (const std::runtime_error&) {
+                    return original;
+                }
+            });
+            owned.insert(key);
+        }
+        responseLayout->addWidget(power);
+
+        auto* data = new QWidget(response);
+        auto* dataLayout = new QVBoxLayout(data);
+        dataLayout->setContentsMargins(0, 0, 0, 0);
+        dataLayout->setSpacing(UiMetrics::rowGap());
+        auto* table = new QTableWidget(std::max(x.size(), y.size()), 2, data);
+        table->setObjectName(QStringLiteral("native_stopForceTable"));
+        table->setHorizontalHeaderLabels({QStringLiteral("压入量 (mm)"), QStringLiteral("恢复力 (N)")});
+        table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->verticalHeader()->setDefaultSectionSize(UiMetrics::baseH() + 4);
+        table->setFixedHeight(UiMetrics::baseH() + 3 * table->verticalHeader()->defaultSectionSize() + 2);
+        for (int column = 0; column < 2; ++column) {
+            const auto& values = column == 0 ? x : y;
+            for (int i = 0; i < values.size(); ++i)
+                table->setItem(i, column, new QTableWidgetItem(QString::number(values[i].toDouble(), 'g', 17)));
+        }
+        dataLayout->addWidget(table);
+        auto* actions = new QHBoxLayout;
+        actions->setSpacing(UiMetrics::rowGap());
+        auto* add = new QPushButton(QStringLiteral("添加行"));
+        auto* remove = new QPushButton(QStringLiteral("删除"));
+        remove->setEnabled(false);
+        actions->addWidget(add);
+        actions->addWidget(remove);
+        actions->addStretch();
+        dataLayout->addLayout(actions);
+        responseLayout->addWidget(data);
+        parameters->addRow(response);
+        QObject::connect(add, &QPushButton::clicked, table, [table] {
+            if (table->rowCount() >= 100000) return;
+            const int row = table->rowCount();
+            table->insertRow(row);
+            for (int col = 0; col < 2; ++col) table->setItem(row, col, new QTableWidgetItem(QStringLiteral("0")));
+            table->setCurrentCell(row, 0);
+        });
+        QObject::connect(table, &QTableWidget::itemSelectionChanged, remove, [table, remove] {
+            remove->setEnabled(table->selectionModel()->hasSelection());
+        });
+        QObject::connect(remove, &QPushButton::clicked, table, [table] {
+            auto rows = table->selectionModel()->selectedRows();
+            std::sort(rows.begin(), rows.end(), [](const auto& lhs, const auto& rhs) { return lhs.row() > rhs.row(); });
+            for (const auto& index : rows) table->removeRow(index.row());
+        });
+        const auto readTable = [table, mode, originalX, originalY]() -> std::pair<QJsonValue, QJsonValue> {
+            QJsonArray values[2];
+            for (int row = 0; row < table->rowCount(); ++row) {
+                for (int column = 0; column < 2; ++column) {
+                    const auto* item = table->item(row, column);
+                    bool ok = false;
+                    const double number = item ? item->text().toDouble(&ok) : 0.0;
+                    if (!ok || !std::isfinite(number)) {
+                        if (!mode->currentData().toBool()) return {originalX, originalY};
+                        throw std::runtime_error(QStringLiteral("恢复力表第 %1 行需要有限数值。").arg(row + 1).toStdString());
+                    }
+                    values[column].append(number);
+                }
+            }
+            if (!mode->currentData().toBool() && table->rowCount() == 0)
+                return {originalX.isUndefined() ? originalX : QJsonValue(values[0]),
+                        originalY.isUndefined() ? originalY : QJsonValue(values[1])};
+            return {values[0], values[1]};
+        };
+        fields.insert("tableX", [readTable] { return readTable().first; });
+        fields.insert("tableY", [readTable] { return readTable().second; });
+        owned.insert("tableX");
+        owned.insert("tableY");
+        const auto updateMode = [parameters, mode, response, responseLayout, power, data] {
+            const bool tableMode = mode->currentData().toBool();
+            power->setVisible(!tableMode);
+            data->setVisible(tableMode);
+            responseLayout->invalidate();
+            response->updateGeometry();
+            parameters->setRowVisible(response, true);
+        };
+        QObject::connect(mode, qOverload<int>(&QComboBox::currentIndexChanged), parameters, updateMode);
+        updateMode();
+    } else {
+        bind(parameters->layout(), "freeLength", QStringLiteral("自由长度"), QStringLiteral("mm"));
+        bind(parameters->layout(), "stiffness", QStringLiteral("刚度"), QStringLiteral("N/mm"));
+    }
+    auto* damping = section(QStringLiteral("阻尼"), QStringLiteral("forceDampingSection"));
+    const auto bindDamping = [&](const QString& key, const QString& title, const QString& unit) {
+        fields.insert(key, addField(damping->layout(), key, row.value(key).toDouble(), document, collection,
+            0, nullptr, {}, title, unit));
+        owned.insert(key);
+    };
+    bindDamping("damping", QStringLiteral("阻尼系数"), QStringLiteral("N·s/mm"));
+    bindDamping(stop ? "dampingDepth" : "engagementWidth",
+        stop ? QStringLiteral("过渡深度") : QStringLiteral("过渡宽度"), QStringLiteral("mm"));
+    return owned;
 }
 
 QListWidget* partList(const CadDocument& cad, const NativeMotionDocument& document, int bodyId)
@@ -1020,11 +1272,13 @@ void MotionWindow::createNativeCommands()
             {Command::AddMarker, "markers", "movingBody.png"}, {Command::AddSensor, "sensors", "sensor_displacement.png"},
             {Command::AddController, "controllers", "controlCalculation.png"}, {Command::AddControlInput, "controlInputs", "controlInput.png"},
             {Command::AddAutoFlex, "autoFlexBodies", "mnf.png"}, {Command::AddSoftStop, "softStops", "force_spring.png"},
-            {Command::AddTensionCable, "tensionCables", "force_spring.png"}}) {
+            {Command::AddTensionCable, "tensionCables", "force_spring.png"},
+            {Command::AddHydraulicCylinder, "hydraulicCylinders", "mech_hydraulic.png"}}) {
         const QString collection = QLatin1String(entry.collection);
         add(entry.command, entry.command == Command::AddNativeJoint ? tr("更多运动副") : label(collection), entry.icon,
             [this, collection] { if (ensureNativeModel()) editNativeEntity(collection); });
     }
+    add(Command::EditHydraulicFluid, tr("油液设置"), "mech_hydraulic.png", [this] { editHydraulicFluid(); });
 }
 
 bool MotionWindow::ensureNativeModel()
@@ -1067,6 +1321,22 @@ bool MotionWindow::ensureNativeModel()
 }
 
 namespace {
+bool isNativeTreeManagedCollection(const QString& collection) {
+    return collection == "softStops" || collection == "tensionCables"
+        || collection == "bodyDrives" || collection == "hydraulicCylinders";
+}
+QString uniqueNativeCopyName(const NativeMotionDocument& document, const QString& collection, const QString& baseName) {
+    QSet<QString> existing;
+    for (const auto& item : document.collection(collection))
+        existing.insert(item.toObject().value("name").toString());
+    const QString stem = baseName.trimmed().isEmpty() ? label(collection) : baseName.trimmed();
+    QString candidate = stem + QStringLiteral("_副本");
+    int suffix = 2;
+    while (existing.contains(candidate)) {
+        candidate = QStringLiteral("%1_副本%2").arg(stem).arg(suffix++);
+    }
+    return candidate;
+}
 MxFunctions::PhysicalFieldType originalTreeType(const QString& collection) {
     using namespace MxFunctions;
     static const QMap<QString,PhysicalFieldType> types{
@@ -1076,21 +1346,19 @@ MxFunctions::PhysicalFieldType originalTreeType(const QString& collection) {
         {"scalarTorques",Physical_MotionVectorForce},{"threePointForces",Physical_MotionVectorForce},
         {"threePointTorques",Physical_MotionVectorForce},{"contacts",Physical_MotionContact},
         {"markers",Physical_MotionMarker},{"sensors",Physical_MotionSensor},{"controllers",Physical_MotionController},
-        {"controlInputs",Physical_MotionControlInput},{"scenarios",Physical_MotionScenario},{"autoFlexBodies",Physical_MotionAutoFlex},
-        {"electroImports",Physical_MotionElectroImport},{"electroExports",Physical_MotionElectroExport},
-        {"hydraulics",Physical_MotionHydraulic},{"rlTasks",Physical_MotionRL}};
+        {"controlInputs",Physical_MotionControlInput},{"scenarios",Physical_MotionScenario},{"autoFlexBodies",Physical_MotionAutoFlex}};
     return types.value(collection,Physical_None);
 }
 QStringList originalTreeCollections(const QString& group) {
     if(group=="forceElements")return {"vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques","tensionCables","softStops"};
-    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","bodyDrives","springs","vectorForces","scalarForces","scalarTorques",
+    if(group=="__motionRoot")return {"bodies","joints","couplings","drives","bodyDrives","hydraulicCylinders","springs","vectorForces","scalarForces","scalarTorques",
         "threePointForces","threePointTorques","tensionCables","softStops","contacts","markers","sensors","controllers",
-        "controlInputs","scenarios","autoFlexBodies","electroImports","electroExports","hydraulics","rlTasks"};
+        "controlInputs","scenarios","autoFlexBodies"};
     return {group};
 }
 QString originalCurveCollection(const QString& source) {
     static const QMap<QString,QString> aliases{{"Body","bodies"},{"Joint","joints"},{"Marker","markers"},
-        {"Drive","drives"},{"BodyDrive","bodyDrives"},{"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
+        {"Drive","drives"},{"BodyDrive","bodyDrives"},{"HydraulicCylinder","hydraulicCylinders"},{"Coupling","couplings"},{"Sensor","sensors"},{"Controller","controllers"},
         {"Spring","springs"},{"TensionCable","tensionCables"},{"SoftStop","softStops"},
         {"VectorForce","vectorForces"},{"ScalarForce","scalarForces"},{"ScalarTorque","scalarTorques"},
         {"ThreePointForce","threePointForces"},{"ThreePointTorque","threePointTorques"},{"AutoFlexBody","autoFlexBodies"}};
@@ -1139,7 +1407,9 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"三点力矩","Motion/force_tri_torque.png","createMotionVectorForce","TriTorque"},
         {"标量力","Motion/force.png","createMotionVectorForce","ScalarForce"},
         {"标量力矩","Motion/moment.png","createMotionVectorForce","ScalarTorque"},
-        {"衬套","Motion/bush.png","createMotionVectorForce","Bushing"}};
+        {"衬套","Motion/bush.png","createMotionVectorForce","Bushing"},
+        {"止挡","Motion/force_spring.png","createMotionSoftStop",""},
+        {"只拉绳索","Motion/coupling_cable.png","createMotionTensionCable",""}};
     if(collection=="drives")return {{"运动副驱动","Motion/rotaryJoint.png","createMotionDrive","Velocity"}};
 #if defined(MX_HAS_BODY_DRIVES)
     if(collection=="bodyDrives")return {
@@ -1156,19 +1426,41 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"controlInputs",{"新建控制输入","BrowserTree/xinjian-23x.png","createControlInput"}},
         {"contacts",{"新建 3D 接触","","createMotionContact"}},
         {"autoFlexBodies",{"新建自动柔性体","BrowserTree/xinjian-23x.png","createMotionAutoFlex"}},
-        {"scenarios",{"新建求解方案","BrowserTree/motion_solveParentItem.png","createMotionScenario"}},
-        {"electroImports",{"创建机电导入","BrowserTree/xinjian-23x.png","createElectroImport"}},
-        {"electroExports",{"创建机电导出","BrowserTree/xinjian-23x.png","createElectroExport"}},
-        {"hydraulics",{"创建液压协同","BrowserTree/xinjian-23x.png","createHydraulic"}},
-        {"rlTasks",{"创建强化学习","BrowserTree/xinjian-23x.png","createRLPanel"}}};
+        {"hydraulicCylinders",{"新建液压缸","Motion/mech_hydraulic.png","createHydraulicCylinder"}},
+        {"scenarios",{"新建求解方案","BrowserTree/motion_solveParentItem.png","createMotionScenario"}}};
     return simple.contains(collection)?QVector<OriginalTreeCreation>{simple.value(collection)}:QVector<OriginalTreeCreation>{};
 }
 }
 bool MotionWindow::renameOriginalDynamicTreeItem(QTreeWidgetItem* item) {
     if(!item || !item->data(0,Qt::UserRole+4).toBool())return false;
     const auto collection=item->data(0,Qt::UserRole+2).toString();const auto type=originalTreeType(collection);
-    if(type==MxFunctions::Physical_None)return false;
     const int id=item->data(0,Qt::UserRole).toInt();const QString proposed=item->text(0).trimmed();
+    if(type==MxFunctions::Physical_None) {
+        if(!isNativeTreeManagedCollection(collection)||!m_model.nativeDocument)return false;
+        const auto currentRow=m_model.nativeDocument->entity(collection,id);
+        if(currentRow.isEmpty())return false;
+        const auto previous=currentRow.value("name").toString();
+        if(previous==proposed)return true;
+        bool duplicate=false;
+        for(const auto& entry:m_model.nativeDocument->collection(collection)) {
+            const auto obj=entry.toObject();
+            if(obj.value("id").toInt(-1)!=id && obj.value("name").toString()==proposed) { duplicate=true; break; }
+        }
+        if(motionBusy()||m_jobPart>=0||proposed.isEmpty()||duplicate) {
+            const QSignalBlocker block(m_tree);item->setText(0,previous);
+            if(proposed.isEmpty()||duplicate)setNotice(tr("名称不能为空或与现有对象重名。"),true);
+            return true;
+        }
+        closeEditor();
+        auto updatedDoc=*m_model.nativeDocument;
+        auto updatedRow=currentRow;
+        updatedRow.insert("name",proposed);
+        updatedRow.insert("isUserRename",true);
+        put(updatedDoc,collection,updatedRow);
+        if(m_original)m_original->adoptExternalDocument(updatedDoc);
+        commitNativeDocument(std::move(updatedDoc),{ModelNode::Native,id,collection});
+        return true;
+    }
     ensureOriginalMotionContext();if(!m_original)return true;
     const auto previous=m_original->model()->getNameByPhyID(type,id);
     if(previous==proposed)return true;
@@ -1259,7 +1551,8 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
     if(!item)return false;const auto collection=item->data(0,Qt::UserRole+2).toString();
     const auto type=originalTreeType(collection);const bool root=collection=="__motionRoot";
     const bool group=item->data(0,Qt::UserRole+3).toBool();const int id=item->data(0,Qt::UserRole).toInt();
-    if(type==MxFunctions::Physical_None&&!root&&!(group&&collection=="bodyDrives"))return false;
+    const bool nativeManaged=isNativeTreeManagedCollection(collection);
+    if(type==MxFunctions::Physical_None&&!root&&!nativeManaged)return false;
     const bool idle=!motionBusy()&&m_jobPart<0;
     mUiMenu menu(this);menu.setObjectName("originalMotionTreeMenu");
     const auto action=[&](QMenu* target,const char* artwork,const QString& text,const std::function<void()>& callback) {
@@ -1276,9 +1569,18 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
         auto* nested=menu.addMenu(icon,text);nested->setEnabled(idle);nested->setObjectName("originalMotionTreeCreate_"+name);
         auto entries=originalTreeCreations(name);
         if(rootMenu&&name=="couplings") { entries.resize(2);entries[0].icon="Motion/coupling_gearRack.png"; }
-        if(rootMenu&&name=="forceElements") { const auto bush=entries.takeLast();entries.insert(2,bush); }
+        if(rootMenu&&name=="forceElements") {
+            for(int k=0;k<entries.size();++k) {
+                if(QLatin1String(entries[k].type)==QLatin1String("Bushing")) {
+                    const auto bush=entries.takeAt(k);
+                    entries.insert(std::min(2,entries.size()),bush);
+                    break;
+                }
+            }
+        }
         for(const auto& entry:entries) {
-            if(rootMenu&&name=="forceElements"&&QString::fromLatin1(entry.type)=="ScalarForce")nested->addSeparator();
+            if(rootMenu&&name=="forceElements"&&(QString::fromLatin1(entry.type)=="ScalarForce"||QString::fromLatin1(entry.action)=="createMotionSoftStop"))
+                nested->addSeparator();
             create(nested,entry);
         }
         MechMainWindow::ThemeManager::applyMenuStyle(nested);
@@ -1291,6 +1593,7 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
 #if defined(MX_HAS_BODY_DRIVES)
         submenu("bodyDrives",tr("新建运动体驱动"),TreeIcons::item("bodyDrives"),true);
 #endif
+        create(&menu,{"新建液压缸","Motion/mech_hydraulic.png","createHydraulicCylinder"});
         create(&menu,originalTreeCreations("markers").first());
         submenu("sensors",tr("新建传感器"),TreeIcons::item("sensors"),true);
         create(&menu,{"新建控制器","Motion/controlCalculation.png","createMotionController"});
@@ -1313,7 +1616,10 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
                 if(collection=="forceElements"&&i==2)menu.addSeparator();
                 create(&menu,entries[i],multiple?tr("新建"):QString{});
             }
-            if(multiple||collection=="contacts")menu.addSeparator();
+            if(collection=="hydraulicCylinders") {
+                action(&menu,"Motion/mech_hydraulic.png",tr("油液设置…"),[this] { editHydraulicFluid(); });
+                menu.addSeparator();
+            } else if(multiple||collection=="contacts")menu.addSeparator();
         }
         const auto groupName=collection=="forceElements"?tr("力元"):label(collection);
         action(&menu,"BrowserTree/shanchu.png",tr("删除所有%1").arg(groupName),[this,collection] { deleteOriginalTreeEntities(collection,-1); });
@@ -1324,6 +1630,36 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
             editOriginalMotionEntity("scenarios",id,{});
             if(m_editor)if(auto* panel=m_editor->findChild<MechMainWindow::mMotionScenarioPanel*>())panel->onStartSolve(id);
         });
+        else if(type==MxFunctions::Physical_None&&nativeManaged) {
+            action(&menu,"BrowserTree/fuzhi.png",tr("复制"),[this,collection,id] {
+                if(motionBusy()||m_jobPart>=0||!m_model.nativeDocument)return;
+                closeEditor();
+                auto updatedDoc=*m_model.nativeDocument;
+                auto copyRow=updatedDoc.entity(collection,id);
+                if(copyRow.isEmpty())return;
+                const int copyId=nextId(updatedDoc,collection);
+                copyRow.insert("id",copyId);
+                copyRow.insert("name",uniqueNativeCopyName(updatedDoc,collection,copyRow.value("name").toString()));
+                put(updatedDoc,collection,copyRow);
+                if(m_original)m_original->adoptExternalDocument(updatedDoc);
+                if(commitNativeDocument(std::move(updatedDoc),{ModelNode::Native,copyId,collection}))
+                    editNativeEntity(collection,copyId);
+            });
+            if(m_model.nativeDocument && m_model.nativeDocument->entity(collection,id).value("enabled")==QJsonValue(false)) {
+                action(&menu,"",tr("启用"),[this,collection,id] {
+                    if(motionBusy()||m_jobPart>=0||!m_model.nativeDocument)return;
+                    closeEditor();
+                    auto updatedDoc=*m_model.nativeDocument;
+                    auto row=updatedDoc.entity(collection,id);
+                    if(row.isEmpty())return;
+                    row.insert("enabled",true);
+                    put(updatedDoc,collection,row);
+                    if(m_original)m_original->adoptExternalDocument(updatedDoc);
+                    if(commitNativeDocument(std::move(updatedDoc),{ModelNode::Native,id,collection}))
+                        editNativeEntity(collection,id);
+                });
+            }
+        }
         else action(&menu,"BrowserTree/fuzhi.png",tr("复制"),[this,type,collection,id] {
             closeEditor();ensureOriginalMotionContext();if(!m_original)return;
             auto extensions=m_original->document().entity(collection,id);if(extensions.isEmpty())return;
@@ -1523,7 +1859,7 @@ bool MotionWindow::installMotionJson(const QString& path, NativeMotionDocument&&
     commitRigid(std::move(imported), {});
     restoreNativeFlexMeshes();
     syncViewport(hasGeometry, prepared);
-    if (hasGeometry) for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
+    if (hasGeometry) for (const auto& note : m_document.importNotes()) appendOutput(note);
     setNotice(tr("已导入 %1：%2 个运动体、%3 个运动副。几何绑定已核对，可选择求解方案运行。")
         .arg(QFileInfo(path).fileName()).arg(bodies).arg(joints)); return true;
 }
@@ -1532,7 +1868,8 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
 {
     const QMap<QString, QString> groupNames{{"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"importedMnfBodies", tr("柔性体")},
-        {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")}, {"bodyDrives", tr("运动体驱动")}, {"springs", tr("弹簧")},
+        {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")}, {"bodyDrives", tr("运动体驱动")},
+        {"hydraulicCylinders", tr("液压缸")}, {"springs", tr("弹簧")},
         {"vectorForces", tr("力元")}, {"scalarForces", tr("力元")}, {"scalarTorques", tr("力元")},
         {"threePointForces", tr("力元")}, {"threePointTorques", tr("力元")}, {"tensionCables", tr("力元")}, {"softStops", tr("力元")},
         {"sensors", tr("传感器")}, {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")}, {"controlInputs", tr("控制输入")}};
@@ -1546,30 +1883,13 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
             item->setIcon(0, TreeIcons::entity(it.key(), row));
             item->setToolTip(0, label(it.key()) + QStringLiteral(" [%1]").arg(id));
             item->setData(0, Qt::UserRole, id); item->setData(0, Qt::UserRole + 1, int(ModelNode::Native)); item->setData(0, Qt::UserRole + 2, it.key());
-            if(originalTreeType(it.key())!=MxFunctions::Physical_None) {
+            if(originalTreeType(it.key())!=MxFunctions::Physical_None || isNativeTreeManagedCollection(it.key())) {
                 item->setFlags(item->flags()|Qt::ItemIsEditable);
                 item->setData(0,Qt::UserRole+4,true);
             }
             if (m_selectionNode.kind == ModelNode::Native && m_selectionNode.id == id && m_selectionNode.collection == it.key()) m_tree->setCurrentItem(item);
         }
         if (group->childCount()) group->setExpanded(true);
-    }
-    // These four groups are deliberately lazy in the uploaded mTreeModel /
-    // mTreeView. They disappear when their last typed object is deleted.
-    for(const auto* collection:{"electroImports","electroExports","hydraulics","rlTasks"}) {
-        const auto rows=m_model.nativeDocument->collection(collection);if(rows.isEmpty())continue;
-        auto* group=new QTreeWidgetItem(root,{label(collection)});group->setIcon(0,TreeIcons::item(collection));
-        group->setData(0,Qt::UserRole,-1);group->setData(0,Qt::UserRole+1,int(ModelNode::None));
-        group->setData(0,Qt::UserRole+2,QString::fromLatin1(collection));group->setData(0,Qt::UserRole+3,true);
-        for(const auto& value:rows) {
-            const auto row=value.toObject();const int id=row.value("id").toInt(-1);
-            auto* item=new QTreeWidgetItem(group,{row.value("name").toString()});item->setIcon(0,TreeIcons::entity(collection,row));
-            item->setFlags(item->flags()|Qt::ItemIsEditable);item->setToolTip(0,label(collection)+QStringLiteral(" [%1]").arg(id));
-            item->setData(0,Qt::UserRole,id);item->setData(0,Qt::UserRole+1,int(ModelNode::Native));
-            item->setData(0,Qt::UserRole+2,QString::fromLatin1(collection));item->setData(0,Qt::UserRole+4,true);
-            if(m_selectionNode.kind==ModelNode::Native&&m_selectionNode.collection==collection&&m_selectionNode.id==id)m_tree->setCurrentItem(item);
-        }
-        group->setExpanded(true);
     }
     for (const auto& scenario : m_model.scenarios) {
         auto* item = new QTreeWidgetItem(root, {scenario.name}); item->setData(0, Qt::UserRole, scenario.id);
@@ -1690,6 +2010,8 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     if (collection == "sensors") convertSensorPoints(row,document,true);
     if (collection == "bodies" && !row.contains("densityKgMm3")) row.insert("densityKgMm3", kDefaultNativeBodyDensityKgMm3);
     const bool bodyDrive = collection == "bodyDrives";
+    const bool unilateralForce = collection == "softStops" || collection == "tensionCables";
+    const bool hydraulicCylinder = collection == "hydraulicCylinders";
     const auto bodyDriveMode = row.value("bodyDriveMode").toString();
     const bool poseDrive = bodyDriveMode == "Pose";
     auto* panel = new QWidget; panel->setObjectName("nativeEditor_" + collection);
@@ -1697,7 +2019,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* form = new QFormLayout(panel); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setSizeConstraint(QLayout::SetMinimumSize);
-    if (bodyDrive) {
+    if (bodyDrive || unilateralForce || hydraulicCylinder) {
         form->setContentsMargins(0, 0, 0, 0);
         form->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
     } else {
@@ -1717,12 +2039,6 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         auto* help = new QLabel(missingMaterial
             ? tr("原运动数据未包含所引用的材料参数。请核对下面选中的材料与 E / ν / ρ 后保存；没有材料库时显示默认钢参数。保存后生成并显示真实体网格，已有体网格直接复用。")
             : tr("材料参数写回所选材料。保存后生成并显示真实体网格，已有体网格直接复用；附着节点留空时按连接此体的运动副自动分组。"));
-        help->setWordWrap(true); form->addRow(help);
-    }
-    if (collection == "softStops" || collection == "tensionCables") {
-        auto* help = new QLabel(collection == "tensionCables"
-            ? tr("绳索松弛时力为零，仅产生拉力。作用点使用初始全局坐标；长度单位 mm，刚度 N/mm，阻尼 N·s/mm。")
-            : tr("沿方向投影计算止挡间隙，仅在越过止挡时受力。刚度单位 N/mm^指数，阻尼 N·s/mm；表格两列分别为压入量 mm 和力 N。"));
         help->setWordWrap(true); form->addRow(help);
     }
     QListWidget* parts = nullptr;
@@ -1771,24 +2087,32 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     }
     const QStringList hidden{"id", "isUserRename", "geoEntityIds", "geoEntityNames", "currentCurveRequest", "curveNode", "curveRequests",
         "legacyEndValue", "driveType", "targetType", "surfaceFaceIds", "curveEdgeIds", "curveIEdgeIds", "curveJEdgeIds", "occPickReferences",
-        "channels"};
-    if (!bodyDrive && row.contains("name")) fields.insert("name", addField(form, "name", row.value("name"), document, collection));
+        "channels", "commandTableX", "commandTableY"};
+    if (!bodyDrive && !unilateralForce && !hydraulicCylinder && row.contains("name"))
+        fields.insert("name", addField(form, "name", row.value("name"), document, collection));
     auto specialisedFields = addNativeTypedFields(panel, form, row, collection, document,
         [&, picker](QFormLayout* target, const QString& field, const QJsonValue& value) {
             return addField(target, field, value, document, collection, 0, picker);
         }, fields);
+    if (unilateralForce)
+        specialisedFields.unite(addUnilateralForceSections(panel, form, row, defaults, document, collection, picker, fields));
     if (bodyDrive) {
-        const auto bind = [&](MechMainWindow::FoldSection* section, const QString& key) {
+        const auto bind = [&](MechMainWindow::FoldSection* section, const QString& key, const QString& title = {}) {
             if (!row.contains(key)) return;
-            fields.insert(key, addField(section->layout(), key, row.value(key), document, collection, 0, picker));
+            fields.insert(key, addField(section->layout(), key, row.value(key), document, collection, 0, picker, {}, title));
             specialisedFields.insert(key);
         };
+        auto* typeSection = addBodyDriveSection(tr("类型"), "bodyDriveTypeSection");
+        bind(typeSection, "bodyDriveMode", tr("类型:"));
+        // 旧工程仍保留启用状态，改名统一在模型树操作。
+        specialisedFields.insert("enabled");
+
         auto* target = addBodyDriveSection(tr("驱动目标"), "bodyDriveTargetSection");
-        for (const auto* key : {"name", "bodyDriveMode", "targetBodyId", "referenceBodyId", "enabled"})
-            bind(target, QString::fromLatin1(key));
+        bind(target, "targetBodyId", tr("选择运动体(1):"));
+        bind(target, "referenceBodyId", tr("选择运动体(2):"));
 
         auto* coordinates = addBodyDriveSection(tr("坐标定义"), "bodyDriveCoordinateSection");
-        bind(coordinates, "origin");
+        bind(coordinates, "origin", tr("指定原点"));
         if (poseDrive && row.contains("frameAngles")) {
             const auto source = row.value("frameAngles");
             const auto angles = source.toArray();
@@ -1818,6 +2142,140 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             if (auto* axis = panel->findChild<QWidget*>("originalDirectionPicker_axis"))
                 axis->setToolTip(tr("轴用初始全局坐标定义，随参考体运动。"));
         }
+    }
+    if (hydraulicCylinder) {
+        for (const auto& k : defaults.keys()) if (!row.contains(k)) row.insert(k, defaults.value(k));
+        specialisedFields.insert("enabled");
+        specialisedFields.insert("commandExpression");
+        const auto bind = [&](MechMainWindow::FoldSection* sec, const QString& key, const QString& title = {}, const QString& unit = {}) {
+            fields.insert(key, addField(sec->layout(), key, row.value(key), document, collection, 0, picker, {}, title, unit));
+            specialisedFields.insert(key);
+        };
+        auto* typeSec = addBodyDriveSection(tr("类型"), "hydraulicTypeSection");
+        auto* typeCombo = new QComboBox(typeSec);
+        typeCombo->setObjectName(QStringLiteral("native_hydraulicType"));
+        typeCombo->addItem(tr("双作用单杆液压缸"));
+        typeCombo->setEnabled(false);
+        typeSec->layout()->addRow(new PanelLabel(tr("类型:")), typeCombo);
+
+        auto* mountSec = addBodyDriveSection(tr("安装连接"), "hydraulicMountSection");
+        bind(mountSec, "mountMode", tr("连接方式:"));
+        auto* jointContainer = new QWidget(mountSec);
+        auto* jointLayout = new QFormLayout(jointContainer);
+        jointLayout->setContentsMargins(0, 0, 0, 0);
+        jointLayout->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
+        fields.insert("targetJointId", addField(jointLayout, "targetJointId", row.value("targetJointId"), document, collection, 0, picker, {}, tr("关联运动副:")));
+        specialisedFields.insert("targetJointId");
+        mountSec->layout()->addRow(jointContainer);
+
+        auto* pointsContainer = new QWidget(mountSec);
+        auto* pointsLayout = new QFormLayout(pointsContainer);
+        pointsLayout->setContentsMargins(0, 0, 0, 0);
+        pointsLayout->setVerticalSpacing(MxFunctions::UiMetrics::rowGap());
+        fields.insert("bodyIId", addField(pointsLayout, "bodyIId", row.value("bodyIId"), document, collection, 0, picker, {}, tr("选择运动体(1):")));
+        fields.insert("localI", addField(pointsLayout, "localI", row.value("localI"), document, collection, 0, picker, {}, tr("活塞杆端(1):")));
+        fields.insert("bodyJId", addField(pointsLayout, "bodyJId", row.value("bodyJId"), document, collection, 0, picker, {}, tr("选择运动体(2):")));
+        fields.insert("localJ", addField(pointsLayout, "localJ", row.value("localJ"), document, collection, 0, picker, {}, tr("缸筒底座(2):")));
+        for (const auto& k : {"bodyIId", "localI", "bodyJId", "localJ"}) specialisedFields.insert(k);
+        mountSec->layout()->addRow(pointsContainer);
+
+        if (auto* modeCombo = panel->findChild<QComboBox*>("native_mountMode")) {
+            const auto syncMount = [modeCombo, jointContainer, pointsContainer, mountSec, picker] {
+                picker->finish();
+                const bool byJoint = modeCombo->currentData().toString() == "Joint";
+                jointContainer->setVisible(byJoint);
+                pointsContainer->setVisible(!byJoint);
+                mountSec->refreshLayout();
+            };
+            connect(modeCombo, qOverload<int>(&QComboBox::currentIndexChanged), panel, syncMount);
+            syncMount();
+        }
+
+        auto* geomSec = addBodyDriveSection(tr("缸体几何与阻尼"), "hydraulicGeometrySection");
+        bind(geomSec, "pistonDiameter", tr("缸径:"), QStringLiteral("mm"));
+        bind(geomSec, "rodDiameter", tr("杆径:"), QStringLiteral("mm"));
+        bind(geomSec, "stroke", tr("总行程:"), QStringLiteral("mm"));
+        bind(geomSec, "initialStroke", tr("初始行程:"), QStringLiteral("mm"));
+        bind(geomSec, "deadVolumeA", tr("A腔死容积:"), QStringLiteral("mm³"));
+        bind(geomSec, "deadVolumeB", tr("B腔死容积:"), QStringLiteral("mm³"));
+        bind(geomSec, "viscousFriction", tr("黏性摩擦:"), QStringLiteral("N·s/mm"));
+        bind(geomSec, "internalLeakage", tr("内泄漏系数:"), QStringLiteral("L/min/MPa"));
+
+        auto* ctrlSec = addBodyDriveSection(tr("供油与控制"), "hydraulicControlSection");
+        bind(ctrlSec, "supplyMode", tr("控制模式:"));
+        bind(ctrlSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
+        bind(ctrlSec, "ratedPressureDrop", tr("额定压降:"), QStringLiteral("MPa"));
+
+        auto cmdTx = std::make_shared<QJsonArray>(row.value("commandTableX").toArray());
+        auto cmdTy = std::make_shared<QJsonArray>(row.value("commandTableY").toArray());
+        auto* cmdWrap = new QWidget(ctrlSec);
+        auto* cmdRow = new QHBoxLayout(cmdWrap);
+        cmdRow->setContentsMargins(0, 0, 0, 0);
+        cmdRow->setSpacing(MxFunctions::UiMetrics::choiceGap());
+        auto* cmdEdit = new QLineEdit(row.value("commandExpression").toString("0"), cmdWrap);
+        cmdEdit->setObjectName(QStringLiteral("native_hydraulicCommand"));
+        auto* cmdBtn = new QToolButton(cmdWrap);
+        cmdBtn->setObjectName(QStringLiteral("native_hydraulicFunction"));
+        cmdBtn->setIcon(QIcon(QStringLiteral(":/mMainWidgets/Icon/homepage/hanshu3x.png")));
+        cmdBtn->setIconSize(MxFunctions::UiMetrics::quickIconSize());
+        const int hBtn = MxFunctions::UiMetrics::controlHeight();
+        cmdBtn->setFixedSize(hBtn, hBtn);
+        cmdBtn->setToolTip(tr("编辑控制函数与时间表…"));
+        cmdRow->addWidget(cmdEdit, 1);
+        cmdRow->addWidget(cmdBtn);
+        auto* cmdLabel = new PanelLabel(tr("阀芯开度 (-1…1):"));
+        ctrlSec->layout()->addRow(cmdLabel, cmdWrap);
+
+        const auto scenarios = document.collection("scenarios");
+        const double duration = scenarios.isEmpty() ? 5.0 : scenarios.first().toObject().value("endTime").toDouble(5.0);
+        const auto syncCmdReadOnly = [cmdEdit, cmdTx] {
+            cmdEdit->setReadOnly(!cmdTx->isEmpty());
+            cmdEdit->setToolTip(!cmdTx->isEmpty() ? QObject::tr("当前使用时间表（%1 点）").arg(cmdTx->size())
+                                                  : QObject::tr("输入常数或时间函数 f(t)，t 单位为秒"));
+        };
+        syncCmdReadOnly();
+        connect(cmdBtn, &QToolButton::clicked, panel, [this, panel, cmdEdit, cmdTx, cmdTy, duration, syncCmdReadOnly] {
+            QString unitStr;
+            if (auto* sm = panel->findChild<QComboBox*>("native_supplyMode"))
+                unitStr = sm->currentData().toString() == "FlowCommand" ? QStringLiteral("L/min") : QString{};
+            auto expr = cmdEdit->text();
+            auto tx = *cmdTx, ty = *cmdTy;
+            if (!editNativeFunction(this, expr, tx, ty, unitStr, duration)) return;
+            cmdEdit->setText(expr);
+            *cmdTx = tx;
+            *cmdTy = ty;
+            syncCmdReadOnly();
+        });
+        fields.insert("commandExpression", [cmdEdit] { return cmdEdit->text(); });
+        fields.insert("commandTableX", [cmdTx] { return *cmdTx; });
+        fields.insert("commandTableY", [cmdTy] { return *cmdTy; });
+
+        if (auto* smCombo = panel->findChild<QComboBox*>("native_supplyMode")) {
+            const auto syncSupply = [panel, smCombo, cmdWrap, cmdLabel, ctrlSec] {
+                const QString m = smCombo->currentData().toString();
+                const bool closed = m == "ClosedPort";
+                const bool flow = m == "FlowCommand";
+                cmdLabel->setText(flow ? QObject::tr("供油流量 (L/min):") : QObject::tr("阀芯指令 (-1…1):"));
+                cmdWrap->setEnabled(!closed);
+                for (const auto* k : {"native_ratedFlowLpm", "native_ratedPressureDrop"})
+                    if (auto* w = panel->findChild<QWidget*>(QLatin1String(k))) w->setEnabled(!closed);
+                ctrlSec->refreshLayout();
+            };
+            connect(smCombo, qOverload<int>(&QComboBox::currentIndexChanged), panel, syncSupply);
+            syncSupply();
+        }
+
+        auto* fluidBtn = new QPushButton(tr("全局油液与油源设置…"), ctrlSec);
+        fluidBtn->setObjectName(QStringLiteral("native_openFluidSettings"));
+        ctrlSec->layout()->addRow(fluidBtn);
+        connect(fluidBtn, &QPushButton::clicked, panel, [this, picker] { picker->finish(); editHydraulicFluid(); });
+
+        auto* initSec = addBodyDriveSection(tr("初始腔压"), "hydraulicInitialSection");
+        bind(initSec, "initialPressureA", tr("A腔初压:"), QStringLiteral("MPa"));
+        bind(initSec, "initialPressureB", tr("B腔初压:"), QStringLiteral("MPa"));
+        auto* initHint = new QLabel(tr("若在求解方案中勾选“按初始静载平衡液压缸腔压”，t=0 时将自动覆盖并计算平衡外载的腔压。"), initSec);
+        initHint->setWordWrap(true);
+        initSec->layout()->addRow(initHint);
     }
     if (collection == "sensors") for (const auto& key : {"sensorType", "variable"})
         if (auto* selector = panel->findChild<QComboBox*>(QStringLiteral("native_") + key))
@@ -2117,8 +2575,18 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             } catch (const std::exception& error) { setNotice(QString::fromUtf8(error.what()),true); }
         });
     }
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); form->addRow(buttons);
-    if (bodyDrive) {
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    if (unilateralForce || hydraulicCylinder) {
+        auto* actions = new QWidget;
+        auto* layout = new QHBoxLayout(actions);
+        const int inset = MxFunctions::UiMetrics::fieldInset();
+        layout->setContentsMargins(inset, 0, inset, MxFunctions::UiMetrics::rowGap());
+        layout->addWidget(buttons);
+        form->addRow(actions);
+    } else {
+        form->addRow(buttons);
+    }
+    if (bodyDrive || unilateralForce || hydraulicCylinder) {
         buttons->button(QDialogButtonBox::Ok)->setText(tr("保存"));
         buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
     }
@@ -2194,7 +2662,7 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     auto* scroll = new QScrollArea;
     scroll->setObjectName(QStringLiteral("nativeParameterScroll"));
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
-    if (bodyDrive) {
+    if (bodyDrive || unilateralForce || hydraulicCylinder) {
         scroll->setProperty("mxFitParameterDock", true);
         for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
             surface->setProperty("mxSurface", true);
@@ -2240,6 +2708,239 @@ void MotionWindow::removeNativeEntity(const QString& collection, int id)
     }
     model.nativeDocument = std::make_shared<NativeMotionDocument>(std::move(document));
     syncNativeMotionModel(model); commitRigid(std::move(model), {});
+}
+
+void MotionWindow::showModelDiagnostics(bool focusConstraints)
+{
+    if (motionBusy() || m_jobPart >= 0) return;
+    if (!ensureNativeModel() || !m_model.nativeDocument) return;
+    if (m_original) m_original->flush();
+
+    int scenarioId = -1;
+    if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves)
+        scenarioId = m_selectionNode.id;
+    else if (!m_model.scenarios.empty())
+        scenarioId = m_model.scenarios.front().id;
+
+    const auto report = diagnoseNativeMotion(m_document, *m_model.nativeDocument, scenarioId);
+
+    auto* panel = new QWidget;
+    panel->setObjectName(QStringLiteral("nativeModelDiagnosticsPanel"));
+    auto* outer = new QVBoxLayout(panel);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(MxFunctions::UiMetrics::rowGap());
+
+    auto* summarySec = new MechMainWindow::FoldSection(
+        focusConstraints ? tr("约束与自由度概览") : tr("模型检查概览"), panel);
+    summarySec->setObjectName(QStringLiteral("diagnosticsSummarySection"));
+    const auto addStat = [&](const QString& title, const QString& val) {
+        auto* lbl = new QLabel(val, summarySec);
+        lbl->setWordWrap(true);
+        summarySec->addRow(new PanelLabel(title), lbl);
+    };
+    addStat(tr("运动体:"), tr("%1 个（活动 %2 / 固定 %3 / 柔性 %4）")
+        .arg(report.totalBodies).arg(report.movingBodies).arg(report.fixedBodies).arg(report.flexBodies));
+    addStat(tr("连接与激励:"), tr("运动副 %1 / 驱动 %2 / 力元 %3")
+        .arg(report.activeJoints).arg(report.activeDrives).arg(report.activeForces));
+    if (report.hasJacobianAnalysis) {
+        addStat(tr("广义速度维数:"), QString::number(report.velocityDofs));
+        addStat(tr("约束方程总数:"), QString::number(report.constraintEquations));
+        addStat(tr("雅可比数值秩:"), QString::number(report.jacobianRank));
+        addStat(tr("有效自由度:"), tr("%1（理论计数 %2）").arg(report.effectiveDofs).arg(report.topologicalDofs));
+        addStat(tr("冗余约束数:"), QString::number(report.redundantEquations));
+        addStat(tr("最大初始残差:"), QStringLiteral("%1 mm/rad").arg(report.maxInitialViolation, 0, 'g', 4));
+    }
+    addStat(tr("检查结论:"), tr("错误 %1 项 · 警告 %2 项").arg(report.errorCount).arg(report.warningCount));
+    auto* rerun = new QPushButton(tr("重新检查"), summarySec);
+    rerun->setObjectName(QStringLiteral("rerunModelDiagnosticsButton"));
+    summarySec->addRow(rerun);
+    connect(rerun, &QPushButton::clicked, this, [this, focusConstraints] {
+        showModelDiagnostics(focusConstraints);
+    });
+    outer->addWidget(summarySec);
+
+    auto* detailSec = new MechMainWindow::FoldSection(tr("诊断明细（双击定位对象）"), panel);
+    detailSec->setObjectName(QStringLiteral("diagnosticsDetailSection"));
+    QVector<MotionDiagnosticItem> filtered;
+    for (const auto& item : report.items) {
+        if (focusConstraints && item.severity == MotionDiagnosticItem::Severity::Pass
+            && item.category != QStringLiteral("约束与自由度")) continue;
+        filtered.push_back(item);
+    }
+    auto* table = new QTableWidget(filtered.size(), 3, detailSec);
+    table->setObjectName(QStringLiteral("nativeDiagnosticsTable"));
+    table->setHorizontalHeaderLabels({tr("级别"), tr("对象"), tr("说明")});
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setMinimumHeight(200);
+    for (int r = 0; r < filtered.size(); ++r) {
+        const auto& it = filtered[r];
+        const QString sevText = it.severity == MotionDiagnosticItem::Severity::Error ? tr("错误")
+                              : it.severity == MotionDiagnosticItem::Severity::Warning ? tr("警告") : tr("通过");
+        auto* sevItem = new QTableWidgetItem(sevText);
+        sevItem->setForeground(it.severity == MotionDiagnosticItem::Severity::Error ? QColor(205, 45, 45)
+                             : it.severity == MotionDiagnosticItem::Severity::Warning ? QColor(196, 120, 15)
+                                                                                      : QColor(36, 136, 75));
+        sevItem->setData(Qt::UserRole, it.collection);
+        sevItem->setData(Qt::UserRole + 1, it.entityId);
+        const QString objText = it.entityId >= 0
+            ? QStringLiteral("%1 [%2]").arg(it.entityName).arg(it.entityId)
+            : it.entityName;
+        table->setItem(r, 0, sevItem);
+        table->setItem(r, 1, new QTableWidgetItem(objText));
+        auto* msgItem = new QTableWidgetItem(it.message);
+        msgItem->setToolTip(it.message);
+        table->setItem(r, 2, msgItem);
+    }
+    detailSec->addRow(table);
+    outer->addWidget(detailSec);
+    outer->addStretch(1);
+
+    connect(table, &QTableWidget::cellDoubleClicked, this, [this, table](int row, int) {
+        const auto* item = table->item(row, 0);
+        if (!item) return;
+        const QString col = item->data(Qt::UserRole).toString();
+        bool ok = false;
+        const int eid = item->data(Qt::UserRole + 1).toInt(&ok);
+        if (col.isEmpty() || !ok || eid < 0) return;
+        editNativeEntity(col, eid);
+    });
+
+    auto* scroll = new QScrollArea;
+    scroll->setObjectName(QStringLiteral("nativeDiagnosticsScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setProperty("mxFitParameterDock", true);
+    for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
+        surface->setProperty("mxSurface", true);
+        surface->setAttribute(Qt::WA_StyledBackground);
+    }
+    scroll->setWidget(panel);
+    showEditor(scroll);
+
+    const QString headline = report.hasJacobianAnalysis
+        ? tr("%1完成：有效自由度 %2，冗余约束 %3，错误 %4，警告 %5。")
+              .arg(focusConstraints ? tr("约束诊断") : tr("模型检查"))
+              .arg(report.effectiveDofs).arg(report.redundantEquations)
+              .arg(report.errorCount).arg(report.warningCount)
+        : tr("%1完成：错误 %2 项，警告 %3 项。")
+              .arg(focusConstraints ? tr("约束诊断") : tr("模型检查"))
+              .arg(report.errorCount).arg(report.warningCount);
+    setStatusNotice(headline, report.errorCount > 0 ? NoticeLevel::Error
+                            : report.warningCount > 0 ? NoticeLevel::Warning : NoticeLevel::Normal);
+    appendOutput(headline, report.errorCount > 0 ? NoticeLevel::Error
+                         : report.warningCount > 0 ? NoticeLevel::Warning : NoticeLevel::Normal);
+    for (const auto& it : report.items) {
+        if (it.severity == MotionDiagnosticItem::Severity::Pass) continue;
+        appendOutput(QStringLiteral("  [%1] %2: %3").arg(it.category, it.entityName, it.message),
+                     it.severity == MotionDiagnosticItem::Severity::Error ? NoticeLevel::Error : NoticeLevel::Warning,
+                     false);
+    }
+}
+
+void MotionWindow::editHydraulicFluid()
+{
+    if (motionBusy() || m_jobPart >= 0) return;
+    if (!ensureNativeModel() || !m_model.nativeDocument) return;
+    if (m_original) m_original->flush();
+
+    const auto fluid = m_model.nativeDocument->root.value("motionData").toObject().value("hydraulicFluid").toObject();
+    auto* panel = new QWidget;
+    panel->setObjectName(QStringLiteral("nativeHydraulicFluidPanel"));
+    auto* outer = new QVBoxLayout(panel);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(MxFunctions::UiMetrics::rowGap());
+
+    auto* propSec = new MechMainWindow::FoldSection(tr("油液物性参数"), panel);
+    propSec->setObjectName(QStringLiteral("hydraulicFluidPropertySection"));
+    auto* sourceSec = new MechMainWindow::FoldSection(tr("系统油源与回油边界"), panel);
+    sourceSec->setObjectName(QStringLiteral("hydraulicFluidSupplySection"));
+
+    const auto makeCalc = [](MechMainWindow::FoldSection* sec, const QString& objName, const QString& title,
+                             double val, const QString& unit, bool positive = false) {
+        auto* edit = new MxFunctions::mCalcLineEdit(
+            QString::number(val, 'g', 12),
+            positive ? MxFunctions::mCalcLineEdit::CalcMode::NoEmptyAndPositive
+                     : MxFunctions::mCalcLineEdit::CalcMode::Standard,
+            sec);
+        edit->setObjectName(objName);
+        edit->setUnit(unit);
+        sec->layout()->addRow(new PanelLabel(title), edit);
+        return edit;
+    };
+
+    auto* bulkEdit = makeCalc(propSec, QStringLiteral("fluid_bulkModulus"), tr("有效体积模量:"),
+                              fluid.value("bulkModulus").toDouble(1400.0), QStringLiteral("MPa"), true);
+    auto* densityEdit = makeCalc(propSec, QStringLiteral("fluid_density"), tr("油液密度:"),
+                                 fluid.value("density").toDouble(860.0), QStringLiteral("kg/m³"), true);
+    auto* viscEdit = makeCalc(propSec, QStringLiteral("fluid_kinematicViscosity"), tr("运动黏度:"),
+                              fluid.value("kinematicViscosity").toDouble(46.0), QStringLiteral("mm²/s"), true);
+
+    auto* psEdit = makeCalc(sourceSec, QStringLiteral("fluid_supplyPressure"), tr("供油压力 Ps:"),
+                            fluid.value("supplyPressure").toDouble(21.0), QStringLiteral("MPa"));
+    auto* ptEdit = makeCalc(sourceSec, QStringLiteral("fluid_tankPressure"), tr("回油箱压力 Pt:"),
+                            fluid.value("tankPressure").toDouble(0.1), QStringLiteral("MPa"));
+
+    outer->addWidget(propSec);
+    outer->addWidget(sourceSec);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, panel);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("保存"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(tr("取消"));
+    buttons->button(QDialogButtonBox::Ok)->setObjectName(QStringLiteral("motionApplyButton"));
+    auto* actionRow = new QWidget(panel);
+    auto* actionLayout = new QHBoxLayout(actionRow);
+    const int inset = MxFunctions::UiMetrics::fieldInset();
+    actionLayout->setContentsMargins(inset, 0, inset, MxFunctions::UiMetrics::rowGap());
+    actionLayout->addWidget(buttons);
+    outer->addWidget(actionRow);
+    outer->addStretch(1);
+
+    connect(buttons, &QDialogButtonBox::rejected, this, [this] { closeEditor(); updateParameters(); });
+    connect(buttons, &QDialogButtonBox::accepted, this, [this, bulkEdit, densityEdit, viscEdit, psEdit, ptEdit] {
+        for (auto* e : {bulkEdit, densityEdit, viscEdit, psEdit, ptEdit}) {
+            if (!e->isValid()) {
+                setNotice(tr("油液参数包含无效数值，请检查输入。"), true);
+                return;
+            }
+        }
+        if (ptEdit->value() < 0.0 || psEdit->value() < ptEdit->value()) {
+            setNotice(tr("需要满足 0 ≤ 回油箱压力 Pt ≤ 供油压力 Ps。"), true);
+            return;
+        }
+        auto doc = *m_model.nativeDocument;
+        auto data = doc.root.value("motionData").toObject();
+        data.insert("hydraulicFluid", QJsonObject{
+            {"bulkModulus", bulkEdit->value()},
+            {"density", densityEdit->value()},
+            {"kinematicViscosity", viscEdit->value()},
+            {"supplyPressure", psEdit->value()},
+            {"tankPressure", ptEdit->value()}
+        });
+        doc.root.insert("motionData", data);
+        if (m_original) m_original->adoptExternalDocument(doc);
+        if (commitNativeDocument(std::move(doc), m_selectionNode)) {
+            setNotice(tr("已更新全局油液参数（βe = %1 MPa，Ps = %2 MPa，Pt = %3 MPa）。")
+                          .arg(bulkEdit->value(), 0, 'g', 6)
+                          .arg(psEdit->value(), 0, 'g', 6)
+                          .arg(ptEdit->value(), 0, 'g', 6));
+        }
+    });
+
+    auto* scroll = new QScrollArea;
+    scroll->setObjectName(QStringLiteral("nativeHydraulicFluidScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setProperty("mxFitParameterDock", true);
+    for (auto* surface : {static_cast<QWidget*>(scroll), scroll->viewport(), panel}) {
+        surface->setProperty("mxSurface", true);
+        surface->setAttribute(Qt::WA_StyledBackground);
+    }
+    scroll->setWidget(panel);
+    showEditor(scroll);
 }
 
 } // namespace MotionOcc

@@ -1,6 +1,5 @@
 #include "MotionWindow.h"
 #include "OccViewport.h"
-#include "NativeMotionSymbols.h"
 #include "OriginalEngineExtensions.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "mMotionBodyPanel.h"
@@ -17,13 +16,6 @@
 #include "mMotionControlInputPanel.h"
 #include "mMotionScenarioPanel.h"
 #include "mMotionAutoFlexPanel.h"
-#include "mMotionElectroImportPanel.h"
-#include "mMotionElectroExportPanel.h"
-#include "mMotionHydraulicPanel.h"
-#include "mMotionRLPanel.h"
-#include "mMotionMechanismPanel.h"
-#include "mMotionTransmissionPanel.h"
-#include "mMotionMechElecHydPanel.h"
 #include <QAction>
 #include <QAbstractButton>
 #include <QSignalBlocker>
@@ -86,6 +78,14 @@ void MotionWindow::ensureOriginalMotionContext() {
     m_original=std::make_unique<LegacyMotionContext>(this,m_viewport,m_document,m_meshes,*m_model.nativeDocument);
     connect(m_original.get(),&LegacyMotionContext::documentChanged,this,&MotionWindow::commitOriginalMotionDocument);
     connect(m_original.get(),&LegacyMotionContext::message,this,&MotionWindow::setNotice);
+    connect(m_original.get(), &LegacyMotionContext::messageWithLevel, this, [this](int level, const QString& text) {
+        const auto kind = level == 2 ? NoticeLevel::Error : level == 1 ? NoticeLevel::Warning : NoticeLevel::Normal;
+        setStatusNotice(text, kind);
+        appendOutput(text, kind);
+    });
+    connect(m_original.get(), &LegacyMotionContext::statusMessage, this, [this](const QString& text) {
+        setStatusNotice(text);
+    });
     auto* bridge=m_original->viewportModel();
     bridge->validateMotion=[this](int id) {
         if(m_original)m_original->flush();
@@ -150,7 +150,7 @@ void MotionWindow::commitOriginalMotionDocument(const NativeMotionDocument& docu
     m_model.scenarios.clear();
     syncNativeMotionModel(m_model);setProjectModified(true);
     updateTree();updateActions();
-    if(physicsChanged)m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,document,{},m_selectionNode.collection,m_selectionNode.id));
+    if (physicsChanged) refreshMotionSymbols();
 }
 void MotionWindow::publishOriginalSolveProgress(int id,int percent) {
     if(m_original)emit m_original->viewportModel()->motionSolveProgress(id,percent);
@@ -163,8 +163,7 @@ void MotionWindow::publishOriginalSolveFinished(int id,bool success,const QStrin
 bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,const QString& type) {
     static const QSet<QString> supported{"bodies","bodyBatch","joints","couplings","drives","springs","vectorForces",
         "scalarForces","scalarTorques","threePointForces","threePointTorques","contacts","markers","sensors","controllers",
-        "controlInputs","scenarios","autoFlexBodies","electroImports","electroExports","hydraulics","rlTasks",
-        "mechanisms","transmissions","mechElecHyd"};
+        "controlInputs","scenarios","autoFlexBodies"};
     if(!supported.contains(collection))return false;
     if(!m_projectActive || motionBusy() || m_jobPart>=0)return true;
     if(collection=="joints" && id<0 && !jointType(type)) {
@@ -209,13 +208,6 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
     else if(collection=="controlInputs")PANEL(mMotionControlInputPanel,newControlInputPanel(),editControlInputPanel(id),uneditControlInputPanel())
     else if(collection=="scenarios")PANEL(mMotionScenarioPanel,newMotionScenarioPanel(),editMotionScenarioPanel(id),uneditMotionScenarioPanel())
     else if(collection=="autoFlexBodies")PANEL(mMotionAutoFlexPanel,newMotionAutoFlexPanel(),editMotionAutoFlexPanel(id),uneditMotionAutoFlexPanel())
-    else if(collection=="electroImports")PANEL(mMotionElectroImportPanel,newElectroImportPanel(),editElectroImportPanel(id),uneditElectroImportPanel())
-    else if(collection=="electroExports")PANEL(mMotionElectroExportPanel,newElectroExportPanel(),editElectroExportPanel(id),uneditElectroExportPanel())
-    else if(collection=="hydraulics")PANEL(mMotionHydraulicPanel,newHydraulicPanel(),editHydraulicPanel(id),uneditHydraulicPanel())
-    else if(collection=="rlTasks")PANEL(mMotionRLPanel,newRLPanel(),editRLPanel(id),uneditRLPanel())
-    else if(collection=="mechanisms")PANEL(mMotionMechanismPanel,newMechanismPanel(),editMechanismPanel(id),uneditMechanismPanel())
-    else if(collection=="transmissions")PANEL(mMotionTransmissionPanel,newTransmissionPanel(),editTransmissionPanel(id),uneditTransmissionPanel())
-    else if(collection=="mechElecHyd")PANEL(mMotionMechElecHydPanel,newMechElecHydPanel(),editMechElecHydPanel(id),uneditMechElecHydPanel())
 #undef PANEL
     if(!panel)return false;
     panel->setObjectName("originalMotionEditor_"+collection);
@@ -240,7 +232,10 @@ bool MotionWindow::editOriginalMotionEntity(const QString& collection,int id,con
         && current->data(0, Qt::UserRole + 1).toInt() == int(m_selectionNode.kind)
         && current->data(0, Qt::UserRole + 2).toString() == m_selectionNode.collection;
     // 编辑现有选中行时，文档真正变动会触发刷新；打开参数页本身无需重建整棵树。
-    if (creating || !alreadySelected) updateTree();
+    if (creating || !alreadySelected) {
+        updateTree();
+        refreshMotionSymbols();
+    }
     return true;
 }
 void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVariant& argument) {
@@ -263,13 +258,13 @@ void MotionWindow::dispatchOriginalMotionAction(const QString& action,const QVar
         {"createMotionCoupling","couplings"},{"createMotionDrive","drives"},{"createMotionSpring","springs"},
         {"createMotionVectorForce","vectorForces"},{"createMotionContact","contacts"},{"createMotionMarker","markers"},
         {"createMotionSensor","sensors"},{"createMotionController","controllers"},{"createControlInput","controlInputs"},
-        {"createMotionScenario","scenarios"},{"createMotionAutoFlex","autoFlexBodies"},{"createElectroImport","electroImports"},
-        {"createElectroExport","electroExports"},{"createHydraulic","hydraulics"},{"createRLPanel","rlTasks"},
-        {"createMechanism","mechanisms"},{"createTransmission","transmissions"},{"createMechElecHyd","mechElecHyd"}};
+        {"createMotionScenario","scenarios"},{"createMotionAutoFlex","autoFlexBodies"}};
     if(actions.contains(action)) { editOriginalMotionEntity(actions.value(action),-1,argument.toString());return; }
     if(action=="createMotionSoftStop" || action=="createSoftStop") { if(ensureNativeModel())editNativeEntity("softStops");return; }
     if(action=="createMotionTensionCable" || action=="createTensionCable") { if(ensureNativeModel())editNativeEntity("tensionCables");return; }
     if(action=="createBodyDrive") { if(ensureNativeModel())editNativeEntity("bodyDrives",-1,argument.toString());return; }
+    if(action=="createHydraulicCylinder") { if(ensureNativeModel())editNativeEntity("hydraulicCylinders");return; }
+    if(action=="editHydraulicFluid") { editHydraulicFluid();return; }
     if(dispatchOriginalWorkspaceAction(action,argument))return;
     QString title;
     const auto matches=[&](const QObject* object) {

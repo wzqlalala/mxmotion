@@ -57,12 +57,14 @@ public:
     std::map<int, std::shared_ptr<motion::MotionBody>> nativeBodies;
     std::map<int, std::shared_ptr<motion::MotionLinkMotor>> nativeMotors;
     std::map<int, std::shared_ptr<NativeEffortRuntime>> effortMotors;
+    std::map<int, std::shared_ptr<NativeHydraulicRuntime>> hydraulicCylinders;
     std::map<std::string, std::shared_ptr<motion::MotionLinkBase>> nativeJoints;
     std::set<int> importedMnfBodyIds;
     double acceptedStepSize=0, acceptedEndTime=0;
     std::uint64_t acceptedStepIndex=0;
     const NativeMotionInput* sourceInput=nullptr;
     bool projectPositions=false;
+    bool weightIndependentFlexProjectionWithStiffness=false;
     bool allowFullRankPositionProjection=false;
     bool usedFullRankPositionProjection=false;
     bool usedBilateralProjectionSolver=false;

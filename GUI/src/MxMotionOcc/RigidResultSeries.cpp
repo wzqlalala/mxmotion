@@ -73,7 +73,8 @@ QString rigidChannelSourceType(const QString& sourceType)
         {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
         {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
         {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"},
-        {"VectorForce", "vectorForces"}, {"AutoFlexBody", "autoFlexBodies"}};
+        {"VectorForce", "vectorForces"}, {"AutoFlexBody", "autoFlexBodies"}, {"Contact", "contacts"},
+        {"HydraulicCylinder", "hydraulicCylinders"}};
     return collections.value(sourceType, sourceType);
 }
 
@@ -85,7 +86,8 @@ QString rigidChannelSourceLabel(const QString& sourceType)
         {"springs", "弹簧"}, {"tensionCables", "拉索"}, {"softStops", "柔性限位"},
         {"scalarForces", "标量力"}, {"scalarTorques", "标量力矩"},
         {"threePointForces", "三点力"}, {"threePointTorques", "三点力矩"},
-        {"vectorForces", "矢量载荷"}, {"autoFlexBodies", "柔性体"}};
+        {"vectorForces", "矢量载荷"}, {"autoFlexBodies", "柔性体"}, {"contacts", "接触"},
+        {"hydraulicCylinders", "液压缸"}};
     const auto it = names.constFind(rigidChannelSourceType(sourceType));
     return it == names.cend() ? sourceType : label(it.value());
 }
@@ -127,7 +129,9 @@ QString rigidChannelVariableLabel(const QString& variable)
         {"SignedForce", "有向力"}, {"Coordinate", "坐标"}, {"Deformation", "变形量"},
         {"Speed", "速度"}, {"Rate", "相对速度"}, {"Engaged", "作用状态"}, {"Power", "功率"}, {"ElasticEnergy", "弹性能"},
         {"ForceI", "I 端力"}, {"ForceJ", "J 端力"}, {"TorqueI", "I 端力矩"}, {"TorqueJ", "J 端力矩"},
-        {"PointI", "I 端位置"}, {"PointJ", "J 端位置"}, {"ModalCoordinates", "模态坐标"}};
+        {"PointI", "I 端位置"}, {"PointJ", "J 端位置"}, {"ModalCoordinates", "模态坐标"}, {"NormalForce", "法向接触力"},
+        {"PressureA", "A腔压力"}, {"PressureB", "B腔压力"}, {"Force", "作动力"}, {"Stroke", "活塞行程"},
+        {"FlowA", "A口流量"}, {"FlowB", "B口流量"}, {"ControlSignal", "控制指令"}, {"FluidPower", "流体功率"}};
     const auto it = names.constFind(variable);
     if (it != names.cend()) return label(it.value());
     if (variable.endsWith(QLatin1Char('J'))) {

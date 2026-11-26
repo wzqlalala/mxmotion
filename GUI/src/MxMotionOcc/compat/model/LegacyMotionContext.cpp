@@ -74,9 +74,10 @@ LegacyMotionContext::LegacyMotionContext(QWidget* owner,OccViewport* view,const 
         if(type==9)render_->beginPartPick();
         else if(type>0 && type<9)picks_->setPickType(static_cast<PickDataType>(type));
     });
-    connect(bus,&MechCommon::mMechGlobalSignals::outputPermanentInfoSig,this,[this](const QString& text) { emit message(text,false); });
+    connect(bus,&MechCommon::mMechGlobalSignals::outputPermanentInfoSig,this,&LegacyMotionContext::statusMessage);
     connect(MxFunctions::mGlobalSignals::getInstance(),qOverload<const QString&,bool>(&MxFunctions::mGlobalSignals::outputMessageSig),this,&LegacyMotionContext::message);
-    connect(MxFunctions::mGlobalSignals::getInstance(),qOverload<int,const QString&,bool>(&MxFunctions::mGlobalSignals::outputMessageSig),this,[this](int level,const QString& text,bool) { emit message(text,level>1); });
+    connect(MxFunctions::mGlobalSignals::getInstance(),qOverload<int,const QString&,bool>(&MxFunctions::mGlobalSignals::outputMessageSig),
+        this,[this](int level,const QString& text,bool) { emit messageWithLevel(level,text); });
     connect(picks_.get(),&LegacyPickContext::selectionRejected,this,[this](const QString& text) { emit message(text,true); });
     viewport_->flushMotion=[this] { flush(); };
     viewport_->commitAutoFlexAttachments=[this](int id,bool confirmed) {

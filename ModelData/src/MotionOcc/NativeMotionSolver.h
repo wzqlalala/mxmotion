@@ -26,6 +26,24 @@ bool prepareNativeMotion(const CadDocument& cad, const NativeMotionDocument& doc
 SolveStatus solveNativeMotion(const NativeMotionInput& input, RigidResult& result,
                               QString& error, const SolverCallbacks& callbacks = {});
 
+struct NativeJointViolation {
+    int jointId = -1;
+    double violation = 0.0;
+};
+
+struct NativeConstraintSummary {
+    int velocityDofs = 0;
+    int constraintEquations = 0;
+    int jacobianRank = 0;
+    int redundantEquations = 0;
+    double maxPositionViolation = 0.0;
+    std::vector<NativeJointViolation> jointViolations;
+};
+
+bool evaluateNativeConstraintSystem(const NativeMotionInput& input,
+                                    NativeConstraintSummary& summary,
+                                    QString& error);
+
 // Computes the selected flexible body's actual basis from its mesh, material
 // and attachment patches. Does not run a transient solve or mutate the model.
 SolveStatus inspectNativeFlexModes(const NativeMotionInput& input, int flexId,

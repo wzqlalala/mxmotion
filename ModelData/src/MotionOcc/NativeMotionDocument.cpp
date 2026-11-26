@@ -45,7 +45,7 @@ QStringList collectionNames()
         QStringLiteral("threePointForces"), QStringLiteral("threePointTorques"), QStringLiteral("contacts"),
         QStringLiteral("sensors"), QStringLiteral("controllers"), QStringLiteral("controlInputs"),
         QStringLiteral("autoFlexBodies"), QStringLiteral("importedMnfBodies"), QStringLiteral("scenarios"), QStringLiteral("tensionCables"),
-        QStringLiteral("softStops")};
+        QStringLiteral("softStops"), QStringLiteral("hydraulicCylinders")};
 }
 
 bool integer(const QJsonValue& value, int minimum, int* result = nullptr)
@@ -188,10 +188,11 @@ public:
         const QStringList booleans = {"isFixed", "isCustomMassProps", "isUserRename", "enabled", "visible", "actionOnly",
             "allowSliding", "dampingEnabled", "reverse", "applyOffset", "useConvexHullAction", "useConvexHullBase",
             "frictionEnabled", "actionUseFacetFile", "baseUseFacetFile", "actionUseMaxFacetSize", "baseUseMaxFacetSize",
-            "usePreset", "solverVerbose", "hasTable", "outputModeShapes", "outputStressStrain", "rigidBodyModeFilter"};
+            "usePreset", "solverVerbose", "hasTable", "outputModeShapes", "outputStressStrain", "rigidBodyModeFilter",
+            "hydraulicSteadyInit"};
         for (const auto& key : booleans)
             if (object.contains(key) && !object.value(key).isBool()) issue(where + QLatin1Char('.') + key, QStringLiteral("需要布尔值"));
-        const QStringList strings = {"name", "expression", "forceFunction", "torqueFunction", "dampingFunction"};
+        const QStringList strings = {"name", "expression", "forceFunction", "torqueFunction", "dampingFunction", "commandExpression"};
         for (const auto& key : strings)
             if (object.contains(key) && !object.value(key).isString()) issue(where + QLatin1Char('.') + key, QStringLiteral("需要文本"));
     }
@@ -224,7 +225,7 @@ public:
             {"Spring", "springs"}, {"TensionCable", "tensionCables"}, {"SoftStop", "softStops"},
             {"VectorForce", "vectorForces"}, {"ScalarForce", "scalarForces"}, {"ScalarTorque", "scalarTorques"},
             {"ThreePointForce", "threePointForces"}, {"ThreePointTorque", "threePointTorques"}, {"AutoFlexBody", "autoFlexBodies"},
-            {"ImportedMnfBody", "importedMnfBodies"}};
+            {"ImportedMnfBody", "importedMnfBodies"}, {"Contact", "contacts"}, {"HydraulicCylinder", "hydraulicCylinders"}};
         // Original files use PascalCase enum aliases. New native curves use
         // the exact collection keys so every recorded force/flexible channel
         // survives .motion.json export without narrowing to the legacy enum.
@@ -366,6 +367,30 @@ public:
             ref(object, "actionBodyId", "bodies", where, false, true); ref(object, "baseBodyId", "bodies", where, false, true);
             for (const auto* key : {"stiffness", "forceExponent", "materialDamping", "penetrationDepth", "staticFriction", "dynamicFriction",
                 "forceModelTolerance", "actionDistanceTolerance", "angleTolerance", "actionMaxFacetSize", "baseDistanceTolerance", "baseMaxFacetSize"}) number(object, key, where, 0);
+            if (object.contains("analyticContact")) {
+                const auto configuration = object.value("analyticContact").toObject();
+                if (configuration.isEmpty())
+                    issue(where, QStringLiteral("解析接触配置必须为对象"));
+                for (const auto* end : {"actionShape", "baseShape"}) {
+                    const auto shape = configuration.value(QLatin1String(end)).toObject();
+                    enumeration(shape, "kind", {"Sphere", "Box"}, where, true);
+                    vector(shape, "center", where, true);
+                    if (shape.value("kind").toString() == "Sphere") {
+                        if (shape.value("radius").toDouble() <= 0)
+                            issue(where, QStringLiteral("解析接触球半径必须为正"));
+                    } else {
+                        vector(shape, "size", where, true);
+                        const auto size=shape.value("size").toObject();
+                        for (const auto* dimension : {"x", "y", "z"})
+                            if (size.value(QLatin1String(dimension)).toDouble() <= 0)
+                                issue(where, QStringLiteral("解析接触盒体尺寸必须为正"));
+                    }
+                }
+                if (object.value("stiffness").toDouble() <= 0)
+                    issue(where, QStringLiteral("解析接触法向刚度必须为正"));
+                for (const auto* key : {"normalDampingRate", "tangentialStiffness", "tangentialDampingRate", "collisionMargin"})
+                    number(configuration, key, where, 0);
+            }
         } else if (kind == "sensors") {
             enumeration(object, "sensorType", {"BodyDisplacement", "BodyVelocity", "BodyAcceleration", "JointReaction", "DriveActuation", "Distance", "Angle"}, where, true);
             enumeration(object, "coordSystem", {"GlobalFixed", "BodyFixed"}, where);
@@ -467,6 +492,8 @@ public:
             enumeration(object, "presetMode", {"FAST", "CONTACT", "ROBUST", "HIGH_PRECISION"}, where);
             enumeration(object, "integratorType", {"EULER_IMPLICIT_LINEARIZED", "EULER_IMPLICIT_PROJECTED", "EULER_IMPLICIT",
                 "TRAPEZOIDAL", "TRAPEZOIDAL_LINEARIZED", "HHT", "HEUN", "RUNGEKUTTA45", "EULER_EXPLICIT", "LEAPFROG", "NEWMARK", "CUSTOM_INTEGRATOR"}, where);
+            enumeration(object, "mnfIntegratorType", {"HHT", "EULER_IMPLICIT_LINEARIZED"}, where);
+            enumeration(object, "independentPositionProjection", {"MASS", "MASS_STIFFNESS"}, where);
             enumeration(object, "solverType", {"PSOR", "PSSOR", "PJACOBI", "PMINRES", "BARZILAIBORWEIN", "APGD", "ADDM",
                 "SPARSE_LU", "SPARSE_QR", "PARDISO_MKL", "PARDISO_PROJECT", "MUMPS", "GMRES", "MINRES", "BICGSTAB", "CUSTOM_SOLVER"}, where);
             for (const auto* key : {"integratorAlpha", "integratorBeta"}) number(object, key, where);
@@ -499,6 +526,45 @@ public:
                     if (object.value("tableX").toArray().size() < 2) issue(where, QStringLiteral("已选择表格软限位，但没有至少两个表格点"));
                 } else { positive(object, "stiffness", where, true); number(object, "exponent", where, 1, true); }
             }
+        } else if (kind == "hydraulicCylinders") {
+            enumeration(object, "mountMode", {"Points", "Joint"}, where, true);
+            const QString mountMode = object.value("mountMode").toString();
+            if (mountMode == "Joint") {
+                ref(object, "targetJointId", "joints", where, false, true);
+                const auto jointType = doc.entity("joints", object.value("targetJointId").toInt(-1)).value("jointType").toString();
+                if (!jointType.isEmpty() && jointType != "Translational" && jointType != "Cylindrical")
+                    issue(where, QStringLiteral("关联运动副模式需要移动副或柱面副"));
+            } else if (mountMode == "Points") {
+                bodyPair(object, where, true);
+                if (object.value("localI").isObject() && object.value("localJ").isObject()) {
+                    const auto pi = object.value("localI").toObject(), pj = object.value("localJ").toObject();
+                    const double dx = pi.value("x").toDouble() - pj.value("x").toDouble();
+                    const double dy = pi.value("y").toDouble() - pj.value("y").toDouble();
+                    const double dz = pi.value("z").toDouble() - pj.value("z").toDouble();
+                    if (std::hypot(dx, std::hypot(dy, dz)) <= 1e-6)
+                        issue(where, QStringLiteral("液压缸两端安装点不能重合"));
+                }
+            }
+            positive(object, "pistonDiameter", where, true);
+            number(object, "rodDiameter", where, 0.0, true);
+            if (object.value("pistonDiameter").isDouble() && object.value("rodDiameter").isDouble()
+                && object.value("rodDiameter").toDouble() >= object.value("pistonDiameter").toDouble())
+                issue(where, QStringLiteral("活塞杆径必须小于缸径"));
+            positive(object, "stroke", where, true);
+            number(object, "initialStroke", where, 0.0, true);
+            if (object.value("stroke").isDouble() && object.value("initialStroke").isDouble()
+                && object.value("initialStroke").toDouble() > object.value("stroke").toDouble())
+                issue(where, QStringLiteral("初始行程不能超过总行程"));
+            positive(object, "deadVolumeA", where);
+            positive(object, "deadVolumeB", where);
+            number(object, "viscousFriction", where, 0.0);
+            number(object, "internalLeakage", where, 0.0);
+            enumeration(object, "supplyMode", {"DirectionalValve", "FlowCommand", "ClosedPort"}, where, true);
+            positive(object, "ratedFlowLpm", where);
+            positive(object, "ratedPressureDrop", where);
+            number(object, "initialPressureA", where, 0.0);
+            number(object, "initialPressureB", where, 0.0);
+            table(object, "commandTableX", "commandTableY", where);
         }
     }
 
@@ -573,12 +639,18 @@ public:
             if (spring.value("enabled").toBool(true) && importedJoints.contains(spring.value("jointId").toInt(-1)))
                 issue("springs", QStringLiteral("弹簧 %1 不能施加在导入 MNF 的转动副上").arg(spring.value("id").toInt()));
         }
+        bool hasAnalyticContact=false, hasMeshContact=false;
         for (const auto& entry : doc.collection("contacts")) {
             const auto contact = entry.toObject();
-            if (contact.value("enabled").toBool(true) && (importedByBody.contains(contact.value("actionBodyId").toInt(-1))
-                || importedByBody.contains(contact.value("baseBodyId").toInt(-1))))
+            if (!contact.value("enabled").toBool(true)) continue;
+            if (contact.contains("analyticContact")) hasAnalyticContact=true;
+            else hasMeshContact=true;
+            if (importedByBody.contains(contact.value("actionBodyId").toInt(-1))
+                || importedByBody.contains(contact.value("baseBodyId").toInt(-1)))
                 issue("contacts", QStringLiteral("接触 %1 不能使用导入的 MNF 柔性体").arg(contact.value("id").toInt()));
         }
+        if (hasAnalyticContact && hasMeshContact)
+            issue("contacts", QStringLiteral("解析形状与 CAD 或面片接触采用不同的接触力模型，当前求解方案不能同时启用。"));
     }
 
     void run()
@@ -612,6 +684,21 @@ public:
         }
         for (const auto& name : collectionNames())
             for (const auto& item : doc.collection(name)) if (item.isObject()) record(name, item.toObject());
+        if (data.contains("hydraulicFluid")) {
+            if (!data.value("hydraulicFluid").isObject()) {
+                issue("hydraulicFluid", QStringLiteral("需要油液参数对象"));
+            } else {
+                const auto fluid = data.value("hydraulicFluid").toObject();
+                positive(fluid, "bulkModulus", "hydraulicFluid");
+                positive(fluid, "density", "hydraulicFluid");
+                number(fluid, "tankPressure", "hydraulicFluid", 0.0);
+                number(fluid, "supplyPressure", "hydraulicFluid", 0.0);
+                if (fluid.value("supplyPressure").isDouble() && fluid.value("tankPressure").isDouble()
+                    && fluid.value("supplyPressure").toDouble() < fluid.value("tankPressure").toDouble())
+                    issue("hydraulicFluid", QStringLiteral("供油压力不能低于油箱回油压力"));
+                positive(fluid, "kinematicViscosity", "hydraulicFluid");
+            }
+        }
         checkImportedMnfConnections();
     }
 

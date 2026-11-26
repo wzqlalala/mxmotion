@@ -221,6 +221,7 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
     };
     std::vector<ForceHistory> forces;
     for(const auto& item:system.force_results){
+        if(item.second.id.rfind("HC_",0)==0)continue;
         const auto collection=forceCollections.find(item.second.type);
         if(collection==forceCollections.end())throw std::runtime_error("未知引擎力元结果类型："+item.second.type);
         const bool torsion=item.second.type=="TORSION_SPRING";
@@ -353,6 +354,24 @@ void extractNativeResults(const NativeMotionInput& input,const NativeMotionSyste
             const auto& value=controller.history[fi];
             channels.scalar(QStringLiteral("controllers"),controller.id,QStringLiteral("PidTarget"),controller.feedbackUnit,value.target);channels.scalar(QStringLiteral("controllers"),controller.id,QStringLiteral("PidFeedback"),controller.feedbackUnit,value.feedback);
             channels.scalar(QStringLiteral("controllers"),controller.id,QStringLiteral("PidError"),controller.feedbackUnit,value.error);channels.scalar(QStringLiteral("controllers"),controller.id,QStringLiteral("PidOutput"),controller.outputUnit,value.output);
+        }
+        for(const auto& entry:system.hydraulicCylinders){
+            const int id=entry.first;
+            const auto& history=entry.second->history;
+            if(fi>=history.size()||std::abs(history[fi].time-time)>1e-8*std::max(1.0,std::abs(time)))
+                throw std::runtime_error("液压缸采样与结果帧时间轴不同步。");
+            const auto& value=history[fi];
+            const QString src=QStringLiteral("hydraulicCylinders");
+            channels.scalar(src,id,QStringLiteral("PressureA"),QStringLiteral("MPa"),value.pressureA);
+            channels.scalar(src,id,QStringLiteral("PressureB"),QStringLiteral("MPa"),value.pressureB);
+            channels.scalar(src,id,QStringLiteral("Force"),QStringLiteral("N"),value.forceN);
+            channels.scalar(src,id,QStringLiteral("Stroke"),QStringLiteral("mm"),value.strokeMm);
+            channels.scalar(src,id,QStringLiteral("Velocity"),QStringLiteral("mm/s"),value.velocityMmS);
+            channels.scalar(src,id,QStringLiteral("FlowA"),QStringLiteral("L/min"),value.flowALpm);
+            channels.scalar(src,id,QStringLiteral("FlowB"),QStringLiteral("L/min"),value.flowBLpm);
+            channels.scalar(src,id,QStringLiteral("ControlSignal"),QStringLiteral(""),value.command);
+            channels.scalar(src,id,QStringLiteral("Power"),QStringLiteral("W"),value.mechPowerW);
+            channels.scalar(src,id,QStringLiteral("FluidPower"),QStringLiteral("W"),value.fluidPowerW);
         }
         result.frames.push_back(std::move(frame));
     }

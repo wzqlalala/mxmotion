@@ -44,6 +44,13 @@ struct OriginalEntry {
     bool enabled = true;
 };
 
+enum MotionRibbonTab {
+    HomeTab, GeometryTab, BodiesTab, FlexTab, JointsTab, DrivesTab, ForcesTab,
+    ControlTab, MultiphysicsTab, SolveTab, ResultsTab, AircraftTab, VehicleTab,
+    TransmissionTab, RoboticsTab, VibrationTab, DesignTab, AutomationTab,
+    DisplayTab, SelectionTab
+};
+
 QIcon resourceIcon(const char* path)
 {
     return QIcon(QStringLiteral(":/mMainWidgets/Icon/") + QString::fromUtf8(path));
@@ -54,21 +61,18 @@ QString originalSettingsPath()
     return QCoreApplication::applicationDirPath() + QStringLiteral("/../Setting/Settings.ini");
 }
 
-QString hiddenMenuSettingsKey(const QString& mode)
+QString hiddenResidentMenusKey()
 {
-    return QStringLiteral("menubar/hidden")
-        + (mode == QLatin1String("Post") ? QStringLiteral("PostMenus")
-            : mode == QLatin1String("Curve") ? QStringLiteral("CurveMenus")
-            : QStringLiteral("ResidentMenus"));
+    return QStringLiteral("menubar/hiddenResidentMenus");
 }
 
-void saveMenuVisibility(const QString& mode, const QMenu* menu)
+void saveMenuVisibility(const QMenu* menu)
 {
     QSettings settings(originalSettingsPath(), QSettings::IniFormat);
     QStringList hidden;
     for (const auto* action : menu->actions())
         if (action->isCheckable() && !action->isChecked()) hidden.append(action->text());
-    settings.setValue(hiddenMenuSettingsKey(mode), hidden);
+    settings.setValue(hiddenResidentMenusKey(), hidden);
 }
 
 mGroupWidget* group(RibbonPage* page, const char* text)
@@ -176,6 +180,25 @@ QToolButton* originalSplit(mGroupWidget* group, MotionWindow& window,
     button->setProperty("mxOriginalPlaceholder", false);
     originalMenu(button, window, entries, true);
     return button;
+}
+
+void plannedButton(mGroupWidget* group, MotionWindow& window, const char* text,
+    const char* icon, int row, int column)
+{
+    auto* button = originalButton(group, window, {text, icon, "", {}, false}, row, column, false);
+    button->setProperty("mxPlannedFeature", true);
+    button->setToolTip(QString::fromUtf8(text) + QStringLiteral("（尚未实现）"));
+}
+
+void plannedGroup(RibbonPage* page, MotionWindow& window, const char* name,
+    const char* icon, std::initializer_list<const char*> commands)
+{
+    auto* section = group(page, name);
+    int index = 0;
+    for (const auto* command : commands) {
+        plannedButton(section, window, command, icon, index % 2, index / 2);
+        ++index;
+    }
 }
 
 class OriginalRightClickFilter final : public QObject {
@@ -360,38 +383,47 @@ void buildGeometry(RibbonPage* page, MotionWindow& window)
         {"重复面", "geometry/重复面_大@3x.png", "createGeoRepair", "GeoRemoveRepeatFace"},
         {"硬点增删", "geometry/硬点删除_大@3x.png", "createGeoRepair", "GeoHardPoint"},
         {"重复曲线", "geometry/重复曲线_大@3x.png", "createGeoRepair", "GeoRemoveDuplicateLines"}}, 0, 0);
+    plannedGroup(page, window, "模型迁移", "geometry/面延伸_大@3x.png",
+        {"CAD 装配浏览", "装配轻量化", "填孔", "填槽", "质量属性对比", "装配配合映射"});
+    plannedGroup(page, window, "参数化装配", "geometry/移动_大@3x.png",
+        {"装配配置", "修复装配引用"});
     auto* solidify = group(page, "几何实体化");
     originalButton(solidify, window, {"拼接", "geometry/pingjie.png", "createGeoSolidify", "GeoStitch"}, 0, 0, false);
     originalButton(solidify, window, {"间距", "geometry/jianju.png", "createGeoSolidify", "GeoGap"}, 0, 1, false);
     originalButton(solidify, window, {"缺失面", "geometry/queshimian.png", "createGeoSolidify", "GeoMissingFace"}, 1, 0, false);
     originalButton(group(page, "特征去除"), window, {"特征去除", "geometry/zidongquchu.png", "createGeoRemoval", "GeoAutoRemoval"});
     auto* share = group(page, "共享拓扑");
-    originalButton(share, window, {"共享", "geometry/共享拓扑_大@3x.png", "createGeoSharedTopology", "GeoSharedTopology"});
-    originalButton(share, window, {"自动共享", "geometry/自动共享_大@3x.png", "autoSharedTopologyOCC"}, 0, 1, true, 2);
+    plannedButton(share, window, "共享", "geometry/共享拓扑_大@3x.png", 0, 0);
+    plannedButton(share, window, "自动共享", "geometry/自动共享_大@3x.png", 1, 0);
 }
 
 void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
 {
-    auto* solve = group(pages[7], "求解");
-    auto* bodies = group(pages[2], "体");
-    auto* joints = group(pages[3], "基本运动副 ▼");
-    auto* constraints = group(pages[3], "几何约束 ▼");
-    auto* couplings = group(pages[3], "耦合副 ▼");
-    auto* jointDrives = group(pages[4], "运动副驱动");
-    auto* bodyDrives = group(pages[4], "运动体驱动");
-    auto* flexible = group(pages[5], "柔性连接 ▼");
-    auto* forces = group(pages[5], "加载力 ▼");
-    auto* sensors = group(pages[6], "传感器");
-    auto* controllers = group(pages[6], "控制器");
-    auto* control = group(pages[6], "控制模块 ▼");
-    auto* aircraft = group(pages[2], "飞机专用模块 ▼");
-    auto* systems = group(pages[2], "系统建模工具 ▼");
+    auto* solve = group(pages[SolveTab], "求解");
+    auto* cases = group(pages[SolveTab], "工况与检查");
+    auto* bodies = group(pages[BodiesTab], "体");
+    auto* joints = group(pages[JointsTab], "基本运动副 ▼");
+    auto* constraints = group(pages[JointsTab], "几何约束 ▼");
+    auto* couplings = group(pages[JointsTab], "耦合副 ▼");
+    auto* jointDrives = group(pages[DrivesTab], "运动副驱动");
+    auto* bodyDrives = group(pages[DrivesTab], "运动体驱动");
+    auto* flexible = group(pages[ForcesTab], "柔性连接 ▼");
+    auto* forces = group(pages[ForcesTab], "加载力 ▼");
+    auto* sensors = group(pages[ControlTab], "传感器");
+    auto* controllers = group(pages[ControlTab], "控制器");
+    auto* control = group(pages[ControlTab], "控制模块");
 
     originalButton(solve, window, {"新建求解方案", "Motion/drive.png", "createMotionScenario"});
     actionButton(solve, window, Command::Solve);
     // These are previously requested additions; the original two commands keep
     // their positions and meanings.
     actionButton(solve, window, Command::StopSolve);
+    plannedButton(cases, window, "工况库", "Motion/drive.png", 0, 0);
+    plannedButton(cases, window, "模板向导", "Motion/aircraftReport.png", 1, 0);
+    actionButton(cases, window, Command::ConstraintDiagnostics, false, 0, 1, "Motion/joint_fixed.png");
+    actionButton(cases, window, Command::ModelCheck, false, 1, 1, "Motion/joint_fixed.png");
+    plannedGroup(pages[SolveTab], window, "分析工具", "Motion/drive.png",
+        {"准静态分析", "线性化", "线性动力学", "频率响应"});
 
     originalButton(bodies, window, {"一键生成运动体", "xuanzequanbu.png", "createMotionBodyOneKey"});
     originalButton(bodies, window, {"批量定义运动体", "Motion/bodyBatch.png", "createMotionBodyBatch"});
@@ -441,6 +473,7 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     originalButton(couplings, window, {"齿轮副", "Motion/coupling_gear.png", "createMotionCoupling", "Gear"}, 0, 0, true, 2);
     originalButton(couplings, window, {"齿轮齿条副", "Motion/coupling_gearRack.png", "createMotionCoupling", "GearRack"}, 0, 1, true, 2);
     originalButton(couplings, window, {"线缆副", "Motion/coupling_cable.png", "createMotionCoupling", "Cable"}, 0, 2, true, 2);
+    plannedButton(couplings, window, "凸轮副", "Motion/coupling_gear.png", 0, 3);
 
     originalButton(flexible, window, {"体点弹簧", "Motion/force_spring.png", "createMotionSpring", "BodyPoint"}, 0, 0, false);
     originalButton(flexible, window, {"拉压弹簧", "Motion/tcSpring.png", "createMotionSpring", "Translational"}, 0, 1, false);
@@ -481,22 +514,108 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     for (int i = 0; i < 7; ++i) originalButton(sensors, window, sensorItems[i], i / 4, i % 4, false);
     originalButton(controllers, window, {"控制器", "Motion/controlCalculation.png", "createMotionController"});
     originalButton(control, window, {"控制输入", "Motion/controlInput.png", "createControlInput"}, 0, 0, false);
-    auto* electro = originalButton(control, window, {"机电耦合", "Motion/electromechanicalCoupling.png"}, 1, 0, false);
-    auto* electroMenu = originalMenu(electro, window, {
-        {"机电导入", "Motion/mech_electro_import.png", "createElectroImport"},
-        {"机电导出", "Motion/mech_electro_export.png", "createElectroExport"}});
-    electroMenu->addSeparator();
-    originalAction(electroMenu, window, {"液压联合仿真", "Motion/mech_hydraulic.png", "createHydraulic"});
-    originalButton(control, window, {"强化学习", "Motion/controlCalculation.png", "createRLPanel"}, 0, 1, false);
-    originalButton(control, window, {"控制输出", "Motion/controlOutput.png"}, 1, 1, false);
+    plannedButton(control, window, "控制输出", "Motion/controlOutput.png", 1, 0);
+    plannedButton(control, window, "控制块图", "Motion/controlCalculation.png", 0, 1);
+    plannedGroup(pages[ControlTab], window, "事件与拓扑", "Motion/controlCalculation.png",
+        {"状态图", "约束切换", "事件回放"});
+}
 
-    originalButton(aircraft, window, {"起落架", "Motion/undercart.png"}, 0, 0, false);
-    originalButton(aircraft, window, {"轮胎", "Motion/force_tire.png"}, 1, 0, false);
-    originalButton(aircraft, window, {"路面", "Motion/pavement.png"}, 0, 1, false);
-    originalButton(aircraft, window, {"报告生成", "Motion/aircraftReport.png"}, 1, 1, false);
-    originalButton(systems, window, {"机构", "Motion/rotaryJoint.png", "createMechanism"}, 0, 0, false);
-    originalButton(systems, window, {"传动链", "Motion/GearPair.png", "createTransmission"}, 1, 0, false);
-    originalButton(systems, window, {"机电液", "Motion/mech_elec_hyd.png", "createMechElecHyd"}, 0, 1, false);
+void buildFlexibleBodies(RibbonPage* page, MotionWindow& window)
+{
+    auto* bodies = group(page, "定义柔性体");
+    originalButton(bodies, window, {"导入 MNF…", "Motion/mnf.png", "importMotionMnf"});
+    originalButton(bodies, window, {"自动柔性体", "Motion/mnf.png", "createMotionAutoFlex"});
+    plannedGroup(page, window, "模态与降阶", "Motion/mnf.png",
+        {"MNF 生成向导", "模态参与度", "有效模态质量", "预应力模态"});
+    plannedGroup(page, window, "柔性单元", "Motion/beam.png", {"ANCF 梁", "应力恢复"});
+    plannedGroup(page, window, "有限元模型与结果接口", "Motion/mnf.png",
+        {"Abaqus 接口", "ANSYS 接口", "Nastran 模型接口"});
+}
+
+void buildAircraft(RibbonPage* page, MotionWindow& window)
+{
+    plannedGroup(page, window, "起落架", "Motion/undercart.png",
+        {"起落架模板", "收放序列", "上锁与下锁", "应急放下", "转向机构"});
+    plannedGroup(page, window, "着陆与滑行", "Motion/force_tire.png",
+        {"落震", "着陆工况", "滑行工况", "摆振速度扫描"});
+    plannedGroup(page, window, "舱门", "Motion/rotaryJoint.png",
+        {"舱门模板", "开关门顺序", "舱门联动", "密封条", "舱压载荷"});
+    plannedGroup(page, window, "报告", "Motion/aircraftReport.png", {"报告生成"});
+}
+
+void buildVehicle(RibbonPage* page, MotionWindow& window)
+{
+    plannedGroup(page, window, "悬架", "Motion/force_spring.png", {"悬架试验台模板", "悬架 K&C"});
+    plannedGroup(page, window, "轮胎", "Motion/force_tire.png", {"轮胎力学", "轮胎–地面接触"});
+    plannedGroup(page, window, "路面", "Motion/pavement.png", {"路面定义", "路面不平度"});
+    plannedGroup(page, window, "整车分析", "Motion/automobileReport.png", {"平顺性", "操纵稳定性", "制动"});
+}
+
+void buildTransmission(RibbonPage* page, MotionWindow& window)
+{
+    auto* couplings = group(page, "传动运动副");
+    originalButton(couplings, window, {"齿轮副", "Motion/coupling_gear.png", "createMotionCoupling", "Gear"}, 0, 0, true, 2);
+    originalButton(couplings, window, {"齿轮齿条副", "Motion/coupling_gearRack.png", "createMotionCoupling", "GearRack"}, 0, 1, true, 2);
+    plannedGroup(page, window, "传动建模", "Motion/GearPair.png", {"齿轮传动模板", "带传动模板", "链传动模板"});
+    plannedGroup(page, window, "传动分析", "Motion/GearPair.png", {"传递误差", "传动载荷", "传动效率"});
+}
+
+void buildRobotics(RibbonPage* page, MotionWindow& window)
+{
+    plannedGroup(page, window, "伺服机械臂", "Motion/rotaryJoint.png", {"机械臂模板", "轨迹定义", "末端定位", "末端挠度"});
+    plannedGroup(page, window, "足式机器人", "Motion/contact.png", {"足地接触", "稳定性分析"});
+}
+
+void buildResults(RibbonPage* page, MotionWindow& window)
+{
+    auto* output = group(page, "求解结果");
+    actionButton(output, window, Command::ShowAnimation);
+    actionButton(output, window, Command::ShowResultCurves);
+    actionButton(output, window, Command::ExportResult);
+    plannedGroup(page, window, "结果分析", "BrowserTree/motion_curveChildItem.png",
+        {"速度云图", "加速度云图", "应力云图", "多工况对比", "频谱分析"});
+    plannedGroup(page, window, "交换与报告", "Motion/aircraftReport.png",
+        {"Excel 接口", "MATLAB 接口", "分析报告"});
+}
+
+void buildVibration(RibbonPage* page, MotionWindow& window)
+{
+    plannedGroup(page, window, "振动分析", "BrowserTree/motion_curveChildItem.png",
+        {"系统模态", "振动传递", "功率谱密度（PSD）", "阶次分析"});
+    plannedGroup(page, window, "耐久分析", "Motion/aircraftReport.png", {"载荷谱", "应力时程", "疲劳分析", "试验数据关联"});
+}
+
+void buildDesignAnalysis(RibbonPage* page, MotionWindow& window)
+{
+    plannedGroup(page, window, "设计变量", "Motion/controlInput.png", {"设计变量", "目标与约束"});
+    plannedGroup(page, window, "设计分析", "BrowserTree/motion_curveChildItem.png",
+        {"试验设计", "灵敏度分析", "设计优化"});
+    plannedGroup(page, window, "不确定性", "Motion/aircraftReport.png", {"蒙特卡洛分析", "公差分析"});
+}
+
+void buildAutomation(RibbonPage* page, MotionWindow& window)
+{
+    plannedGroup(page, window, "脚本与宏", "Motion/custom.png", {"脚本控制台", "宏录制", "宏回放"});
+    plannedGroup(page, window, "参数化", "Motion/controlInput.png", {"参数表", "参数关联"});
+    plannedGroup(page, window, "批量工况", "Motion/drive.png", {"批量求解", "任务队列", "并行运行"});
+    plannedGroup(page, window, "联合仿真接口", "Motion/electromechanicalCoupling.png",
+        {"导入 FMU（ME）", "导出 FMU（CS）", "协同变量", "协同诊断"});
+}
+
+void buildMultiphysics(RibbonPage* page, MotionWindow& window)
+{
+    auto* actuators = group(page, "液压执行");
+    actionButton(actuators, window, Command::AddHydraulicCylinder, false, 0, 0, "Motion/mech_hydraulic.png");
+    plannedButton(actuators, window, "液压马达", "Motion/mech_hydraulic.png", 1, 0);
+    plannedGroup(page, window, "液压动力", "Motion/mech_hydraulic.png", {"液压泵", "油箱", "压力源", "流量源"});
+    plannedGroup(page, window, "液压控制", "Motion/mech_hydraulic.png",
+        {"换向阀", "伺服阀", "溢流阀", "减压阀", "单向阀", "节流阀", "顺序阀"});
+    plannedGroup(page, window, "液压附件", "Motion/mech_hydraulic.png", {"管路", "蓄能器", "过滤器", "液压容腔"});
+    plannedGroup(page, window, "电气驱动", "Motion/electromechanicalCoupling.png", {"电机", "电源", "逆变器"});
+    plannedGroup(page, window, "集成作动", "Motion/mech_elec_hyd.png", {"EHA", "EMA"});
+    plannedGroup(page, window, "回路工具", "Motion/controlCalculation.png", {"端口连接", "回路图", "回路检查"});
+    auto* settings = group(page, "设置");
+    actionButton(settings, window, Command::EditHydraulicFluid, true, 0, 0, "Motion/mech_hydraulic.png");
 }
 
 void buildDisplay(RibbonPage* page, MotionWindow& window)
@@ -899,42 +1018,19 @@ QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent)
     tabFont.setPixelSize(UiMetrics::tabFontSize());
     tabs->setFont(tabFont);
     tabs->setAttribute(Qt::WA_StyledBackground, false);
+    tabs->setUsesScrollButtons(true);
     buttons->addWidget(tabs);
     buttons->addStretch(0);
-    const QStringList names = { QStringLiteral("主页"), QStringLiteral("几何"), QStringLiteral("体定义"),
+    const QStringList names = { QStringLiteral("主页"), QStringLiteral("几何"), QStringLiteral("体定义"), QStringLiteral("柔性体"),
         QStringLiteral("运动副与约束"), QStringLiteral("驱动"), QStringLiteral("连接与力元"),
-        QStringLiteral("传感与控制"), QStringLiteral("求解"), QStringLiteral("显示"), QStringLiteral("选择") };
+        QStringLiteral("传感与控制"), QStringLiteral("机电液"), QStringLiteral("求解"), QStringLiteral("结果"),
+        QStringLiteral("航空"), QStringLiteral("车辆"), QStringLiteral("传动"), QStringLiteral("机器人"),
+        QStringLiteral("振动耐久"), QStringLiteral("设计分析"), QStringLiteral("自动化"),
+        QStringLiteral("显示"), QStringLiteral("选择") };
     tabs->setResidentTabNames(names);
     tabs->setSeparatorGroup({ QStringLiteral("显示"), QStringLiteral("选择") });
     auto* visibleTabs = new mUiMenu(QStringLiteral("前处理常驻菜单栏"), viewMenu);
     viewMenu->addMenu(visibleTabs);
-    const auto otherModeMenu = [&window, viewMenu](const QString& title, const QString& mode,
-        const QStringList& names, const QStringList& checked) {
-        auto* menu = new mUiMenu(title, viewMenu);
-        QSettings settings(originalSettingsPath(), QSettings::IniFormat);
-        const auto key = hiddenMenuSettingsKey(mode);
-        const auto hidden = settings.value(key).toStringList();
-        const bool saved = settings.contains(key);
-        for (const auto& name : names) {
-            auto* action = menu->addAction(name);
-            action->setCheckable(true);
-            action->setChecked(saved ? !hidden.contains(name) : checked.contains(name));
-            action->setProperty("mxOriginalAction", QStringLiteral("setModeMenuVisible"));
-            action->setProperty("mxOriginalArgument", QVariantList{mode, name});
-            QObject::connect(action, &QAction::toggled, &window, [&window, menu, mode, name](bool visible) {
-                saveMenuVisibility(mode, menu);
-                dispatch(window, "setModeMenuVisible", QVariantList{mode, name, visible});
-            });
-        }
-        viewMenu->addMenu(menu);
-        ThemeManager::applyMenuStyle(menu);
-    };
-    otherModeMenu(QStringLiteral("后处理常驻菜单栏"), QStringLiteral("Post"),
-        {"主页", "模型", "结果", "云图", "动画", "路径", "流线图", "切面图", "等值面图", "矢量图",
-         "分区显示", "后处理-集合", "线性叠加", "分析报告", "显示", "选择"},
-        {"主页", "模型", "结果", "云图", "显示", "选择"});
-    otherModeMenu(QStringLiteral("曲线常驻菜单栏"), QStringLiteral("Curve"),
-        {"主页", "曲线", "报告", "3D曲线"}, {"主页", "曲线", "报告", "3D曲线"});
     viewMenu->addSeparator();
     auto* treeLink = new mUiMenu(QStringLiteral("树菜单栏联动"), viewMenu);
     auto* treeLinkActions = new QActionGroup(treeLink);
@@ -966,7 +1062,7 @@ QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent)
     navigationMenu->addAction(window.command(Command::NavigationNx));
     viewMenu->addMenu(navigationMenu);
     QList<RibbonPage*> pages;
-    const auto hiddenResident = settings.value(hiddenMenuSettingsKey(QStringLiteral("Pre"))).toStringList();
+    const auto hiddenResident = settings.value(hiddenResidentMenusKey()).toStringList();
     for (const auto& name : names) {
         auto* page = new RibbonPage(stack);
         pages.push_back(page);
@@ -976,20 +1072,29 @@ QWidget* createMotionRibbon(MotionWindow& window, QWidget* parent)
         show->setCheckable(true);
         show->setChecked(!hiddenResident.contains(name));
         tabs->setTabVisible(index, show->isChecked());
-        QObject::connect(show, &QAction::toggled, tabs, [tabs, visibleTabs, index, &window, name](bool on) {
+        QObject::connect(show, &QAction::toggled, tabs, [tabs, visibleTabs, index](bool on) {
             tabs->setTabVisible(index, on);
-            saveMenuVisibility(QStringLiteral("Pre"), visibleTabs);
-            dispatch(window, "setModeMenuVisible", QVariantList{QStringLiteral("Pre"), name, on});
+            saveMenuVisibility(visibleTabs);
         });
     }
     ThemeManager::applyMenuStyle(viewMenu);
     QObject::connect(tabs, &QTabBar::currentChanged, stack, &QStackedWidget::setCurrentIndex);
     stack->setCurrentIndex(tabs->currentIndex());
-    buildHome(pages[0], window);
-    buildGeometry(pages[1], window);
+    buildHome(pages[HomeTab], window);
+    buildGeometry(pages[GeometryTab], window);
     buildMotionPages(pages, window);
-    buildDisplay(pages[8], window);
-    buildSelection(pages[9], window);
+    buildFlexibleBodies(pages[FlexTab], window);
+    buildMultiphysics(pages[MultiphysicsTab], window);
+    buildAircraft(pages[AircraftTab], window);
+    buildVehicle(pages[VehicleTab], window);
+    buildTransmission(pages[TransmissionTab], window);
+    buildRobotics(pages[RoboticsTab], window);
+    buildResults(pages[ResultsTab], window);
+    buildVibration(pages[VibrationTab], window);
+    buildDesignAnalysis(pages[DesignTab], window);
+    buildAutomation(pages[AutomationTab], window);
+    buildDisplay(pages[DisplayTab], window);
+    buildSelection(pages[SelectionTab], window);
     for (auto* page : pages) {
         for (auto* item : page->groups()) item->updateLayout();
         page->updateMenuGeometry();

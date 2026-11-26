@@ -85,6 +85,18 @@ void appendOriginalEngineExtensions(QWidget* panel,LegacyMotionContext* context,
         auto* help=new QLabel(QStringLiteral("预载后动力学先建立平衡构型，再从该构型开始积分；刚度和载荷仍由原弹簧、力元及驱动面板设置。"));help->setWordWrap(true);fold->addRow(help);
         const auto update=[mode,fields] { for(auto* field:fields)field->setEnabled(mode->currentData().toString()!="Dynamic"); };
         QObject::connect(mode,qOverload<int>(&QComboBox::currentIndexChanged),panel,update);update();
+
+        auto* hydFold=section(panel,QStringLiteral("机电液耦合初始化"));
+        auto* steadyCheck=new QCheckBox(QStringLiteral("按初始静载平衡液压缸腔压"),hydFold);
+        steadyCheck->setObjectName(QStringLiteral("engine_hydraulicSteadyInit"));
+        steadyCheck->setChecked(context->document().entity(collection,id).value("hydraulicSteadyInit").toBool(false));
+        hydFold->addRow(steadyCheck);
+        auto* hydHelp=new QLabel(QStringLiteral("启用后在 t=0 自动反算平衡重力与外载所需的 A/B 腔初始压力，避免机构启动瞬间因腔压未平衡产生突变下坠。"),hydFold);
+        hydHelp->setWordWrap(true);
+        hydFold->addRow(hydHelp);
+        QObject::connect(steadyCheck,&QCheckBox::toggled,hydFold,[=](bool checked) {
+            context->setExtensionFields(collection,id,{{"hydraulicSteadyInit",checked}});
+        });
     } else if(collection=="drives") {
         auto* fold=section(panel,QStringLiteral("执行器限制"));
         auto* effort=number(fold,context,collection,id,"effortLimit",QStringLiteral("额定力 / 力矩"),0);

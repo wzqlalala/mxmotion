@@ -28,6 +28,9 @@ constexpr qint64 cacheLimit = 512ll * 1024 * 1024;
 constexpr int digestSize = 32;
 constexpr quint32 partLimit = 20000;
 constexpr quint32 textLimit = 256 * 1024;
+constexpr quint8 hasMetreShape = 1u;
+constexpr quint8 tessellatedDisplayOnly = 2u;
+constexpr quint8 hasDisplayColor = 4u;
 
 QString cachePath()
 {
@@ -289,14 +292,22 @@ bool VerifiedStepCache::read(const QString& sha256, CadDocument& cad)
         int lastId = 0;
         for (quint32 i = 0; i < partCount; ++i) {
             CadPart part{};
-            quint8 hasMetreShape = 0;
-            stream >> part.id >> hasMetreShape;
+            quint8 flags = 0;
+            stream >> part.id >> flags;
             if (stream.status() != QDataStream::Ok || part.id <= lastId || quint64(part.id) >= nextId
-                || hasMetreShape > 1 || !readText(stream, part.name) || part.name.isEmpty()
+                || (flags & ~(hasMetreShape | tessellatedDisplayOnly | hasDisplayColor))
+                || !readText(stream, part.name) || part.name.isEmpty()
                 || !readText(stream, part.sourceName) || !readText(stream, part.instancePath) || part.instancePath.isEmpty()
                 || !readShape(stream, payload, part.shape)
-                || (hasMetreShape && !readShape(stream, payload, part.metreDisplaySource))
+                || ((flags & hasMetreShape) && !readShape(stream, payload, part.metreDisplaySource))
                 || !readDisplay(stream, part.display, budget)) return false;
+            part.tessellatedDisplayOnly = flags & tessellatedDisplayOnly;
+            if (flags & hasDisplayColor) {
+                quint16 red = 0, green = 0, blue = 0, alpha = 0;
+                stream >> red >> green >> blue >> alpha;
+                if (stream.status() != QDataStream::Ok) return false;
+                part.displayColor = QColor::fromRgba64(red, green, blue, alpha);
+            }
             lastId = part.id;
             staged.m_parts.push_back(std::move(part));
         }
@@ -325,10 +336,17 @@ void VerifiedStepCache::write(const QString& sha256, const CadDocument& cad)
             if (!writeText(stream, note)) return;
         for (const auto& part : cad.m_parts) {
             const bool hasMetre = !part.metreDisplaySource.IsNull();
-            stream << part.id << quint8(hasMetre);
+            quint8 flags = hasMetre ? hasMetreShape : 0;
+            if (part.tessellatedDisplayOnly) flags |= tessellatedDisplayOnly;
+            if (part.displayColor.isValid()) flags |= hasDisplayColor;
+            stream << part.id << flags;
             if (!writeText(stream, part.name) || !writeText(stream, part.sourceName) || !writeText(stream, part.instancePath)
                 || !writeShape(stream, part.shape) || (hasMetre && !writeShape(stream, part.metreDisplaySource))
                 || !writeDisplay(stream, part.display)) return;
+            if (flags & hasDisplayColor) {
+                const auto color = part.displayColor.rgba64();
+                stream << color.red() << color.green() << color.blue() << color.alpha();
+            }
         }
         if (stream.status() != QDataStream::Ok) return;
         const auto key = header(sha256);

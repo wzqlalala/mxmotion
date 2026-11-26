@@ -3,6 +3,9 @@
 
 #include "motion/utils/ParserAdams.h"
 #include "motion/utils/ContactInputSettings.h"
+#include "motion/collision/CollisionSystem.h"
+#include "motion/physics/ContactContainer.h"
+#include "motion/physics/MaterialSurfaceSMC.h"
 #include "motion/physics/Force.h"
 #include "motion/physics/LinkMotorLinear.h"
 #include "motion/physics/LinkMotorRotation.h"
@@ -17,6 +20,8 @@
 #include <QJsonArray>
 #include <QQuaternion>
 #include <QRegularExpression>
+#include <QScopedValueRollback>
+#include <Eigen/QR>
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +55,122 @@ Vec unit(const QJsonValue& value, Vec fallback=motion::VECT_Z)
     if (out.Length()<1e-12) fail("方向向量不能为零。");
     out.Normalize(); return out;
 }
+
+class AnalyticContactHistory final : public motion::MotionContactContainer::ReportContactCallback,
+                                     public motion::collision::MotionCollisionSystem::BroadphaseCallback {
+    struct Pair {
+        int id;
+        double normal = 0.0;
+        std::vector<double> history;
+    };
+    using Model=motion::collision::MotionCollisionModel;
+    std::map<const Model*, int> bodies;
+    std::map<std::pair<int,int>, Pair> pairs;
+
+public:
+    bool OnBroadphase(Model* a, Model* b) override
+    {
+        const auto i=bodies.find(a),j=bodies.find(b);
+        if (i==bodies.end() && j==bodies.end()) return true;
+        return i!=bodies.end() && j!=bodies.end() && pairs.count(std::minmax(i->second,j->second))!=0;
+    }
+
+    bool OnReportContact(const Vec&, const Vec&, const motion::MotionMatrix33<>&,
+            const double&, const double&, const Vec& force, const Vec&,
+            motion::MotionContactable* a, motion::MotionContactable* b) override
+    {
+        auto* action=dynamic_cast<motion::MotionBody*>(a);
+        auto* base=dynamic_cast<motion::MotionBody*>(b);
+        if (!action || !base) return true;
+        const auto i=bodies.find(action->GetCollisionModel().get()),j=bodies.find(base->GetCollisionModel().get());
+        if (i!=bodies.end() && j!=bodies.end()) {
+            const auto pair=pairs.find(std::minmax(i->second,j->second));
+            if (pair!=pairs.end()) pair->second.normal+=std::max(0.0,force.x())*.001;
+        }
+        return true;
+    }
+
+    bool install(NativeMotionSystem& system, const NativeMotionDocument& document)
+    {
+        std::map<int,QJsonObject> shapes;
+        const auto contacts=document.collection("contacts");
+        for (const auto& value:contacts) {
+            const auto row=value.toObject();
+            if (!row.value("enabled").toBool(true) || !row.contains("analyticContact")) continue;
+            const auto options=row.value("analyticContact").toObject();
+            const auto a=row.value("actionBodyId").toInt(-1), b=row.value("baseBodyId").toInt(-1);
+            if (a==b || !pairs.emplace(std::minmax(a,b),Pair{row.value("id").toInt()}).second)
+                fail(QStringLiteral("解析接触需要两个不同的运动体，且同一对运动体只能配置一次。"));
+            auto material=motion_types::make_shared<motion::MotionMaterialSurfaceSMC>();
+            material->SetKn(row.value("stiffness").toDouble()*1000);
+            material->SetKt(options.value("tangentialStiffness").toDouble()*1000);
+            material->SetGn(options.value("normalDampingRate").toDouble());
+            material->SetGt(options.value("tangentialDampingRate").toDouble());
+            const bool friction=row.value("frictionEnabled").toBool();
+            material->SetSfriction(friction?row.value("staticFriction").toDouble():0);
+            material->SetKfriction(friction?row.value("dynamicFriction").toDouble():0);
+            QJsonObject materialKey{
+                {"Kn",material->GetKn()},{"Kt",material->GetKt()},
+                {"Gn",material->GetGn()},{"Gt",material->GetGt()},
+                {"muS",material->GetSfriction()},{"muK",material->GetKfriction()},
+                {"margin",options.value("collisionMargin").toDouble()}};
+            const auto add=[&](int id,const QJsonObject& shape) {
+                const auto existing=shapes.find(id);
+                QJsonObject definition=materialKey;
+                definition.insert("shape",shape);
+                if (existing!=shapes.end()) {
+                    if (existing->second!=definition)
+                        fail(QStringLiteral("共享运动体的解析接触形状与材料设置须一致。"));
+                    return;
+                }
+                const auto body=std::dynamic_pointer_cast<motion::MotionBody>(system.SearchBody(bodyKey(id).c_str()));
+                if (!body) fail(QStringLiteral("解析接触只能用于刚体。"));
+                const auto model=body->GetCollisionModel();
+                const auto center=body->TransformPointParentToLocal(vector(shape.value("center")));
+                const double margin=options.value("collisionMargin").toDouble();
+                model->ClearModel();
+                model->SetSafeMargin(margin);
+                model->SetEnvelope(margin);
+                bool built=false;
+                if (shape.value("kind").toString()=="Sphere") {
+                    built=model->AddSphere(material,shape.value("radius").toDouble(),center);
+                } else {
+                    const auto size=vector(shape.value("size"))*.5;
+                    // 输入盒轴沿初始世界坐标系，随后随运动体姿态转动。
+                    built=model->AddBox(material,size.x(),size.y(),size.z(),center,
+                        motion::MotionMatrix33<>(body->GetRot().GetConjugate()));
+                }
+                if (!built) fail(QStringLiteral("创建解析接触形状失败。"));
+                model->BuildModel();
+                body->SetCollide(true);
+                bodies.emplace(model.get(),id);
+                shapes.emplace(id,std::move(definition));
+            };
+            add(a,options.value("actionShape").toObject());
+            add(b,options.value("baseShape").toObject());
+        }
+        if (pairs.empty()) return false;
+        // 接触模型是系统级设置，校验阶段已禁止与 CAD/面片接触混用。
+        system.UseMaterialProperties(false);
+        system.SetContactForceModel(motion::MotionSystemSMC::Hooke);
+        return true;
+    }
+
+    void sample(const std::shared_ptr<AnalyticContactHistory>& self, NativeMotionSystem& system)
+    {
+        for (auto& [key,pair]:pairs) pair.normal=0.0;
+        system.GetContactContainer()->ReportAllContacts(self);
+        for (auto& [key,pair]:pairs) pair.history.push_back(pair.normal);
+    }
+
+    void transfer(RigidResult& result)
+    {
+        for (auto& [key,pair]:pairs) {
+            if (pair.history.size()!=result.frames.size()) fail(QStringLiteral("解析接触时程与结果帧不一致。"));
+            result.channels.push_back({"contacts",pair.id,"NormalForce","N",1,std::move(pair.history)});
+        }
+    }
+};
 void fill(double (&a)[3],const Vec& v) { for(int d=0;d<3;++d)a[d]=v[d]; }
 std::vector<double> array(const QJsonValue& value,double scale=1)
 {
@@ -218,7 +339,7 @@ bool isRigidPositionDriven(const NativeMotionInput& input, const NativeMotionSys
         return false;
     for (const auto* category : {"autoFlexBodies", "springs", "contacts", "controllers", "couplings",
                                  "scalarForces", "scalarTorques", "threePointForces", "threePointTorques",
-                                 "vectorForces", "tensionCables", "softStops"})
+                                 "vectorForces", "tensionCables", "softStops", "hydraulicCylinders"})
         if (!input.document.collection(QLatin1String(category)).isEmpty()) return false;
     return std::all_of(system.motions_map.begin(), system.motions_map.end(), [](const auto& drive) {
         return drive.second.is_position;
@@ -236,6 +357,43 @@ bool useEquilibratedMotionQr(const NativeMotionInput& input, const NativeMotionS
         config.integrator.type == motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED &&
         isRigidPositionDriven(input, system);
 }
+
+class NativeMnfSystem final : public NativeMotionSystem {
+public:
+    bool linearizedMnf = false;
+
+    void StateScatter(const motion::MotionState& position, const motion::MotionStateDelta& velocity,
+                      double time, bool updateAssets) override
+    {
+        NativeMotionSystem::StateScatter(position, velocity, time, updateAssets);
+        if (weightIndependentFlexProjectionWithStiffness) {
+            // 引擎先更新顶层运动副，再写入嵌套装配的柔性接口位姿。
+            // 位姿散布完成后重算顶层约束，以免位置迭代读取上一轮的接口坐标。
+            for (const auto& link : Get_linklist())
+                if (link->IsActive()) link->Update(time, false);
+        }
+    }
+
+    bool StateSolveCorrection(motion::MotionStateDelta& correction,
+                              motion::MotionVectorDynamic<>& multipliers,
+                              const motion::MotionVectorDynamic<>& residual,
+                              const motion::MotionVectorDynamic<>& constraints,
+                              double mass, double damping, double stiffness,
+                              const motion::MotionState& position,
+                              const motion::MotionStateDelta& velocity, double time,
+                              bool scatter, bool update, bool setup) override
+    {
+        const auto solve = [&] {
+            return NativeMotionSystem::StateSolveCorrection(correction, multipliers, residual, constraints,
+                mass, damping, stiffness, position, velocity, time, scatter, update, setup);
+        };
+        if (!linearizedMnf)
+            return solve();
+        // 线性化积分直接使用已组装的模态质量、刚度和阻尼，保留实际约束雅可比。
+        QScopedValueRollback<bool> tangent(implicit_tangent_enabled, false);
+        return solve();
+    }
+};
 
 class ImportedMnfTimestepper final : public motion::MotionTimestepperHHT {
 public:
@@ -625,7 +783,7 @@ private:
     void contacts()
     {
         for(const auto& value:in.document.collection("contacts")){
-            const auto o=value.toObject();if(!active(o))continue;motion::adams_contact_struct c;
+            const auto o=value.toObject();if(!active(o)||o.contains("analyticContact"))continue;motion::adams_contact_struct c;
             const int a=o.value("actionBodyId").toInt(-1),b=o.value("baseBodyId").toInt(-1);
             if (importedDefinitions.count(a) || importedDefinitions.count(b)) fail("导入的 MNF 柔性体暂不支持接触。");
             c.id=key(o.value("id").toInt());c.body_I=bodyKey(a);c.body_J=bodyKey(b);
@@ -662,6 +820,7 @@ private:
 void recordNestedBodies(NativeMotionSystem& system)
 {
     recordNativeEffortMotors(system);
+    recordNativeHydraulicCylinders(system);
     // Modal assemblies take ownership of their interface bodies. The engine's
     // standard recorder visits top-level bodies only, so record these same real
     // body/marker states here without duplicating top-level samples.
@@ -719,6 +878,18 @@ void assembleInitialState(NativeMotionSystem& system)
     motion::MotionStateDelta compatible;
     double time=0;
     system.projectConstraintVelocity(position,compatible,time);
+    if (!system.hydraulicCylinders.empty()) {
+        motion::MotionStateDelta acc(system.GetNcoords_v(), &system);
+        motion::MotionVectorDynamic<> reactions(system.GetNconstr());
+        acc.setZero(system.GetNcoords_v(), &system);
+        reactions.setZero();
+        if (system.StateSolveA(acc, reactions, position, compatible, time, 1e-6, false, true)) {
+            system.StateScatter(position, compatible, time, true);
+            system.StateScatterAcceleration(acc);
+            system.StateScatterReactions(reactions);
+            return;
+        }
+    }
     // The engine estimates acceleration with a 1e-6 s virtual dynamics step.
     // Keep its acceleration/reaction estimate, restore the accepted t=0 state.
     system.DoAssembly(motion::AssemblyLevel::ACCELERATION);
@@ -750,13 +921,14 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
     try{
         if(!input.geometry)fail("原生模型尚未准备几何输入。");
         if(callbacks.stopRequested&&callbacks.stopRequested()){error.clear();return SolveStatus::Stopped;}
-        NativeMotionSystem system;
+        NativeMnfSystem system;
         system.sourceInput=&input;
         const auto scenario=input.document.entity("scenarios",input.scenario.id);
         auto config=configuration(scenario);
         Assembly assembly(system,input,config);
         auto importedFlex=assembly.build();
         const bool hasMnf=!importedFlex.empty();
+        system.linearizedMnf=hasMnf&&scenario.value("mnfIntegratorType").toString()=="EULER_IMPLICIT_LINEARIZED";
         const auto analysisType=scenario.value("analysisType").toString("Dynamic");
         if (hasMnf && analysisType!="Dynamic")
             fail("导入的 MNF 柔性体当前支持动力学方案。");
@@ -770,6 +942,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         parser.Parse(system);
 #endif
         createNativeEffortMotors(system,input);
+        createNativeHydraulicCylinders(system,input);
         for(const auto& joint:system.joints_map){
             bool created=false;for(const auto& link:system.Get_linklist())if(!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link)&&link->GetNameString()==joint.first){created=true;system.nativeJoints.emplace(joint.first,link);break;}
             if(!created)fail(QStringLiteral("引擎没有创建运动副 %1 (%2)，已中止，避免约束被静默丢弃。").arg(QString::fromStdString(joint.first),QString::fromStdString(joint.second->type)));
@@ -795,27 +968,48 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         }
         system.Set_G_acc(Vec(input.scenario.gravityMS2[0]*1000,input.scenario.gravityMS2[1]*1000,input.scenario.gravityMS2[2]*1000));
         if (hasMnf) {
-            // The imported body's coupled inertia requires a direct constraint
-            // solve. HHT is the engine's validated MNF integration path.
+            // 旧工程继续使用 HHT。运动方案可以显式选用面向闭环机构的线性化积分。
             config.use_preset=false;
-            config.integrator.type=motion::MotionTimestepper::Type::HHT;
+            config.integrator.type=system.linearizedMnf ? motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED
+                                                       : motion::MotionTimestepper::Type::HHT;
             config.solver.type=motion::MotionSolver::Type::SPARSE_QR;
         } else if(!input.geometry->flexBodies.empty()){
             config.use_preset=false;config.integrator.type=motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED;
             const bool independent=std::any_of(input.geometry->flexBodies.begin(),input.geometry->flexBodies.end(),[](const NativeFlexGeometry& body){return body.independentInterfaces;});
+            system.weightIndependentFlexProjectionWithStiffness=independent &&
+                scenario.value("independentPositionProjection").toString()==QStringLiteral("MASS_STIFFNESS");
             config.solver.type=independent?motion::MotionSolver::Type::SPARSE_QR:motion::MotionSolver::Type::MINRES;
             config.solver.max_iters=std::max(500,config.solver.max_iters);system.SetPositionAssemblyPerStep(true);
+        } else if (!system.hydraulicCylinders.empty()) {
+            if (config.use_preset) {
+                config.use_preset = false;
+                config.integrator.type = motion::MotionTimestepper::Type::HHT;
+                config.integrator.alpha = -0.05;
+                config.solver.type = motion::MotionSolver::Type::SPARSE_QR;
+            } else {
+                if (config.integrator.type == motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED
+                    || config.integrator.type == motion::MotionTimestepper::Type::EULER_IMPLICIT_PROJECTED)
+                    config.integrator.type = motion::MotionTimestepper::Type::EULER_IMPLICIT;
+                if (config.solver.type != motion::MotionSolver::Type::SPARSE_QR
+                    && config.solver.type != motion::MotionSolver::Type::SPARSE_LU
+                    && config.solver.type != motion::MotionSolver::Type::GMRES)
+                    config.solver.type = motion::MotionSolver::Type::SPARSE_QR;
+            }
         }
         system.InitSolver(config);
+        const auto contactHistory=std::make_shared<AnalyticContactHistory>();
+        const bool analyticContacts=contactHistory->install(system,input.document);
+        if (analyticContacts) system.GetCollisionSystem()->RegisterBroadphaseCallback(contactHistory);
         if(system.GetSolver()->GetType()!=system.config.solver.type||system.GetTimestepper()->GetType()!=system.config.integrator.type)
             fail("底层引擎没有安装方案指定的求解器或积分器，已中止；不能用默认类型代替所请求的算法。");
-        const bool equilibratedQr = analysisType == "Dynamic" && !hasMnf && useEquilibratedMotionQr(input, system, config);
+        const bool equilibratedQr = analysisType == "Dynamic" &&
+            (system.linearizedMnf || (!hasMnf && useEquilibratedMotionQr(input, system, config)));
         if (equilibratedQr) {
             auto solver = makeNativeEquilibratedQr();
             solver->SetVerbose(config.solver.verbose);
             system.SetSolver(solver);
         }
-        if (hasMnf) {
+        if (hasMnf && !system.linearizedMnf) {
             const auto hht = std::dynamic_pointer_cast<motion::MotionTimestepperHHT>(system.GetTimestepper());
             if (!hht) fail("MNF 动力学需要 HHT 积分器。");
             system.SetTimestepper(std::make_shared<ImportedMnfTimestepper>(*hht));
@@ -837,9 +1031,10 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         assembleInitialState(system);
         std::optional<NativeStaticReport> staticReport;
         if(preload)staticReport=equilibrateNativeMotion(system,scenario,callbacks);
+        const QString hydraulicSteadyReport=initializeSteadyNativeHydraulics(system,scenario);
         if(!staticOnly){
             system.configureControllers(input);
-            if(!system.controllers.empty()||preload)assembleInitialState(system);
+            if(!system.controllers.empty()||preload||!hydraulicSteadyReport.isEmpty())assembleInitialState(system);
         }
         const bool projectPositions=scenario.value("positionAssemblyPerStep").toBool(!system.joints_map.empty())||!flex.empty();
         // The engine's fixed-count assembly cannot detect whether a closed
@@ -869,6 +1064,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
                 .arg(initial.flexId).arg(initial.reason));
         }
         system.RecordStepResults();recordNestedBodies(system);
+        if (analyticContacts) contactHistory->sample(contactHistory,system);
         system.acceptedStepSize=config.step_size;
         system.acceptedEndTime=config.total_time;
         system.validateFlexState=[&](double time){validateNativeFlex(flex,time);};
@@ -877,6 +1073,7 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         system.SetProgressCallback([&](double current,double,double progress){
             if(callbacks.stopRequested&&callbacks.stopRequested()){stopped=true;system.RequestStopSolve();return;}
             recordNestedBodies(system);
+            if (analyticContacts) contactHistory->sample(contactHistory,system);
             if(callbacks.progress)callbacks.progress(std::clamp(progress,0.0,1.0));
         });
         std::optional<NativeGeometryBoundary> boundary;
@@ -886,15 +1083,18 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
         catch(const NativeFlexDivergence& rejected) { divergence=rejected; }
         if(stopped||(callbacks.stopRequested&&callbacks.stopRequested())){error.clear();return SolveStatus::Stopped;}
         RigidResult next;extractNativeResults(input,system,flex,next);
+        if (analyticContacts) contactHistory->transfer(next);
         next.diagnostics=input.geometry->diagnostics;
         if (equilibratedQr) next.diagnostics.append(QStringLiteral("双边位置驱动使用平衡缩放稀疏 QR。"));
         if (system.usedFullRankPositionProjection)
             next.diagnostics.append(QStringLiteral("全约束刚体使用稀疏雅可比位置投影，按全部原约束验收。"));
         if(system.usedBilateralProjectionSolver)
             next.diagnostics.append(QStringLiteral("双边约束的位置投影使用平衡缩放稀疏 QR，动力学沿用方案指定算法。"));
-        if (hasMnf) next.diagnostics.append(QStringLiteral("MNF 动力学使用 HHT 自适应积分（内部步长上限 %1 ms）和稀疏 QR 求解。")
+        if (system.linearizedMnf) next.diagnostics.append(QStringLiteral("MNF 动力学使用线性化隐式欧拉、模态刚度加权位置投影和平衡缩放稀疏 QR。"));
+        else if (hasMnf) next.diagnostics.append(QStringLiteral("MNF 动力学使用 HHT 自适应积分（内部步长上限 %1 ms）和稀疏 QR 求解。")
             .arg(1000 * ImportedMnfTimestepper::maxStepSeconds));
         if(staticReport)next.diagnostics.append(staticReport->description());
+        if(!hydraulicSteadyReport.isEmpty())next.diagnostics.append(hydraulicSteadyReport);
         if(staticOnly){next.termination=ResultTermination::StaticEquilibrium;if(callbacks.progress)callbacks.progress(1);}
         if(next.frames.empty())fail("引擎未生成任何有效结果帧。");
         if(boundary){
@@ -918,6 +1118,85 @@ SolveStatus solveNativeMotion(const NativeMotionInput& input,RigidResult& result
      catch(const std::exception& e){error=QString::fromUtf8(e.what());}
      catch(...){error=QStringLiteral("原生运动求解失败（未知引擎异常）。");}
     return SolveStatus::Failed;
+}
+
+bool evaluateNativeConstraintSystem(const NativeMotionInput& input,
+                                    NativeConstraintSummary& summary,
+                                    QString& error)
+{
+    summary = {};
+    try {
+        if (!input.geometry) fail(QStringLiteral("原生模型尚未准备几何输入。"));
+        NativeMnfSystem system;
+        system.sourceInput = &input;
+        const auto scenario = input.document.entity("scenarios", input.scenario.id);
+        auto config = configuration(scenario);
+        Assembly assembly(system, input, config);
+        assembly.build();
+        motion::utils::MotionParserAdams parser;
+        parser.SetVisualizationType(motion::utils::MotionParserAdams::NONE);
+#if defined(MX_HAS_BODY_DRIVES)
+        parser.Parse(system, bodyDriveDefinitions(input.document));
+#else
+        parser.Parse(system);
+#endif
+        createNativeEffortMotors(system, input);
+        for (const auto& joint : system.joints_map) {
+            for (const auto& link : system.Get_linklist()) {
+                if (!std::dynamic_pointer_cast<motion::MotionLinkMotor>(link) && link->GetNameString() == joint.first) {
+                    system.nativeJoints.emplace(joint.first, link);
+                    break;
+                }
+            }
+        }
+        SolverCallbacks silent;
+        buildNativeFlex(system, input, silent, true);
+        system.InitSolver(config);
+        system.Setup();
+        system.Update(0.0, false);
+        system.prepareStaticDescriptor();
+        system.ConstraintsLoadJacobians();
+
+        summary.velocityDofs = system.GetNcoords_v();
+        const int m = system.GetNconstr();
+        summary.constraintEquations = m;
+
+        motion::MotionVectorDynamic<> c0(m);
+        c0.setZero();
+        if (m > 0) {
+            system.LoadConstraint_C(c0, 1.0, false);
+            if (c0.allFinite()) summary.maxPositionViolation = c0.cwiseAbs().maxCoeff();
+        }
+
+        motion::MotionSparseMatrix jacobian;
+        system.GetSystemDescriptor()->ConvertToMatrixForm(&jacobian, nullptr, nullptr, nullptr, nullptr, nullptr);
+        if (jacobian.rows() > 0 && jacobian.cols() > 0 && jacobian.nonZeros() > 0) {
+            Eigen::MatrixXd dense(jacobian);
+            Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(dense);
+            qr.setThreshold(1e-9);
+            summary.jacobianRank = static_cast<int>(qr.rank());
+        } else {
+            summary.jacobianRank = 0;
+        }
+        summary.redundantEquations = std::max(0, summary.constraintEquations - summary.jacobianRank);
+
+        for (const auto& item : system.nativeJoints) {
+            bool ok = false;
+            const int jid = QString::fromStdString(item.first).toInt(&ok);
+            if (!ok || !item.second || !item.second->IsActive()) continue;
+            const auto cv = item.second->GetConstraintViolation();
+            if (cv.size() > 0 && cv.allFinite()) {
+                summary.jointViolations.push_back({jid, cv.cwiseAbs().maxCoeff()});
+            }
+        }
+        error.clear();
+        return true;
+    } catch (const std::exception& e) {
+        error = QString::fromUtf8(e.what());
+    } catch (...) {
+        error = QStringLiteral("约束雅可比分析发生未知异常。");
+    }
+    return false;
 }
 
 } // namespace MotionOcc

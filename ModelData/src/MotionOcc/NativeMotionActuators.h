@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QString>
 #include <memory>
 #include <vector>
 
 namespace motion {
 class MotionFunction;
 class MotionLinkMotor;
+class MotionHydraulicCylinder;
 }
 
 namespace MotionOcc {
@@ -28,8 +30,32 @@ struct NativeEffortRuntime {
     std::vector<NativeEffortSample> history;
 };
 
+struct NativeHydraulicSample {
+    double time = 0;
+    double pressureA = 0;
+    double pressureB = 0;
+    double forceN = 0;
+    double strokeMm = 0;
+    double velocityMmS = 0;
+    double flowALpm = 0;
+    double flowBLpm = 0;
+    double command = 0;
+    double mechPowerW = 0;
+    double fluidPowerW = 0;
+};
+struct NativeHydraulicRuntime {
+    int cylinderId = -1;
+    QJsonObject definition;
+    std::shared_ptr<motion::MotionHydraulicCylinder> cylinder;
+    std::vector<NativeHydraulicSample> history;
+};
+
 void createNativeEffortMotors(NativeMotionSystem& system,const NativeMotionInput& input);
 double nativeEffortSpeed(const NativeEffortRuntime& runtime);
 double limitNativeEffort(const NativeEffortRuntime& runtime,double requested);
 void recordNativeEffortMotors(NativeMotionSystem& system);
+
+void createNativeHydraulicCylinders(NativeMotionSystem& system, const NativeMotionInput& input);
+QString initializeSteadyNativeHydraulics(NativeMotionSystem& system, const QJsonObject& scenario);
+void recordNativeHydraulicCylinders(NativeMotionSystem& system);
 }

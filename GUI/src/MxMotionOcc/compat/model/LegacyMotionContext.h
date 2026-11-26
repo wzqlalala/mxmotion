@@ -35,6 +35,8 @@ public slots:
 signals:
     void documentChanged(const MotionOcc::NativeMotionDocument& document);
     void message(const QString& text,bool error);
+    void messageWithLevel(int level, const QString& text);
+    void statusMessage(const QString& text);
 private:
     QJsonObject inputForOriginalGui() const;
     void bindTopologyEdits(const QString& collection,const QJsonObject& before,

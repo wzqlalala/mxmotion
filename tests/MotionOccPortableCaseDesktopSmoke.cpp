@@ -18,7 +18,7 @@
 #include <QImage>
 #include <QLineEdit>
 #include <QLineF>
-#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QPushButton>
 #include <QSlider>
 #include <QTemporaryDir>
@@ -28,7 +28,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <tuple>
 
 using namespace MotionOcc;
 
@@ -107,7 +109,7 @@ const MechMotionData::mMotionResultData* resultFor(const LegacyMotionContext& co
 
 QString outputTail(MotionWindow& window)
 {
-    const auto* console = window.findChild<QPlainTextEdit*>();
+    const auto* console = window.findChild<QTextEdit*>(QStringLiteral("motionOutput"));
     return console ? console->toPlainText().right(4000) : QString{};
 }
 
@@ -121,6 +123,31 @@ void verifyDriveTables(const NativeMotionDocument& source, const NativeMotionDoc
             && actual.value("driveTableY") == drive.value("driveTableY"),
             QStringLiteral("Opening the portable input changed drive table %1").arg(id));
     }
+}
+
+void verifyAnalyticContacts(const NativeMotionDocument& source, const NativeMotionDocument& opened)
+{
+    for (const auto& value : source.collection("contacts")) {
+        const auto contact = value.toObject();
+        if (!contact.contains("analyticContact")) continue;
+        const int id = contact.value("id").toInt();
+        const auto actual = opened.entity("contacts", id);
+        require(actual.value("analyticContact") == contact.value("analyticContact"),
+            QStringLiteral("换目录打开工程改变了解析接触 %1").arg(id));
+    }
+}
+
+using DisplayParts = std::map<int, std::tuple<bool, QColor, std::size_t>>;
+
+DisplayParts displayParts(const CadDocument& cad)
+{
+    DisplayParts parts;
+    for (const auto& part : cad.parts()) {
+        if (part.tessellatedDisplayOnly || part.displayColor.isValid())
+            parts.emplace(part.id, std::make_tuple(part.tessellatedDisplayOnly,
+                part.displayColor, part.display.triangles.size()));
+    }
+    return parts;
 }
 
 double verifyPose(OccViewport& viewport, const LegacyMotionContext& context,
@@ -206,6 +233,7 @@ int runMotionOccPortableCaseDesktopSmoke(const QString& outputDirectory, const Q
 
         bool projectSaved = false;
         QMap<int, QVector<int>> bindings;
+        DisplayParts appearance;
         {
             MotionWindow window;
             window.resize(1440, 960);
@@ -217,6 +245,8 @@ int runMotionOccPortableCaseDesktopSmoke(const QString& outputDirectory, const Q
             bindings = opened.bodyPartBindings;
             require(!bindings.isEmpty(), "The imported motion bodies were not bound to CAD");
             verifyDriveTables(source, opened);
+            verifyAnalyticContacts(source, opened);
+            appearance = displayParts(currentContext().cadDocument());
             log << "PASS relocated JSON + STEP import with " << bindings.size() << " bound bodies and unchanged drive tables\n";
             log.flush();
             projectSaved = saveProject(window, stagedProject);
@@ -240,6 +270,13 @@ int runMotionOccPortableCaseDesktopSmoke(const QString& outputDirectory, const Q
         auto& context = currentContext();
         require(context.document().bodyPartBindings == bindings, "Reopen changed the CAD body bindings");
         verifyDriveTables(source, context.document());
+        verifyAnalyticContacts(source, context.document());
+        if (!appearance.empty()) {
+            require(projectReopened, QStringLiteral("含三角显示部件的工程没有成功另存并重开"));
+            require(displayParts(context.cadDocument()) == appearance,
+                QStringLiteral("保存重开改变了部件颜色或三角片数量"));
+            log << QStringLiteral("PASS 保存重开保留 %1 个部件的显示属性和三角片数量\n").arg(appearance.size());
+        }
         log << (projectReopened ? "PASS standalone Save As and reopen" : "PASS reopened relocated JSON + STEP")
             << " with unchanged body bindings and drive tables\n";
         log.flush();

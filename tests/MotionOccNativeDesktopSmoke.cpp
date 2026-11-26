@@ -3,7 +3,11 @@
 #include "RigidPlot.h"
 #include "RigidProject.h"
 #include "NativeMotionGeometry.h"
+#include "NativeMotionSolver.h"
+#include "mDirectionSelectorWidget.h"
 #include "mFoldSection.h"
+#include "mGlobalSignals.h"
+#include "mPointPickerWidget.h"
 
 #include <BRep_Builder.hxx>
 #include <BRepGProp.hxx>
@@ -54,6 +58,9 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
+#include <QTextEdit>
+#include <QTextLayout>
 #include <QTextStream>
 #include <QTimer>
 #include <QTreeWidget>
@@ -321,6 +328,253 @@ void show(MotionWindow& window)
     require(waitFor([&] { return viewport->glReady(); }, 12000), "Native desktop OpenGL context did not initialize");
 }
 
+void createNativeStopAndCable(MotionWindow& window, QTreeWidget& tree, const QDir& output)
+{
+    using MechMainWindow::FoldSection;
+    using MechMainWindow::mDirectionSelectorWidget;
+    using MechMainWindow::mPointPickerWidget;
+    const auto section = [](QWidget& panel, const QString& name, const QString& title) {
+        auto* found = widget<FoldSection>(panel, name);
+        require(found->title() == title && found->isExpanded(), "力元面板缺少展开的分组：" + title);
+        return found;
+    };
+    const auto point = [](QWidget& action, const QString& field, const QVector3D& coordinate) {
+        auto* picker = widget<mPointPickerWidget>(action, QStringLiteral("originalPointPicker_") + field);
+        picker->setCoordinate(coordinate);
+        auto* editor = picker->findChild<QLineEdit*>();
+        require(picker->isVisible() && editor && QMetaObject::invokeMethod(editor, "editingFinished", Qt::DirectConnection)
+            && picker->coordinate() == coordinate, "力元作用点未使用可编辑的原拾取控件：" + field);
+    };
+    const auto endpoint = [](FoldSection& group, const QString& field, const QString& title, int bodyId) {
+        auto* selector = widget<QComboBox>(group, QStringLiteral("native_") + field);
+        const auto* name = qobject_cast<QLabel*>(group.layout()->labelForField(selector));
+        require(name && name->text() == title, QStringLiteral("运动体标签与运动副面板不一致：") + field);
+        require(selector->count() == 3 && selector->itemData(0).toInt() == -1
+            && selector->itemText(0).trimmed().isEmpty(), QStringLiteral("第一项应为空白大地：") + field);
+        const int rotor = selector->findData(0);
+        const int base = selector->findData(37);
+        require(rotor > 0 && base > 0 && selector->itemText(rotor) == QStringLiteral("原始转子 0")
+            && selector->itemText(base) == QStringLiteral("原始基座 37"),
+            QStringLiteral("运动体选项未保留模型原名：") + field);
+        selector->setCurrentIndex(base);
+        selector->setCurrentIndex(0);
+        require(selector->currentData().toInt() == -1 && selector->currentText().trimmed().isEmpty(),
+            QStringLiteral("不能通过空白项选回大地：") + field);
+        selector->setCurrentIndex(bodyId == -1 ? 0 : rotor);
+    };
+    const auto configure = [&](QWidget& panel, const QString& title) {
+        auto* type = section(panel, "forceTypeSection", QStringLiteral("类型"));
+        require(type->layout()->rowCount() == 1 && !panel.findChild<QWidget*>("native_name")
+            && !panel.findChild<QWidget*>("native_enabled"), QStringLiteral("类型分组应只显示类型"));
+        auto* action = section(panel, "forceActionSection", QStringLiteral("动作"));
+        auto* base = section(panel, "forceBaseSection", QStringLiteral("基本"));
+        auto* parameters = section(panel, "forceParametersSection", title);
+        section(panel, "forceDampingSection", QStringLiteral("阻尼"));
+        endpoint(*action, "bodyIId", QStringLiteral("选择运动体(1):"), 0);
+        endpoint(*base, "bodyJId", QStringLiteral("选择运动体(2):"), -1);
+        point(*action, "localI", QVector3D(25, 0, 0));
+        point(*base, "localJ", QVector3D(0, 0, -100));
+        number(panel, "damping", 0.001);
+        return parameters;
+    };
+    const auto capture = [&](QWidget& panel, const QString& filename) {
+        QApplication::processEvents();
+        auto* ancestor = panel.parentWidget();
+        while (ancestor && !qobject_cast<QScrollArea*>(ancestor)) ancestor = ancestor->parentWidget();
+        auto* scroll = qobject_cast<QScrollArea*>(ancestor);
+        require(scroll && scroll->horizontalScrollBar()->maximum() == 0 && panel.width() <= scroll->viewport()->width(),
+            "力元参数面板在参数栏内出现横向裁切");
+        require(panel.grab().save(output.filePath(filename)), "无法保存力元面板截图：" + filename);
+    };
+
+    window.command(Command::AddSoftStop)->trigger();
+    auto* stop = widget<QWidget>(window, "nativeEditor_softStops");
+    auto* parameters = configure(*stop, QStringLiteral("止挡参数"));
+    auto* direction = widget<mDirectionSelectorWidget>(*stop, "originalDirectionPicker_direction");
+    require(direction->isVisible(), "止挡未显示原方向拾取控件");
+    direction->setDirectionMode(mDirectionSelectorWidget::XAxis);
+    require(direction->getDirection().value<QVector3D>() == QVector3D(1, 0, 0), "止挡方向轴选择未生效");
+    number(*stop, "stopPosition", 20);
+    number(*stop, "stiffness", 0.25);
+    auto* law = widget<QComboBox>(*parameters, "native_hasTable");
+    const int power = law->findData(false), tabular = law->findData(true);
+    auto* stiffness = widget<QLineEdit>(*parameters, "native_stiffness");
+    auto* table = widget<QTableWidget>(*parameters, "native_stopForceTable");
+    require(power >= 0 && tabular >= 0 && law->currentIndex() == power && stiffness->isVisible() && !table->isVisible(),
+        "止挡应默认显示幂函数参数");
+    capture(*stop, "soft-stop-editor.png");
+    law->setCurrentIndex(tabular);
+    require(!stiffness->isVisible() && table->isVisible(), "止挡力表与幂函数字段未互斥显示");
+    table->setRowCount(2);
+    table->setItem(0, 0, new QTableWidgetItem(QStringLiteral("0")));
+    table->setItem(0, 1, new QTableWidgetItem(QStringLiteral("0")));
+    table->setItem(1, 0, new QTableWidgetItem(QStringLiteral("2")));
+    table->setItem(1, 1, new QTableWidgetItem(QStringLiteral("4")));
+    capture(*stop, "soft-stop-table-editor.png");
+    require(table->mapTo(parameters, QPoint()).y() >= law->mapTo(parameters, QPoint()).y() + law->height(),
+        "止挡力表位于恢复力模式上方");
+    auto* parameterContent = parameters->contentWidget();
+    require(parameterContent->rect().contains(QRect(table->mapTo(parameterContent, QPoint()), table->size())),
+        "止挡力表被折叠区域裁切");
+    law->setCurrentIndex(power);
+    require(stiffness->isVisible() && stiffness->text().toDouble() == 0.25 && !table->isVisible(),
+        "切回止挡幂函数后刚度丢失");
+    law->setCurrentIndex(tabular);
+    require(table->isVisible() && table->rowCount() == 2 && table->item(1, 1) && table->item(1, 1)->text() == QStringLiteral("4"),
+        "切回止挡力表后输入丢失");
+    law->setCurrentIndex(power);
+    widget<QPushButton>(*stop, "motionApplyButton")->click();
+    require(node(tree, ModelNode::Native, 1, "softStops"), "止挡参数没有保存到模型树");
+
+    window.command(Command::AddTensionCable)->trigger();
+    auto* cable = widget<QWidget>(window, "nativeEditor_tensionCables");
+    configure(*cable, QStringLiteral("绳索参数"));
+    require(!cable->findChild<mDirectionSelectorWidget*>() && !cable->findChild<QTableWidget*>(),
+        "只拉绳索显示了止挡独有的方向或力表");
+    number(*cable, "freeLength", 95);
+    number(*cable, "stiffness", 0.01);
+    capture(*cable, "tension-cable-editor.png");
+    widget<QPushButton>(*cable, "motionApplyButton")->click();
+    require(node(tree, ModelNode::Native, 1, "tensionCables"), "只拉绳索参数没有保存到模型树");
+}
+
+int runNativeForceEditorSmoke(const QString& directory)
+{
+    const QDir output(QDir(directory).filePath("force-editor"));
+    if (!QDir().mkpath(output.absolutePath())) return 2;
+    QFile report(output.filePath("force-editor-smoke.txt"));
+    if (!report.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 2;
+    QTextStream log(&report);
+    log.setCodec("UTF-8");
+    try {
+        QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        QString cadPath, motionPath;
+        auto fixture = makeFixture(output.absolutePath(), cadPath, motionPath);
+        const auto legacyName = QStringLiteral("已有停用止挡");
+        auto motionData = fixture.root.value("motionData").toObject();
+        motionData.insert("softStops", QJsonArray{QJsonObject{{"id", 17}, {"name", legacyName}, {"enabled", false},
+            {"bodyIId", 0}, {"bodyJId", -1}, {"localI", xyz(25, 0, 0)}, {"localJ", xyz(0, 0, -100)},
+            {"direction", xyz(1, 0, 0)}, {"directionMode", 1}, {"side", 1}, {"stopPosition", 20},
+            {"stiffness", 0.25}, {"exponent", 1}, {"damping", 0.001}, {"dampingDepth", 0.1},
+            {"hasTable", false}, {"tableX", QJsonArray{}}, {"tableY", QJsonArray{}}}});
+        fixture.root.insert("motionData", motionData);
+        QString error;
+        require(writeNativeMotionDocument(motionPath, fixture, error), error);
+        MotionWindow window;
+        show(window);
+        require(window.importCad(cadPath) && window.importMotionJson(motionPath, false), "力元编辑器算例导入失败");
+        auto* tree = widget<QTreeWidget>(window, "mTreeView");
+        createNativeStopAndCable(window, *tree, output);
+        auto* legacyNode = node(*tree, ModelNode::Native, 17, "softStops");
+        require(legacyNode && (legacyNode->flags() & Qt::ItemIsEditable),
+            QStringLiteral("已有停用止挡缺少可重命名的模型树节点"));
+        tree->setCurrentItem(legacyNode);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QApplication::processEvents();
+        auto* legacyEditor = widget<QWidget>(window, "nativeEditor_softStops");
+        require(legacyEditor->isVisible(), QStringLiteral("未打开已有止挡的参数面板"));
+        auto* dirMode = widget<QComboBox>(*legacyEditor, "native_directionMode");
+        require(dirMode->findText(QStringLiteral("随运动体(1)转动")) >= 0
+            && dirMode->findText(QStringLiteral("随运动体(2)转动")) >= 0,
+            QStringLiteral("止挡方向参考未统一为运动体(1)/(2)话术"));
+        number(*legacyEditor, "stopPosition", 21);
+        widget<QPushButton>(*legacyEditor, "motionApplyButton")->click();
+        // Verify inline model-tree rename on softStops
+        auto* stopNode = node(*tree, ModelNode::Native, 1, "softStops");
+        require(stopNode && (stopNode->flags() & Qt::ItemIsEditable), QStringLiteral("新建止挡节点不支持模型树内联重命名"));
+        stopNode->setText(0, QStringLiteral("树改名止挡"));
+        QApplication::processEvents();
+        stopNode = node(*tree, ModelNode::Native, 1, "softStops");
+        require(stopNode && stopNode->text(0) == QStringLiteral("树改名止挡"), QStringLiteral("止挡模型树改名未生效"));
+        stopNode->setText(0, QStringLiteral("止挡-1"));
+        QApplication::processEvents();
+
+        // Stage 1 & Stage 2 Desktop UI verification: Hydraulic Fluid, Hydraulic Cylinder, Tree Rename, Diagnostics
+        window.command(Command::EditHydraulicFluid)->trigger();
+        auto* fluidPanel = widget<QWidget>(window, "nativeHydraulicFluidPanel");
+        require(fluidPanel->isVisible(), QStringLiteral("未打开全局油液设置面板"));
+        widget<QLineEdit>(*fluidPanel, "fluid_supplyPressure")->setText(QStringLiteral("24"));
+        widget<QPushButton>(*fluidPanel, "motionApplyButton")->click();
+
+        window.command(Command::AddHydraulicCylinder)->trigger();
+        auto* hydPanel = widget<QWidget>(window, "nativeEditor_hydraulicCylinders");
+        require(hydPanel->isVisible(), QStringLiteral("未打开液压缸参数面板"));
+        require(!hydPanel->findChild<QWidget*>("native_name") && !hydPanel->findChild<QWidget*>("native_enabled"),
+                QStringLiteral("液压缸参数面板不应显示名称或启用复选框"));
+        auto* mountCombo = widget<QComboBox>(*hydPanel, "native_mountMode");
+        mountCombo->setCurrentIndex(mountCombo->findData("Points"));
+        QApplication::processEvents();
+        auto* hydBodyI = widget<QComboBox>(*hydPanel, "native_bodyIId");
+        require(hydBodyI->itemText(0) == QStringLiteral(" ") && hydBodyI->itemData(0).toInt() == -1
+                && !hydBodyI->itemText(1).contains('['),
+                QStringLiteral("液压缸运动体下拉未遵循首项留空代表大地、无编号后缀规范"));
+        hydBodyI->setCurrentIndex(hydBodyI->findData(0));
+        auto* hydBodyJ = widget<QComboBox>(*hydPanel, "native_bodyJId");
+        hydBodyJ->setCurrentIndex(hydBodyJ->findData(-1));
+        widget<QLineEdit>(*hydPanel, "native_hydraulicCommand")->setText(QStringLiteral("0.4"));
+        widget<QPushButton>(*hydPanel, "motionApplyButton")->click();
+        auto* hydNode = node(*tree, ModelNode::Native, 1, "hydraulicCylinders");
+        require(hydNode && (hydNode->flags() & Qt::ItemIsEditable), QStringLiteral("新建液压缸未出现在模型树或不可重命名"));
+        hydNode->setText(0, QStringLiteral("主举升缸"));
+        QApplication::processEvents();
+        hydNode = node(*tree, ModelNode::Native, 1, "hydraulicCylinders");
+        require(hydNode && hydNode->text(0) == QStringLiteral("主举升缸"), QStringLiteral("液压缸模型树重命名未生效"));
+
+        window.command(Command::ConstraintDiagnostics)->trigger();
+        auto* diagPanel = widget<QWidget>(window, "nativeModelDiagnosticsPanel");
+        auto* diagTable = widget<QTableWidget>(*diagPanel, "nativeDiagnosticsTable");
+        require(diagPanel->isVisible() && diagTable->rowCount() >= 1, QStringLiteral("约束诊断面板未正常生成结果"));
+
+        const auto project = output.filePath("force-editor.mxmotion");
+        saveThroughUi(window, project);
+        CadDocument savedCad;
+        RigidModel savedModel;
+        require(loadRigidProject(project, savedCad, savedModel, error) && savedModel.nativeDocument,
+            "力元工程重开失败：" + error);
+        const auto stop = savedModel.nativeDocument->entity("softStops", 1);
+        const auto cable = savedModel.nativeDocument->entity("tensionCables", 1);
+        require(stop.value("name").toString() == QStringLiteral("止挡-1") && stop.value("enabled").toBool()
+            && cable.value("name").toString() == QStringLiteral("只拉绳索-1") && cable.value("enabled").toBool(),
+            QStringLiteral("新建力元的自动名称或默认启用状态在保存后改变"));
+        const auto legacy = savedModel.nativeDocument->entity("softStops", 17);
+        require(legacy.value("name").toString() == legacyName && legacy.value("enabled") == QJsonValue(false)
+            && legacy.value("stopPosition").toDouble() == 21, QStringLiteral("编辑已有止挡改变了名称或停用状态"));
+        for (const auto& row : {stop, cable})
+            require(row.value("bodyIId").toInt(-99) == 0 && row.value("bodyJId").toInt(-99) == -1
+                && row.value("localI").toObject() == xyz(25, 0, 0) && row.value("localJ").toObject() == xyz(0, 0, -100)
+                && row.value("damping").toDouble() == 0.001, "重开后力元丢失运动体、作用点或阻尼");
+        require(stop.value("direction").toObject() == xyz(1, 0, 0) && stop.value("stopPosition").toDouble() == 20
+            && stop.value("stiffness").toDouble() == 0.25 && !stop.value("hasTable").toBool()
+            && stop.value("tableX").toArray() == QJsonArray{0, 2} && stop.value("tableY").toArray() == QJsonArray{0, 4}
+            && cable.value("freeLength").toDouble() == 95 && cable.value("stiffness").toDouble() == 0.01,
+            "工程重开后止挡和只拉绳索参数改变");
+        log << QStringLiteral("通过：面板分组、模式切换及工程往返。") << Qt::endl;
+        NativeMotionInput input;
+        const bool prepared = prepareNativeMotion(savedCad, *savedModel.nativeDocument, 0, input, error);
+        require(prepared, QStringLiteral("力元模型预处理失败：") + error);
+        RigidResult result;
+        const auto status = solveNativeMotion(input, result, error);
+        require(status == SolveStatus::Completed && result.frames.size() > 1,
+            QStringLiteral("力元求解未生成有效结果：") + error);
+        for (const auto* collection : {"softStops", "tensionCables", "hydraulicCylinders"}) {
+            require(std::any_of(result.channels.begin(), result.channels.end(), [collection](const auto& channel) {
+                return channel.sourceType == QLatin1String(collection) && channel.sourceId == 1;
+            }), QStringLiteral("缺少力元或液压结果：") + QLatin1String(collection));
+        }
+        const auto savedFluid = savedModel.nativeDocument->root.value("motionData").toObject().value("hydraulicFluid").toObject();
+        const auto savedHyd = savedModel.nativeDocument->entity("hydraulicCylinders", 1);
+        require(savedFluid.value("supplyPressure").toDouble() == 24.0
+                && savedHyd.value("name").toString() == QStringLiteral("主举升缸"),
+                QStringLiteral("工程重开后丢失油液供油压力或液压缸树改名"));
+        log << QStringLiteral("通过：力元分组、拾取控件、止挡模式切换、工程往返及实际求解。\n");
+        return 0;
+    } catch (const std::exception& error) {
+        log << QStringLiteral("失败：") << QString::fromUtf8(error.what()) << '\n';
+        qCritical().noquote() << QString::fromUtf8(error.what());
+        return 1;
+    }
+}
+
 void clickViewport(OccViewport& viewport, const std::array<double,3>& position)
 {
     const QPointF pixel=viewport.projectPoint(position);
@@ -362,6 +616,14 @@ void originalPickerAndMassWorkflow(const QDir& output,const QString& cadPath,con
     // change the mass. They must not alter the original 90-degree solve fixture.
     MotionWindow window;show(window);
     require(window.importCad(cadPath)&&window.importMotionJson(motionPath,false),"Picker/mass fixture import failed");
+    auto* messages = widget<QTextEdit>(window, QStringLiteral("motionOutput"));
+    const auto warning = QStringLiteral("运动副轴向需要核对");
+    emit MxFunctions::mGlobalSignals::getInstance()->outputMessageSig(1, warning, false);
+    const auto record = messages->document()->lastBlock();
+    const auto colors = record.layout()->formats();
+    require(record.text().contains(warning) && !colors.isEmpty()
+        && colors.front().format.foreground().color().blue() == 255,
+        QStringLiteral("The original motion panel warning lost its message color"));
     auto* tree=widget<QTreeWidget>(window,"mTreeView");
     auto* viewport=widget<OccViewport>(window,"occViewport");
     window.command(Command::Top)->trigger();QApplication::processEvents();
@@ -1185,10 +1447,17 @@ int runMotionOccBodyDriveDesktopSmoke(const QString& outputDirectory)
         auto* dock = widget<ads::CDockWidget>(window, "Info");
         auto* manager = dock->dockManager();
         const auto checkMode = [](QWidget& panel, const QString& mode) {
+            auto* typeSection = widget<MechMainWindow::FoldSection>(panel, "bodyDriveTypeSection");
+            auto* field = widget<QComboBox>(*typeSection, "native_bodyDriveMode");
+            require(typeSection->isExpanded() && !field->isEnabled() && field->currentData().toString() == mode
+                && !panel.findChild<QWidget*>("native_name") && !panel.findChild<QWidget*>("native_enabled"),
+                "Body drive type is not shown cleanly in the type section without name/enabled");
             auto* target = widget<MechMainWindow::FoldSection>(panel, "bodyDriveTargetSection");
-            auto* field = widget<QComboBox>(*target, "native_bodyDriveMode");
-            require(target->isExpanded() && !field->isEnabled() && field->currentData().toString() == mode,
-                "Body drive type is not shown and locked in the target section");
+            auto* targetCombo = widget<QComboBox>(*target, "native_targetBodyId");
+            auto* refCombo = widget<QComboBox>(*target, "native_referenceBodyId");
+            require(target->isExpanded() && refCombo->itemData(0).toInt() == -1
+                && refCombo->itemText(0).trimmed().isEmpty() && !targetCombo->currentText().contains('['),
+                "Body drive endpoints do not use blank ground and plain body names");
             require(widget<MechMainWindow::FoldSection>(panel, "bodyDriveCoordinateSection")->isExpanded(),
                 "Body drive coordinates are not grouped in an expanded section");
         };
@@ -1361,13 +1630,16 @@ int runMotionOccBodyDriveDesktopSmoke(const QString& outputDirectory)
 }
 #endif
 
+int runMotionOccForceEditorSmoke(const QString& outputDirectory)
+{
+    return runNativeForceEditorSmoke(outputDirectory);
+}
+
 int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory)
 {
 #ifdef MX_MOTION_OCC_COMPAT
-    // The previous assertions below target the removed generated JSON forms.
-    // Keep the command-line/CI entry stable while exercising the original GUI.
     extern int runMotionOccOriginalGuiSmoke(QApplication&,const QString&);
-    return runMotionOccOriginalGuiSmoke(*qobject_cast<QApplication*>(QCoreApplication::instance()),outputDirectory);
+    return runMotionOccOriginalGuiSmoke(*qobject_cast<QApplication*>(QCoreApplication::instance()), outputDirectory);
 #else
     using namespace MotionOcc;
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -1398,23 +1670,7 @@ int runMotionOccNativeDesktopSmoke(QApplication&, const QString& outputDirectory
         requireOriginalIcon(node(*tree, ModelNode::Animation, 0), ":/mMainWidgets/Icon/post/animation.png");
         requireOriginalIcon(node(*tree, ModelNode::Curves, 0), ":/mMainWidgets/Icon/BrowserTree/motion_curveChildItem.png");
         log("Public STEP + original JSON import: two bodies, native IDs 0/37, geometry IDs 901/205, scenario ID 0");
-        window.command(Command::AddSoftStop)->trigger();
-        auto* stop = widget<QWidget>(window, "nativeEditor_softStops");
-        widget<QLineEdit>(*stop, "native_name")->setText(QStringLiteral("桌面止挡"));
-        choose(*stop, "bodyIId", 0); choose(*stop, "bodyJId", -1);
-        vector(*stop, QStringLiteral("作用点 I"), 25,0,0); vector(*stop, QStringLiteral("作用点 J"), 0,0,-100);
-        vector(*stop, QStringLiteral("方向"), 1,0,0);
-        number(*stop, "stopPosition", 20); number(*stop, "stiffness", 0.25); number(*stop, "damping", 0.001);
-        widget<QPushButton>(*stop, "motionApplyButton")->click();
-        require(node(*tree, ModelNode::Native, 1, "softStops"), "New stop parameters did not commit");
-        window.command(Command::AddTensionCable)->trigger();
-        auto* cable = widget<QWidget>(window, "nativeEditor_tensionCables");
-        widget<QLineEdit>(*cable, "native_name")->setText(QStringLiteral("桌面只拉绳索"));
-        choose(*cable, "bodyIId", 0); choose(*cable, "bodyJId", -1);
-        vector(*cable, QStringLiteral("作用点 I"), 25,0,0); vector(*cable, QStringLiteral("作用点 J"), 0,0,-100);
-        number(*cable, "freeLength", 95); number(*cable, "stiffness", 0.01); number(*cable, "damping", 0.001);
-        widget<QPushButton>(*cable, "motionApplyButton")->click();
-        require(node(*tree, ModelNode::Native, 1, "tensionCables"), "New tension cable parameters did not commit");
+        createNativeStopAndCable(window, *tree, output);
         selectSpringType(window);
         auto* spring = widget<QWidget>(window, "nativeEditor_springs");
         widget<QLineEdit>(*spring, "native_name")->setText(QStringLiteral("桌面体点弹簧"));

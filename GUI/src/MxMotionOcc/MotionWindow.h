@@ -20,7 +20,7 @@ class QAction;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
-class QPlainTextEdit;
+class QTextEdit;
 class QProcess;
 class QProgressBar;
 class QPushButton;
@@ -72,10 +72,12 @@ enum class Command {
     GenerateMesh, RemoveMesh, ExportMesh,
     AddBody, BatchBodies, AddRevolute, AddPrismatic, AddFixed, AddSpeedDrive, AddPositionDrive,
     NewScenario, Solve, StopSolve, LoadRigidExample,
+    ShowAnimation, ShowResultCurves, ExportResult,
     ImportMotionJson, ExportMotionJson, AddNativeJoint, AddCoupling, AddSpring,
     AddVectorForce, AddScalarForce, AddScalarTorque, AddThreePointForce, AddThreePointTorque,
     AddContact, AddMarker, AddSensor, AddController, AddControlInput, AddAutoFlex,
-    AddSoftStop, AddTensionCable,
+    AddSoftStop, AddTensionCable, AddHydraulicCylinder, EditHydraulicFluid,
+    ModelCheck, ConstraintDiagnostics,
     ResetLayout, ManageLayout, QuickShot, About, Exit
 };
 
@@ -92,6 +94,9 @@ public:
     bool importMotionJson(const QString& path, bool interactiveBinding = true);
     bool startMotionJsonImport(const QString& path, std::function<void(bool)> finished = {});
     bool geometryImportInProgress() const { return m_importingGeometry; }
+    void cancelGeometryImport();
+    void showModelDiagnostics(bool focusConstraints = false);
+    void editHydraulicFluid();
     void dispatchOriginalMotionAction(const QString& action, const QVariant& argument = {});
 
 signals:
@@ -158,10 +163,14 @@ private:
     void updateActions();
     void syncViewport(bool fit = false, const std::shared_ptr<const PreparedCadScene>& prepared = {},
                       const std::vector<int>& preparedPartIds = {});
-    void selectPart(int id);
+    void selectPart(int id, const QString& selectedGroup = {});
+    void refreshMotionSymbols();
     void filterTree();
     void showPartMenu(const QPoint& position);
     void setNotice(const QString& message, bool error = false);
+    enum class NoticeLevel { Normal, Warning, Error };
+    void setStatusNotice(const QString& message, NoticeLevel level = NoticeLevel::Normal);
+    void appendOutput(const QString& message, NoticeLevel level = NoticeLevel::Normal, bool outputTime = true);
     void addPrimitive(Primitive primitive);
     void openCadDialog(bool addToModel);
     void saveCad(bool all);
@@ -194,6 +203,7 @@ private:
     void clearResults();
     void startRigidSolve(int scenarioId);
     void pollRigidSolve();
+    int scenarioForResultCommand() const;
     void showRigidResult(ModelNode node);
     void seekRigidTime(double seconds);
     void setPlayback(bool play);
@@ -283,6 +293,9 @@ private:
     QComboBox* m_sortType = nullptr;
     QLabel* m_parameterTitle = nullptr;
     QLabel* m_parameterDetails = nullptr;
+    QWidget* m_partSettings = nullptr;
+    QSlider* m_partTransparencySlider = nullptr;
+    QDoubleSpinBox* m_partTransparencySpin = nullptr;
     QVBoxLayout* m_parameterLayout = nullptr;
     QWidget* m_editor = nullptr;
     ads::CDockWidget* m_curveDock = nullptr;
@@ -315,8 +328,10 @@ private:
     QVector<SelectedPartGeometry> m_pendingPartSelection;
     QFutureWatcher<SelectionInfo>* m_partSelectionWorker = nullptr;
     quint64 m_selectionInfoRevision = 0;
-    QPlainTextEdit* m_output = nullptr;
+    QTextEdit* m_output = nullptr;
     QProgressBar* m_progress = nullptr;
+    QPushButton* m_cancelImportButton = nullptr;
+    quint64 m_importGeneration = 0;
     QProcess* m_worker = nullptr;
     QTimer* m_meshTimeout = nullptr;
     std::unique_ptr<QTemporaryDir> m_jobDir;

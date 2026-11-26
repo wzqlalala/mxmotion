@@ -17,6 +17,7 @@
 #include <QPainter>
 #include <QQuaternion>
 #include <QResizeEvent>
+#include <QSet>
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QVector2D>
@@ -175,10 +176,17 @@ struct Part {
     QVector3D origin; // shared rest-space origin for CAD and FEM rendering
     bool deformed = false;
     bool suppressed = false;
+    int transparencyPercent = 0;
+    QColor displayColor;
 
     bool usesMesh(OccViewport::DisplayMode mode) const
     {
         return (deformed || mode == OccViewport::DisplayMode::Mesh) && !mesh.triangles.empty();
+    }
+
+    float opacity(OccViewport::DisplayMode mode) const
+    {
+        return usesMesh(mode) ? 1.0f : (100 - transparencyPercent) / 100.0f;
     }
 };
 
@@ -734,6 +742,8 @@ public:
     struct PartData {
         std::shared_ptr<const Geometry> display;
         std::shared_ptr<const CadPickGeometry> picks;
+        int transparencyPercent;
+        QColor displayColor;
     };
 
     std::vector<int> partIds;
@@ -995,7 +1005,8 @@ PreparedCadScene::PartData prepareCadPart(const CadPart& part)
         if (!normalise(normal)) continue;
         for (int axis = 0; axis < 3; ++axis) render.vertices[i].normal[axis] = float(normal[axis]);
     }
-    return {std::make_shared<Geometry>(std::move(render)), std::make_shared<CadPickGeometry>(cadPickGeometry(part))};
+    return {std::make_shared<Geometry>(std::move(render)), std::make_shared<CadPickGeometry>(cadPickGeometry(part)),
+            part.transparencyPercent, part.displayColor};
 }
 
 const PreparedCadScene::PartData* findPreparedCadPart(const PreparedCadScene* scene, int id,
@@ -1036,10 +1047,21 @@ void OccViewport::setScene(const CadDocument& document, const std::map<int, FemM
         const auto* data = findPreparedCadPart(prepared.get(), original == originalIds.end() ? part.id : original->second,
                                                part.shape);
         if (!data) data = findPreparedCadPart(m_state->cadScene.get(), part.id, part.shape);
-        if (data) scene->parts.emplace(part.id, *data);
+        if (data) scene->parts.emplace(part.id, PreparedCadScene::PartData{
+            data->display, data->picks, part.transparencyPercent, part.displayColor});
         else if (!hidden.count(part.id)) scene->parts.emplace(part.id, prepareCadPart(part));
     }
     applyPreparedScene(scene, meshes, hidden);
+}
+
+void OccViewport::setPartTransparency(int partId, int percent)
+{
+    updatePeers([&](OccViewport& peer) { peer.setPartTransparency(partId, percent); });
+    const auto part = std::find_if(m_state->parts.begin(), m_state->parts.end(),
+        [partId](const auto& item) { return item.id == partId; });
+    if (part == m_state->parts.end() || part->transparencyPercent == percent) return;
+    part->transparencyPercent = percent;
+    update();
 }
 
 void OccViewport::applyPreparedScene(const std::shared_ptr<const PreparedCadScene>& scene,
@@ -1055,6 +1077,8 @@ void OccViewport::applyPreparedScene(const std::shared_ptr<const PreparedCadScen
         if (hidden.count(id)) continue;
         const auto& prepared = scene->parts.at(id);
         Part copy{id, prepared.display, {}, {}};
+        copy.transparencyPercent = prepared.transparencyPercent;
+        copy.displayColor = prepared.displayColor;
         auto& topology = pickGeometry[id];
         topology.cad = prepared.picks;
         const auto found = meshes.find(id);
@@ -2057,6 +2081,61 @@ void OccViewport::paintGL()
         program.setUniformValue("uPartToPivot", toPivot);
     };
     const bool wireframe = s.mode == DisplayMode::Wireframe;
+    std::vector<std::pair<double, std::size_t>> transparent;
+    for (std::size_t i = 0; i < s.buffers.size(); ++i) {
+        const auto& part = s.parts[i];
+        const float opacity = part.opacity(s.mode);
+        if (part.suppressed || opacity <= 0.0f || opacity >= 1.0f) continue;
+        const auto* pose = s.poseFor(part.id);
+        const auto center = pose ? pose->relativePoint(vec(part.origin), pivot) : subtract(vec(part.origin), pivot);
+        const double depth = frame.view(2, 0) * center[0] + frame.view(2, 1) * center[1] + frame.view(2, 2) * center[2];
+        transparent.emplace_back(depth, i);
+    }
+    std::sort(transparent.begin(), transparent.end());
+
+    const auto setupSurface = [&] {
+        setup(*s.surface);
+        s.surface->setUniformValue("uNormal", frame.normal);
+        s.surface->setUniformValue("uOutline", false);
+        s.surface->setUniformValue("uHighlight", false);
+    };
+    const auto drawSurface = [&](std::size_t i, float opacity) {
+        const auto& part = s.parts[i];
+        const bool meshed = part.usesMesh(s.mode);
+        const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
+        if (!gpu.triangleCount) return;
+        const bool hovered = !s.pickActive && s.selectionFilter == PickKind::Part &&
+                             s.pickEnabled && s.hover.partId == part.id;
+        const auto cadColor = part.displayColor.isValid()
+            ? QVector3D(float(part.displayColor.redF()), float(part.displayColor.greenF()), float(part.displayColor.blueF()))
+            : rgb(110, 129, 151);
+        const auto color = part.id == s.selected ? rgb(63, 137, 216) :
+                           hovered ? rgb(156, 115, 166) :
+                           meshed ? rgb(138, 166, 189) : cadColor;
+        setPose(*s.surface, part);
+        s.surface->setUniformValue("uFlat", meshed);
+        s.surface->setUniformValue("uScalars", meshed && s.scalarParts.count(part.id) != 0);
+        s.surface->setUniformValue("uColor", color);
+        s.surface->setUniformValue("uOpacity", opacity);
+        gl.glBindVertexArray(gpu.vao);
+        gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.triangles);
+        gl.glDrawElements(GL_TRIANGLES, gpu.triangleCount, GL_UNSIGNED_INT, nullptr);
+    };
+    const auto drawEdges = [&](std::size_t i, float opacity) {
+        const auto& part = s.parts[i];
+        const bool meshed = part.usesMesh(s.mode), selected = part.id == s.selected;
+        const auto& geometry = meshed ? part.mesh : *part.cad;
+        const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
+        if (!gpu.edgeCount || !showsEdges(s.mode, geometry)) return;
+        const auto color = selected ? rgb(15, 78, 150) : (meshed ? rgb(31, 67, 95) : rgb(42, 57, 75));
+        setPose(*s.edge, part);
+        s.edge->setUniformValue("uColor", QVector4D(color, opacity * (meshed ? 0.8f : 0.94f)));
+        s.edge->setUniformValue("uWidthPixels", (selected ? 1.75f : (meshed ? 1.0f : 1.25f)) * dpr);
+        gl.glBindVertexArray(gpu.vao);
+        gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.edges);
+        gl.glDrawElements(GL_LINES, gpu.edgeCount, GL_UNSIGNED_INT, nullptr);
+    };
+
     gl.glEnable(GL_DEPTH_TEST);
     gl.glDepthFunc(GL_LESS);
     if (!wireframe && !s.buffers.empty()) {
@@ -2074,30 +2153,12 @@ void OccViewport::paintGL()
             gl.glStencilFunc(GL_ALWAYS, 1, 1);
             gl.glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
         }
-        setup(*s.surface);
-        s.surface->setUniformValue("uNormal", frame.normal);
-        s.surface->setUniformValue("uOutline", false);
-        s.surface->setUniformValue("uHighlight", false);
+        setupSurface();
         gl.glEnable(GL_POLYGON_OFFSET_FILL);
         gl.glPolygonOffset(1.0f, 1.0f);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
             const auto& part = s.parts[i];
-            if (part.suppressed) continue;
-            const bool meshed = part.usesMesh(s.mode);
-            const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
-            if (!gpu.triangleCount) continue;
-            const bool hovered = !s.pickActive && s.selectionFilter == PickKind::Part &&
-                                 s.pickEnabled && s.hover.partId == part.id;
-            const auto color = part.id == s.selected ? rgb(63, 137, 216) :
-                               hovered ? rgb(156, 115, 166) :
-                               meshed ? rgb(138, 166, 189) : rgb(110, 129, 151);
-            setPose(*s.surface, part);
-            s.surface->setUniformValue("uFlat", meshed);
-            s.surface->setUniformValue("uScalars", meshed && s.scalarParts.count(part.id) != 0);
-            s.surface->setUniformValue("uColor", color);
-            gl.glBindVertexArray(gpu.vao);
-            gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.triangles);
-            gl.glDrawElements(GL_TRIANGLES, gpu.triangleCount, GL_UNSIGNED_INT, nullptr);
+            if (!part.suppressed && part.opacity(s.mode) == 1.0f) drawSurface(i, 1.0f);
         }
         gl.glDisable(GL_POLYGON_OFFSET_FILL);
         if (silhouette) {
@@ -2111,7 +2172,7 @@ void OccViewport::paintGL()
             s.surface->setUniformValue("uOutlinePixels", 1.05f * dpr);
             for (std::size_t i = 0; i < s.buffers.size(); ++i) {
                 const auto& part = s.parts[i];
-                if (part.suppressed) continue;
+                if (part.suppressed || part.opacity(s.mode) != 1.0f) continue;
                 const auto& gpu = part.usesMesh(s.mode) ? s.buffers[i].mesh : s.buffers[i].cad;
                 if (!gpu.triangleCount) continue;
                 setPose(*s.surface, part);
@@ -2135,19 +2196,33 @@ void OccViewport::paintGL()
         s.edge->setUniformValue("uDepthBiasNdc", wireframe ? 0.0f : depthBias);
         for (std::size_t i = 0; i < s.buffers.size(); ++i) {
             const auto& part = s.parts[i];
-            if (part.suppressed) continue;
-            const bool meshed = part.usesMesh(s.mode), selected = part.id == s.selected;
-            const auto& geometry = meshed ? part.mesh : *part.cad;
-            const auto& gpu = meshed ? s.buffers[i].mesh : s.buffers[i].cad;
-            if (!gpu.edgeCount || !showsEdges(s.mode, geometry)) continue;
-            const auto color = selected ? rgb(15, 78, 150) : (meshed ? rgb(31, 67, 95) : rgb(42, 57, 75));
-            setPose(*s.edge, part);
-            s.edge->setUniformValue("uColor", QVector4D(color, meshed ? 0.8f : 0.94f));
-            s.edge->setUniformValue("uWidthPixels", (selected ? 1.75f : (meshed ? 1.0f : 1.25f)) * dpr);
-            gl.glBindVertexArray(gpu.vao);
-            gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.edges);
-            gl.glDrawElements(GL_LINES, gpu.edgeCount, GL_UNSIGNED_INT, nullptr);
+            if (!part.suppressed && part.opacity(s.mode) == 1.0f) drawEdges(i, 1.0f);
         }
+        s.edge->release();
+    }
+    if (!transparent.empty()) {
+        // 保留不透明物体的深度，透明件从远到近叠加，不遮挡背后的实体和云图。
+        gl.glDepthMask(GL_FALSE);
+        if (!wireframe) {
+            gl.glDepthFunc(GL_LESS);
+            gl.glEnable(GL_POLYGON_OFFSET_FILL);
+            gl.glEnable(GL_CULL_FACE);
+            setupSurface();
+            for (const auto& entry : transparent) {
+                const auto i = entry.second;
+                const float opacity = s.parts[i].opacity(s.mode);
+                gl.glCullFace(GL_FRONT);
+                drawSurface(i, opacity);
+                gl.glCullFace(GL_BACK);
+                drawSurface(i, opacity);
+            }
+            s.surface->release();
+            gl.glDisable(GL_CULL_FACE);
+            gl.glDisable(GL_POLYGON_OFFSET_FILL);
+        }
+        gl.glDepthFunc(GL_LEQUAL);
+        setup(*s.edge);
+        for (const auto& entry : transparent) drawEdges(entry.second, s.parts[entry.second].opacity(s.mode));
         s.edge->release();
     }
     drawCadPickFeedback();
@@ -2325,12 +2400,20 @@ void OccViewport::drawMotionSymbols()
     if (s.symbols.isEmpty() && s.auxiliarySymbols.empty()) return;
     std::vector<const MotionSymbol*> symbols;
     std::set<std::pair<QString,int>> originalEntities;
-    for(const auto& layer:s.auxiliarySymbols)for(const auto& symbol:layer.second)
-        if(symbol.id>=0&&(!symbol.linePoints.empty()||!symbol.trianglePoints.empty()))
-            originalEntities.emplace(symbol.collection,symbol.id);
+    QSet<int> visibleJoints;
+    for (const auto& symbol : s.symbols)
+        if (symbol.collection == "joints") visibleJoints.insert(symbol.id);
+    // 原编辑器会缓存绘制过的符号。辅助层采用同一组可见运动副，避免切换节点后残留。
+    for (const auto& layer : s.auxiliarySymbols) for (const auto& symbol : layer.second) {
+        if (symbol.collection == "joints" && !visibleJoints.contains(symbol.id)) continue;
+        if (symbol.id >= 0 && (!symbol.linePoints.empty() || !symbol.trianglePoints.empty()))
+            originalEntities.emplace(symbol.collection, symbol.id);
+        symbols.push_back(&symbol);
+    }
+    const auto firstAuxiliary = symbols.size();
     for(const auto& symbol:s.symbols)
         if(!originalEntities.count({symbol.collection,symbol.id}))symbols.push_back(&symbol);
-    for(const auto& layer:s.auxiliarySymbols)for(const auto& symbol:layer.second)symbols.push_back(&symbol);
+    std::rotate(symbols.begin(), symbols.begin() + firstAuxiliary, symbols.end());
     // Original Motion symbols use depth=false and world coordinates. Preserve
     // that overlay path; explicit depth=true symbols use the scene's GL depth.
     const auto frame=s.camera.frame(size(),s.bounds);

@@ -21,7 +21,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
@@ -86,7 +86,7 @@ void checkImportedMnfContours(QApplication& app, MotionWindow& window, const QDi
         return scenario && scenario->hasResult() && !window.command(Command::StopSolve)->isEnabled();
     }, 95000);
     if (!solved) {
-        const auto* messages = window.findChild<QPlainTextEdit*>();
+        const auto* messages = window.findChild<QTextEdit*>(QStringLiteral("motionOutput"));
         require(false, QStringLiteral("The imported MNF project did not publish accepted results.\n%1")
             .arg(messages ? messages->toPlainText().right(3000) : QString{}));
     }

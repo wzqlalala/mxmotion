@@ -230,6 +230,10 @@ void NativeMotionSystem::projectAcceptedPositions(bool timeAdjusted)
     correction.setZero(system.GetNcoords_v(),&system);
     motion::MotionVectorDynamic<> residual(system.GetNcoords_v()),constraints(system.GetNconstr()),reactions(system.GetNconstr());
     residual.setZero();
+    // 线性化积分后以 M + Δt²K 闭合独立柔性接口，避免将约束残差转化为人工弹性变形。
+    const bool useFlexStiffness = (!importedMnfBodyIds.empty() || weightIndependentFlexProjectionWithStiffness) &&
+        GetTimestepper()->GetType() == motion::MotionTimestepper::Type::EULER_IMPLICIT_LINEARIZED;
+    const double stiffnessFactor = useFlexStiffness ? -acceptedStepSize*acceptedStepSize : 0.0;
     double time=0;
     {
         system.DescriptorPrepareInject(*system.GetSystemDescriptor());
@@ -251,7 +255,7 @@ void NativeMotionSystem::projectAcceptedPositions(bool timeAdjusted)
             if(constraints.size()==0||constraints.cwiseAbs().maxCoeff()<=positionTolerance)break;
             if (useBilateralQr) usedBilateralProjectionSolver = true;
             correction.setZero(system.GetNcoords_v(),&system);reactions.setZero();
-            if(!system.StateSolveCorrection(correction,reactions,residual,constraints,1.0,0.0,0.0,
+            if(!system.StateSolveCorrection(correction,reactions,residual,constraints,1.0,0.0,stiffnessFactor,
                                             position,velocity,time,false,false,true)||!correction.allFinite())
                 throw std::runtime_error("位置约束投影求解失败。请检查闭环约束与求解器设置。");
             // A joint on the rigid reference has no elastic position

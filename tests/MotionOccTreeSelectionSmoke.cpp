@@ -17,7 +17,7 @@
 #include <QFile>
 #include <QLabel>
 #include <QMouseEvent>
-#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -141,7 +141,7 @@ int runMotionOccTreeSelectionSmoke(const QString& outputDirectory, const QString
         window.resize(1440, 960);
         window.show();
         if (!window.importMotionJson(input, false)) {
-            const auto* console = window.findChild<QPlainTextEdit*>();
+            const auto* console = window.findChild<QTextEdit*>(QStringLiteral("motionOutput"));
             throw std::runtime_error(QStringLiteral("运动文件导入失败\n%1")
                 .arg(console ? console->toPlainText().right(3000) : QString{}).toStdString());
         }

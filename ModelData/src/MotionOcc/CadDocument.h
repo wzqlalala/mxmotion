@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QColor>
 #include <QMap>
 #include <QString>
 #include <QStringList>
@@ -39,6 +40,9 @@ struct CadPart {
     QString instancePath; // Stable XCAF instance path within its source document.
     // 非空时，STEP 的米制表示通过校验，毫米 BREP 仅用于保留原几何及装配身份。
     TopoDS_Shape metreDisplaySource;
+    int transparencyPercent = 0;
+    QColor displayColor;
+    bool tessellatedDisplayOnly = false;
 };
 
 // Single-threaded document API. IDs are positive and are not reused, even after clear().
@@ -47,6 +51,7 @@ class CadDocument {
 public:
     const std::vector<CadPart>& parts() const;
     const CadPart* part(int id) const;
+    bool setPartTransparency(int id, int percent);
     // 全部部件的显示包围盒对角线（毫米），仅用于界面标记缩放。
     double displayBoundsDiagonal() const;
     const QStringList& importNotes() const { return m_importNotes; }
@@ -84,6 +89,9 @@ private:
         QString instancePath;
         ProjectPartEncoding encoding = ProjectPartEncoding::LegacyBrep;
         std::array<double, 12> placement{};
+        int transparencyPercent = 0;
+        QColor displayColor;
+        bool tessellatedDisplayOnly = false;
     };
     static bool encodeProjectStep(const CadPart&, QByteArray& geometry, std::array<double, 12>& placement,
                                   int maxBytes, QString& error);

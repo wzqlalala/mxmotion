@@ -686,10 +686,19 @@ bool saveRigidProject(const QString& path, const CadDocument& cad, const RigidMo
                 {"placement", placementJson}};
             if (!part.sourceName.isEmpty()) row.insert(QStringLiteral("sourceName"), part.sourceName);
             if (!part.instancePath.isEmpty()) row.insert(QStringLiteral("instancePath"), part.instancePath);
+            if (part.transparencyPercent != 0) row.insert(QStringLiteral("transparencyPercent"), part.transparencyPercent);
+            if (part.displayColor.isValid()) {
+                const auto color = part.displayColor.rgba64();
+                row.insert(QStringLiteral("displayColor"), QStringLiteral("#%1%2%3")
+                    .arg(color.red(), 4, 16, QLatin1Char('0')).arg(color.green(), 4, 16, QLatin1Char('0'))
+                    .arg(color.blue(), 4, 16, QLatin1Char('0')));
+            }
+            if (part.tessellatedDisplayOnly) row.insert(QStringLiteral("tessellatedDisplayOnly"), true);
             parts.append(row);
             if (referencedParts.contains(part.id))
                 referenceShapes.push_back({part.id, partName, std::move(step), part.sourceName,
-                    part.instancePath, CadDocument::ProjectPartEncoding::Step, placement});
+                    part.instancePath, CadDocument::ProjectPartEncoding::Step, placement,
+                    part.transparencyPercent, part.displayColor, part.tessellatedDisplayOnly});
         }
         if (!referenceShapes.empty()) {
             // Verify selections still resolve after STEP translation before replacing an existing file.
@@ -742,13 +751,24 @@ bool loadRigidProject(const QString& path, CadDocument& cad, RigidModel& model, 
                 auto data = item.toObject();
                 const auto sourceName = data.take(QStringLiteral("sourceName"));
                 const auto instancePath = data.take(QStringLiteral("instancePath"));
+                const auto transparencyValue = data.take(QStringLiteral("transparencyPercent"));
+                const auto colorValue = data.take(QStringLiteral("displayColor"));
+                const auto tessellatedValue = data.take(QStringLiteral("tessellatedDisplayOnly"));
+                const int transparency = transparencyValue.isUndefined() ? 0 :
+                    static_cast<int>(integer(transparencyValue, 0, 100, "transparencyPercent"));
+                const QColor displayColor(colorValue.toString());
+                require(colorValue.isUndefined() || (colorValue.isString() && displayColor.isValid()),
+                    QStringLiteral("部件显示颜色无效。"));
+                require(tessellatedValue.isUndefined() || (tessellatedValue.isBool() && !legacy),
+                    QStringLiteral("部件的三角显示标记无效。"));
                 require((sourceName.isUndefined() || sourceName.isString()) && (instancePath.isUndefined() || instancePath.isString()),
                     QStringLiteral("Invalid CAD instance metadata."));
                 const auto value = item.isObject() ? QJsonValue(data) : item;
                 if (legacy) {
                     const auto row = record(value, {"id", "name", "brep"}, "CAD part");
                     parts.push_back({id(row), name(row), readEmbeddedPayload(row.value("brep"), kMaxPartBytes, remaining),
-                        checkedName(sourceName.toString()), instancePath.toString()});
+                        checkedName(sourceName.toString()), instancePath.toString(), CadDocument::ProjectPartEncoding::LegacyBrep,
+                        {}, transparency, displayColor});
                 } else {
                     const auto row = record(value, {"id", "name", "geometry", "placement"}, "CAD part");
                     const auto geometry = record(row.value("geometry"), {"format", "encoding", "data"}, "CAD geometry");
@@ -757,7 +777,7 @@ bool loadRigidProject(const QString& path, CadDocument& cad, RigidModel& model, 
                             QStringLiteral("Unsupported embedded CAD format or encoding."));
                     parts.push_back({id(row), name(row), readEmbeddedPayload(geometry.value("data"), kMaxPartBytes, remaining),
                         checkedName(sourceName.toString()), instancePath.toString(), CadDocument::ProjectPartEncoding::Step,
-                        readPlacement(row.value("placement"))});
+                        readPlacement(row.value("placement")), transparency, displayColor, tessellatedValue.toBool()});
                 }
             }
         }

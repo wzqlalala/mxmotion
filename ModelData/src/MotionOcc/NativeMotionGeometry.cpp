@@ -664,6 +664,8 @@ bool prepareNativeMotion(const CadDocument& cad, const NativeMotionDocument& doc
         };
         for (const auto& value : document.collection("contacts")) {
             const auto c=value.toObject(); if (!c.value("enabled").toBool(true)) continue;
+            // 解析代理有独立接触形状，不使用运动体的显示三角网。
+            if (c.contains("analyticContact")) continue;
             ensureMesh(c.value("actionBodyId").toInt(-1)); ensureMesh(c.value("baseBodyId").toInt(-1));
         }
         for (const auto& value : document.collection("joints")) {

@@ -26,6 +26,7 @@
 #ifdef MX_OCC_DESKTOP_SMOKE
 int runMotionOccDesktopSmoke(QApplication& app, const QString& outputDirectory);
 int runMotionOccNativeDesktopSmoke(QApplication& app, const QString& outputDirectory);
+int runMotionOccForceEditorSmoke(const QString& outputDirectory);
 #ifdef MX_HAS_BODY_DRIVES
 int runMotionOccBodyDriveDesktopSmoke(const QString& outputDirectory);
 #endif
@@ -99,6 +100,9 @@ int main(int argc, char* argv[])
     args.addOption(smoke);
     const QCommandLineOption nativeSmoke(QStringLiteral("native-desktop-smoke"), QStringLiteral("Run the native motion desktop regression."), QStringLiteral("directory"));
     args.addOption(nativeSmoke);
+    const QCommandLineOption forceEditorSmoke(QStringLiteral("force-editor-smoke"),
+        QStringLiteral("验证止挡和只拉绳索编辑器、工程保存及求解。"), QStringLiteral("directory"));
+    args.addOption(forceEditorSmoke);
 #ifdef MX_HAS_BODY_DRIVES
     const QCommandLineOption bodyDriveSmoke(QStringLiteral("body-drive-desktop-smoke"),
         QStringLiteral("验证运动体驱动的入口、编辑器和工程保存。"), QStringLiteral("directory"));
@@ -171,6 +175,7 @@ int main(int argc, char* argv[])
 #ifdef MX_OCC_DESKTOP_SMOKE
     if (args.isSet(smoke)) return runMotionOccDesktopSmoke(app, args.value(smoke));
     if (args.isSet(nativeSmoke)) return runMotionOccNativeDesktopSmoke(app, args.value(nativeSmoke));
+    if (args.isSet(forceEditorSmoke)) return runMotionOccForceEditorSmoke(args.value(forceEditorSmoke));
 #ifdef MX_HAS_BODY_DRIVES
     if (args.isSet(bodyDriveSmoke)) return runMotionOccBodyDriveDesktopSmoke(args.value(bodyDriveSmoke));
 #endif

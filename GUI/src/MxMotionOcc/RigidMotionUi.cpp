@@ -29,7 +29,6 @@
 #include <QLineEdit>
 #include <QMatrix4x4>
 #include <QProgressBar>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QPointer>
 #include <QQuaternion>
@@ -174,7 +173,20 @@ void MotionWindow::createRigidCommands()
         if (m_running) m_running->stop.store(true, std::memory_order_relaxed);
         updateActions();
     });
+    add(Command::ModelCheck, tr("模型检查"), "joint_fixed.png", [this] { showModelDiagnostics(false); });
+    add(Command::ConstraintDiagnostics, tr("约束诊断"), "joint_fixed.png", [this] { showModelDiagnostics(true); });
     add(Command::LoadRigidExample, tr("刚体示例"), "movingBody.png", [this] { loadRigidExample(); });
+    const auto addResult = [this](Command id, const QString& text, const char* icon, ModelNode::Kind kind) {
+        auto* action = new QAction(TreeIcons::item(QString::fromLatin1(icon)), text, this);
+        m_commands.emplace(id, action);
+        connect(action, &QAction::triggered, this, [this, kind] {
+            const int scenarioId = scenarioForResultCommand();
+            if (m_projectActive && scenarioId >= 0) showRigidResult({kind, scenarioId});
+        });
+    };
+    addResult(Command::ShowAnimation, tr("动画"), "animation", ModelNode::Animation);
+    addResult(Command::ShowResultCurves, tr("运动曲线"), "curves", ModelNode::Curves);
+    addResult(Command::ExportResult, tr("结果导出"), "export", ModelNode::Export);
     createNativeCommands();
 }
 
@@ -374,15 +386,21 @@ void MotionWindow::updateRigidActions()
     command(Command::AddPositionDrive)->setEnabled(idle && canDrive);
     command(Command::NewScenario)->setEnabled(idle);
     command(Command::LoadRigidExample)->setEnabled(idle);
+    command(Command::ModelCheck)->setEnabled(idle && (!m_document.parts().empty() || !m_model.bodies.empty()));
+    command(Command::ConstraintDiagnostics)->setEnabled(idle && (!m_document.parts().empty() || !m_model.bodies.empty()));
     command(Command::StopSolve)->setEnabled(m_running && !m_running->stop.load());
+    const bool hasResult = scenarioForResultCommand() >= 0;
+    for (const auto id : {Command::ShowAnimation, Command::ShowResultCurves, Command::ExportResult})
+        command(id)->setEnabled(hasResult);
     command(Command::ImportMotionJson)->setEnabled(idle);
     command(Command::ExportMotionJson)->setEnabled(idle && !m_model.bodies.empty());
     for (const auto id : {Command::AddNativeJoint, Command::AddCoupling, Command::AddSpring,
             Command::AddVectorForce, Command::AddScalarForce, Command::AddScalarTorque,
             Command::AddThreePointForce, Command::AddThreePointTorque, Command::AddContact,
             Command::AddMarker, Command::AddSensor, Command::AddController, Command::AddControlInput,
-            Command::AddAutoFlex, Command::AddSoftStop, Command::AddTensionCable})
+            Command::AddAutoFlex, Command::AddSoftStop, Command::AddTensionCable, Command::AddHydraulicCylinder})
         command(id)->setEnabled(idle && !m_model.bodies.empty());
+    command(Command::EditHydraulicFluid)->setEnabled(idle);
     if (m_model.nativeDocument) {
         const bool joints = !m_model.nativeDocument->collection(QStringLiteral("joints")).isEmpty();
         command(Command::AddSpeedDrive)->setEnabled(idle && joints);
@@ -428,7 +446,10 @@ void MotionWindow::selectRigidNode(ModelNode node)
     m_meshForm->hide();
     updateParameters();
     updateActions();
-    if (motionBusy() || m_jobPart >= 0) return;
+    if (motionBusy() || m_jobPart >= 0) {
+        if (!m_animationActive) refreshMotionSymbols();
+        return;
+    }
     switch (node.kind) {
     case ModelNode::Native: editNativeEntity(node.collection, node.id); break;
     case ModelNode::Body: editBody(node.id); break;
@@ -445,10 +466,7 @@ void MotionWindow::selectRigidNode(ModelNode node)
         break;
     default: break;
     }
-    if (!m_animationActive && m_model.nativeDocument)
-        m_viewport->setMotionSymbols(nativeMotionSymbols(m_document, *m_model.nativeDocument, {},
-            node.kind == ModelNode::Native ? node.collection : QString{},
-            node.kind == ModelNode::Native ? node.id : -1));
+    if (!m_animationActive) refreshMotionSymbols();
 }
 
 void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
@@ -503,6 +521,7 @@ void MotionWindow::showEditor(QWidget* editor)
     m_meshForm->hide();
     m_parameterTitle->hide();
     m_parameterDetails->hide();
+    m_partSettings->hide();
     m_editor = editor;
     const bool originalPanel = editor->property("mxOriginalMotionPanel").toBool();
     if (originalPanel) m_parameterLayout->setContentsMargins(0, 0, 0, 0);
@@ -561,6 +580,7 @@ void MotionWindow::closeEditor(bool immediate)
     m_parameterLayout->setStretch(m_parameterLayout->count() - 1, 1);
     m_parameterTitle->show();
     m_parameterDetails->show();
+    m_partSettings->setVisible(m_document.part(m_partId) && m_meshForm->isHidden());
 }
 
 void MotionWindow::editBody(int id)
@@ -779,6 +799,7 @@ void MotionWindow::commitRigid(RigidModel model, ModelNode selection)
     updateTree();
     updateParameters();
     updateActions();
+    refreshMotionSymbols();
     setNotice(tr("已更新运动模型。"));
 }
 
@@ -832,7 +853,7 @@ void MotionWindow::startRigidSolve(int scenarioId)
     m_progress->show();
     m_rigidPoll->start();
     updateActions();
-    setNotice(tr("MotionEngine 正在求解…"));
+    setNotice(tr("正在求解…"));
 }
 
 void MotionWindow::pollRigidSolve()
@@ -878,15 +899,19 @@ void MotionWindow::pollRigidSolve()
         m_selectionNode = {ModelNode::Scenario, id};
         updateTree();
         const auto message = run->result.termination == ResultTermination::StaticEquilibrium
-            ? tr("MotionEngine 静力平衡完成。已保存平衡构型与载荷，可打开动画查看变形或导出结果。")
+            ? tr("静力平衡完成。已保存平衡构型与载荷，可打开动画查看变形或导出结果。")
             : run->result.termination != ResultTermination::EndTime
             ? (run->result.termination == ResultTermination::FlexDivergence
-                ? tr("MotionEngine 因柔性体模态发散终止：已保留 %1 帧 / %2 s 的有效结果。")
-                : tr("MotionEngine 因几何边界终止：已保留 %1 帧 / %2 s 的有效结果。"))
+                ? tr("求解因柔性体模态发散终止：已保留 %1 帧 / %2 s 的有效结果。")
+                : tr("求解因到达几何边界终止：已保留 %1 帧 / %2 s 的有效结果。"))
                 .arg(run->result.frames.size()).arg(run->result.frames.back().seconds)
-            : tr("MotionEngine 求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
+            : tr("求解完成：%1 帧 / %2 s。请从方案下打开动画或运动曲线。")
                 .arg(run->result.frames.size()).arg(run->result.frames.back().seconds);
-        setNotice(message + (run->result.diagnostics.isEmpty() ? QString{} : QLatin1Char('\n') + run->result.diagnostics.join(QLatin1Char('\n'))));
+        const bool truncated = run->result.termination != ResultTermination::EndTime
+            && run->result.termination != ResultTermination::StaticEquilibrium;
+        setStatusNotice(message);
+        appendOutput(message, truncated ? NoticeLevel::Warning : NoticeLevel::Normal);
+        for (const auto& diagnostic : run->result.diagnostics) appendOutput(diagnostic);
         publishOriginalSolveFinished(id,true,message);
         if (!run->result.diagnostics.isEmpty()) openDock(m_outputDock);
     } else {
@@ -895,6 +920,15 @@ void MotionWindow::pollRigidSolve()
     }
     updateParameters();
     updateActions();
+}
+
+int MotionWindow::scenarioForResultCommand() const
+{
+    if (motionBusy() || m_jobPart >= 0) return -1;
+    if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves)
+        return m_results.count(m_selectionNode.id) ? m_selectionNode.id : -1;
+    // 没有选中求解方案时，只能使用项目中唯一一份已完成的结果。
+    return m_results.size() == 1 ? m_results.begin()->first : -1;
 }
 
 void MotionWindow::showRigidResult(ModelNode node)
@@ -1048,6 +1082,14 @@ void MotionWindow::stopRigidPlayback()
         seekRigidTime(it->second->result.frames.front().seconds);
 }
 
+void MotionWindow::refreshMotionSymbols()
+{
+    if (!m_viewport) return;
+    m_viewport->setMotionSymbols(m_model.nativeDocument
+        ? nativeMotionSymbols(m_document, *m_model.nativeDocument, {}, m_selectionNode.collection, m_selectionNode.id)
+        : QVector<MotionSymbol>{});
+}
+
 void MotionWindow::leaveRigidAnimation()
 {
     m_flexGlobalRanges.clear();
@@ -1065,7 +1107,7 @@ void MotionWindow::leaveRigidAnimation()
     }
     m_animationActive = false;
     if (m_viewport) m_viewport->clearPartPoses();
-    if (m_viewport && m_model.nativeDocument) m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,*m_model.nativeDocument));
+    refreshMotionSymbols();
     if (m_rigidPlot) m_rigidPlot->setTimeMarkerVisible(false);
     if (m_animationDock && !m_animationDock->isClosed()) m_animationDock->closeDockWidget();
     updatePlaybackControls();
@@ -1132,7 +1174,7 @@ bool MotionWindow::openRigidProject(const QString& path)
     updateTree();
     syncViewport(true);
     selectPart(-1);
-    for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
+    for (const auto& note : m_document.importNotes()) appendOutput(note);
     setNotice(tr("已打开项目：%1").arg(QFileInfo(path).fileName()));
     return true;
 }

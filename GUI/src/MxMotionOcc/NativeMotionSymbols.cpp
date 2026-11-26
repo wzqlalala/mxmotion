@@ -4,6 +4,7 @@
 
 #include <QJsonArray>
 #include <QQuaternion>
+#include <QSet>
 #include <QVector3D>
 
 #include <algorithm>
@@ -128,7 +129,7 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
     const auto make=[&](const QString& collection,const QJsonObject& row,const Point& origin,const QColor& color){
         MotionSymbol symbol;symbol.collection=collection;symbol.id=row.value("id").toInt(-1);
         symbol.label=row.value("name").toString();symbol.origin=origin;symbol.color=color;
-        symbol.emphasized=selectedCollection==collection&&(selectedId<0||selectedId==symbol.id);return symbol;
+        symbol.emphasized=selectedCollection==collection&&selectedId>=0&&selectedId==symbol.id;return symbol;
     };
     const auto visible=[](const QJsonObject& row){return row.value("visible").toBool(true)&&row.value("enabled").toBool(true);};
     const auto append=[&](MotionSymbol&& symbol){if(finite(symbol.origin))output.append(std::move(symbol));};
@@ -143,8 +144,28 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         auto symbol=make("bodies",row,origin,bodyColor);
         crosshair(symbol,origin,scale*.3);ring(symbol,origin,{0,0,1},scale*.2);append(std::move(symbol));
     }
-    for(const auto& value:document.collection("joints")){
-        const auto row=value.toObject();if(!visible(row))continue;
+    // 沿用原模型树的符号范围：父节点显示全组，子节点显示自身，驱动和耦合副仅显示引用项。
+    const bool showAllJoints = selectedCollection == "joints" && selectedId < 0;
+    QSet<int> selectedJoints;
+    if (selectedCollection == "joints" && selectedId >= 0) selectedJoints.insert(selectedId);
+    else if (selectedCollection == "drives" || selectedCollection == "couplings") {
+        const auto references = selectedId < 0 ? document.collection(selectedCollection)
+            : QJsonArray{document.entity(selectedCollection, selectedId)};
+        for (const auto& value : references) {
+            const auto row = value.toObject();
+            if (selectedCollection == "couplings") {
+                selectedJoints.insert(row.value("firstJointId").toInt(-1));
+                selectedJoints.insert(row.value("secondJointId").toInt(-1));
+            } else if (row.value("targetType").toString("Joint") == "Joint") {
+                selectedJoints.insert(row.value("targetJointId").toInt(-1));
+            }
+        }
+        selectedJoints.remove(-1);
+    }
+    const auto joints = showAllJoints || !selectedJoints.isEmpty() ? document.collection("joints") : QJsonArray{};
+    for(const auto& value : joints){
+        const auto row=value.toObject();
+        if ((!showAllJoints && !selectedJoints.contains(row.value("id").toInt(-1))) || !visible(row)) continue;
         const int action=row.value("actionBodyId").toInt(-1),base=row.value("baseBodyId").toInt(-1);
         const auto [origin,axis]=jointFrame(row,action);const auto type=row.value("jointType").toString();
         auto symbol=make("joints",row,origin,jointColor);
@@ -274,6 +295,38 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
             const auto origin=sensorPoint(row.value("targetBodyId").toInt(-1),*p);
             auto symbol=make("sensors",row,origin,sensorColor);crosshair(symbol,origin,scale*.4);ring(symbol,origin,{0,0,1},scale*.4);append(std::move(symbol));
         }
+    }
+    const QColor hydraulicColor(22,128,184);
+    for(const auto& value:document.collection("hydraulicCylinders")){
+        const auto row=value.toObject();if(!visible(row))continue;
+        Point a{},b{};
+        if(row.value("mountMode").toString()=="Joint"){
+            const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
+            if(joint.isEmpty())continue;
+            const int act=joint.value("actionBodyId").toInt(-1),bas=joint.value("baseBodyId").toInt(-1);
+            const auto raw=vector(joint,"origin",{0,0,0});
+            const auto axisRaw=unit(vector(joint,"axis",vector(joint,"baseSpin")));
+            const double len=std::max(50.0,row.value("stroke").toDouble(400.0))+row.value("initialStroke").toDouble(200.0);
+            b=transform(bas,raw);
+            a=transform(act,add(raw,mul(axisRaw,len)));
+        }else{
+            a=transform(row.value("bodyIId").toInt(-1),vector(row,"localI",{0,0,0}));
+            b=transform(row.value("bodyJId").toInt(-1),vector(row,"localJ",{0,0,0}));
+        }
+        const auto delta=sub(a,b);const double len=norm(delta);
+        if(len<=1e-9)continue;
+        const auto axis=mul(delta,1.0/len);const auto [u,v]=basis(axis);
+        const double barrelRadius=std::clamp(row.value("pistonDiameter").toDouble(80.0)*0.5,scale*0.25,scale*0.9);
+        const double rodRadius=barrelRadius*0.48;
+        const auto mid=add(b,mul(delta,0.58));
+        auto symbol=make("hydraulicCylinders",row,mul(add(a,b),0.5),hydraulicColor);
+        ring(symbol,b,axis,barrelRadius);ring(symbol,mid,axis,barrelRadius);
+        for(const auto& d:{u,mul(u,-1),v,mul(v,-1)})line(symbol,add(b,mul(d,barrelRadius)),add(mid,mul(d,barrelRadius)));
+        ring(symbol,mid,axis,rodRadius);ring(symbol,a,axis,rodRadius);
+        line(symbol,mid,a);
+        for(const auto& d:{u,mul(u,-1)})line(symbol,add(mid,mul(d,rodRadius)),add(a,mul(d,rodRadius)));
+        crosshair(symbol,a,scale*0.18);crosshair(symbol,b,scale*0.18);
+        append(std::move(symbol));
     }
     return output;
 }

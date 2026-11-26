@@ -3,7 +3,6 @@
 #include "MotionViewPages.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "compat/picking/LegacyPickContext.h"
-#include "NativeMotionSymbols.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
 #include "RigidProject.h"
@@ -11,6 +10,8 @@
 #include "ThemeManager.h"
 #include "UiMetrics.h"
 #include "UiPalette.h"
+#include "mChineseTextEdit.h"
+#include "mFoldSection.h"
 #include "mFloatingDockFrameless.h"
 #include "mFramelessDialog.h"
 #include "mFramelessWindowHelper.h"
@@ -35,27 +36,35 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontDatabase>
+#include <QFontInfo>
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QSlider>
 #include <QStatusBar>
+#include <QSyntaxHighlighter>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTime>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QtConcurrentRun>
 #include <algorithm>
 #include <cmath>
@@ -73,6 +82,31 @@ constexpr int nodeKindRole = Qt::UserRole + 1;
 const auto cadFilters = QStringLiteral("CAD 几何 (*.step *.stp *.iges *.igs *.brep *.brp);;STEP (*.step *.stp);;IGES (*.iges *.igs);;BREP (*.brep *.brp)");
 const auto exportFilters = QStringLiteral("STEP (*.step);;IGES (*.iges);;BREP (*.brep)");
 const auto projectFilter = QStringLiteral("MxMotion 项目 (*.mxmotion)");
+
+constexpr int outputColorRole = QTextFormat::UserProperty;
+
+class OutputHighlighter final : public QSyntaxHighlighter {
+public:
+    using QSyntaxHighlighter::QSyntaxHighlighter;
+
+protected:
+    void highlightBlock(const QString& text) override
+    {
+        const auto color = currentBlock().blockFormat().intProperty(outputColorRole);
+        if (color == 0) return;
+        const bool dark = UiPalette::theme() == UiPalette::Theme::Dark;
+        const QColor error = dark ? QColor(255, 128, 128) : QColor(Qt::red);
+        const QColor warning = dark ? QColor(123, 185, 255) : QColor(Qt::blue);
+        setFormat(0, text.size(), color == 2 ? error : warning);
+    }
+};
+
+class PartTransparencySlider final : public QSlider {
+public:
+    using QSlider::QSlider;
+protected:
+    void wheelEvent(QWheelEvent* event) override { event->ignore(); }
+};
 
 ModelNode treeNode(const QTreeWidgetItem* item)
 {
@@ -180,7 +214,6 @@ MotionWindow::MotionWindow(QWidget* parent, MotionWorkspace* workspace, int mode
     updateTree();
     updateParameters();
     updateActions();
-    setNotice(tr("就绪 · OCC / Netgen / MotionEngine / Qwt"));
     QTimer::singleShot(0, this, [this] {
         resetLayout(false);
         if (m_viewport) m_viewport->fitAll();
@@ -282,7 +315,7 @@ void MotionWindow::createCommands()
                               const QString& hint, const char* objectName) {
         auto* action = add(id, label, view + "zhouceshitu.png", [this, value] {
             m_viewport->setMouseNavigationMode(value);
-            setNotice(m_viewport->mouseNavigationHint());
+            setStatusNotice(m_viewport->mouseNavigationHint());
         });
         action->setObjectName(QString::fromLatin1(objectName));
         action->setCheckable(true);
@@ -431,10 +464,27 @@ void MotionWindow::createWorkspace()
     selectionScroll->setWidget(m_selectionDetails);
     m_selectionDock = addPane("Select", tr("选择信息"), selectionPage);
     auto* bottom = m_docks->addDockWidget(ads::BottomDockWidgetArea, m_selectionDock);
-    m_output = new QPlainTextEdit;
+    auto* outputPage = new QWidget;
+    auto* outputLayout = new QVBoxLayout(outputPage);
+    outputLayout->setContentsMargins(10, 10, 10, 10);
+    m_output = new MechMainWindow::mChineseTextEdit(outputPage);
+    m_output->setObjectName(QStringLiteral("motionOutput"));
     m_output->setReadOnly(true);
-    m_output->setMaximumBlockCount(200);
-    m_outputDock = addPane("Output", tr("信息输出"), m_output);
+    m_output->setAcceptRichText(false);
+    m_output->document()->setMaximumBlockCount(200);
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+#ifdef Q_OS_WIN
+    font.setFamily(QStringLiteral("NSimSun"));
+    if (!QFontInfo(font).exactMatch()) font.setFamily(QStringLiteral("SimSun"));
+#endif
+    font.setStyleHint(QFont::TypeWriter);
+    font.setPixelSize(14);
+    m_output->setFont(font);
+    m_output->setProperty("outputFontFamily", font.family());
+    m_output->setTabStopDistance(QFontMetrics(font).horizontalAdvance(QLatin1Char(' ')) * 8);
+    new OutputHighlighter(m_output->document());
+    outputLayout->addWidget(m_output);
+    m_outputDock = addPane("Output", tr("信息输出"), outputPage);
     m_docks->addDockWidgetTabToArea(m_outputDock, bottom);
     createRigidDocks(bottom);
     m_selectionDock->closeDockWidget();
@@ -447,8 +497,8 @@ ads::CDockWidget* MotionWindow::addPane(const QString& key, const QString& title
     auto* dock = new ads::CDockWidget(m_docks, title);
     dock->setObjectName(key);
     dock->setMinimumSizeHintMode(ads::CDockWidget::MinimumSizeHintFromDockWidgetMinimumSize);
-    if (key == QStringLiteral("Curve") || key == QStringLiteral("Select")) {
-        // The plot and the scrolling selection details both resize with the dock.
+    if (key == QStringLiteral("Curve") || key == QStringLiteral("Select") || key == QStringLiteral("Output")) {
+        // 内容已有自己的滚动和布局，直接随停靠窗缩放。
         dock->setWidget(content, ads::CDockWidget::ForceNoScrollArea);
         if (key == QStringLiteral("Curve")) dock->setMinimumSize(300, 240);
     } else {
@@ -495,6 +545,12 @@ void MotionWindow::applyDockTheme()
         .arg(UiPalette::textHex()).arg(UiMetrics::bodyFontSize())
         .arg(UiPalette::surfaceHex(), UiPalette::hoverHex());
     m_docks->setStyleSheet(css);
+    m_output->setStyleSheet(QStringLiteral(
+        "QTextEdit#motionOutput { background:%1; color:%2; border:1px solid %3; font-family:'%4'; font-size:14px; }")
+        .arg(UiPalette::surfaceHex(), UiPalette::theme() == UiPalette::Theme::Light
+            ? QStringLiteral("#000000") : UiPalette::textHex(), UiPalette::borderHex(),
+            m_output->property("outputFontFamily").toString()));
+    m_output->document()->findChild<QSyntaxHighlighter*>()->rehighlight();
     statusBar()->setStyleSheet(QStringLiteral(
         "QStatusBar { background:%1; color:%2; border-top:1px solid %3; }"
         "QStatusBar::item { border:none; }"
@@ -667,7 +723,10 @@ QWidget* MotionWindow::createModelBrowser()
     connect(m_tree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
         if (m_syncingTree) return;
         const auto node = treeNode(item);
-        if (node.kind == ModelNode::Part || node.kind == ModelNode::None) selectPart(node.id);
+        const bool jointGroup = node.kind == ModelNode::None &&
+            (node.collection == "joints" || node.collection == "drives" || node.collection == "couplings");
+        if (node.kind == ModelNode::Part || node.kind == ModelNode::None)
+            selectPart(node.id, jointGroup ? node.collection : QString{});
         else selectRigidNode(node);
     });
     connect(m_tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
@@ -687,7 +746,7 @@ QWidget* MotionWindow::createModelBrowser()
         if (node.kind == ModelNode::Animation || node.kind == ModelNode::Curves || node.kind == ModelNode::Export)
             showRigidResult(node);
         else if (node.kind == ModelNode::Native && item->data(0,Qt::UserRole+4).toBool())
-            editOriginalMotionEntity(node.collection,node.id,{});
+            editNativeEntity(node.collection,node.id,{});
         else if (node.kind == ModelNode::Scenario && item->data(0,Qt::UserRole+4).toBool())
             editOriginalMotionEntity("scenarios",node.id,{});
     });
@@ -715,6 +774,39 @@ QWidget* MotionWindow::createParameterPage()
     m_parameterDetails->setWordWrap(true);
     layout->addWidget(m_parameterTitle);
     layout->addWidget(m_parameterDetails);
+
+    auto* partSettings = new MechMainWindow::FoldSection(tr("设置"), panel);
+    m_partSettings = partSettings;
+    m_partTransparencySlider = new PartTransparencySlider(Qt::Horizontal, partSettings);
+    m_partTransparencySlider->setObjectName(QStringLiteral("partTransparencySlider"));
+    m_partTransparencySlider->setRange(0, 100);
+    m_partTransparencySlider->setTracking(false);
+    m_partTransparencySpin = new QDoubleSpinBox(partSettings);
+    m_partTransparencySpin->setObjectName(QStringLiteral("partTransparencySpin"));
+    m_partTransparencySpin->setRange(0.0, 1.0);
+    m_partTransparencySpin->setDecimals(2);
+    m_partTransparencySpin->setSingleStep(0.01);
+    m_partTransparencySpin->setKeyboardTracking(false);
+    m_partTransparencySpin->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    partSettings->addRow(new PanelLabel(tr("透明度"), partSettings), m_partTransparencySlider, m_partTransparencySpin);
+    const auto applyTransparency = [this](int percent) {
+        const auto* part = m_document.part(m_partId);
+        if (!part || part->transparencyPercent == percent || !m_document.setPartTransparency(m_partId, percent)) return;
+        const QSignalBlocker slider(m_partTransparencySlider), spin(m_partTransparencySpin);
+        m_partTransparencySlider->setValue(percent);
+        m_partTransparencySpin->setValue(percent / 100.0);
+        m_viewport->setPartTransparency(m_partId, percent);
+        setProjectModified(true);
+    };
+    connect(m_partTransparencySlider, &QSlider::sliderMoved, this, [this](int percent) {
+        const QSignalBlocker spin(m_partTransparencySpin);
+        m_partTransparencySpin->setValue(percent / 100.0);
+    });
+    connect(m_partTransparencySlider, &QSlider::valueChanged, this, applyTransparency);
+    connect(m_partTransparencySpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+        [applyTransparency](double value) { applyTransparency(qRound(value * 100)); });
+    m_partSettings->hide();
+    layout->addWidget(m_partSettings);
 
     m_meshForm = new QWidget(panel);
     auto* form = new QFormLayout(m_meshForm);
@@ -750,6 +842,7 @@ void MotionWindow::createStatusBar()
     bar->setFixedHeight(24);
     bar->setSizeGripEnabled(false);
     m_notice = new QLabel(bar);
+    m_notice->setObjectName(QStringLiteral("motionStatusNotice"));
     m_notice->setTextFormat(Qt::PlainText);
     m_notice->setMargin(3);
     m_selection = new QLabel(bar);
@@ -769,8 +862,14 @@ void MotionWindow::createStatusBar()
     m_progress->setRange(0, 0);
     m_progress->setFixedSize(132, 14);
     m_progress->hide();
+    m_cancelImportButton = new QPushButton(tr("取消导入"), bar);
+    m_cancelImportButton->setObjectName(QStringLiteral("cancelGeometryImportButton"));
+    m_cancelImportButton->setFixedHeight(18);
+    m_cancelImportButton->hide();
+    connect(m_cancelImportButton, &QPushButton::clicked, this, &MotionWindow::cancelGeometryImport);
     bar->addWidget(m_notice, 1);
     bar->addPermanentWidget(m_progress);
+    bar->addPermanentWidget(m_cancelImportButton);
     bar->addPermanentWidget(m_selection);
     bar->addPermanentWidget(unit);
     setStatusBar(bar);
@@ -796,15 +895,15 @@ void MotionWindow::updateTree()
     const std::vector<std::pair<QString, QString>> groups = {
         {"parts", tr("部件")}, {"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
         {"joints", tr("运动副")}, {"couplings", tr("耦合副")}, {"drives", tr("驱动")},
-        {"bodyDrives", tr("运动体驱动")},
+        {"bodyDrives", tr("运动体驱动")}, {"hydraulicCylinders", tr("液压缸")},
         {"springs", tr("弹簧")}, {"forceElements", tr("力元")}, {"sensors", tr("传感器")},
         {"controllers", tr("控制器")}, {"markers", tr("标记点")}, {"contacts", tr("接触")},
         {"controlInputs", tr("控制输入")}
     };
     std::map<QString, QTreeWidgetItem*> groupItems;
     for (const auto& entry : groups) {
-        if (entry.first == "bodyDrives" && (!m_model.nativeDocument
-            || m_model.nativeDocument->collection(entry.first).isEmpty())) continue;
+        if ((entry.first == "bodyDrives" || entry.first == "hydraulicCylinders")
+            && (!m_model.nativeDocument || m_model.nativeDocument->collection(entry.first).isEmpty())) continue;
         auto* group = new QTreeWidgetItem(root, { entry.second });
         groupItems.emplace(entry.second, group);
         group->setIcon(0, TreeIcons::item(entry.first));
@@ -813,6 +912,8 @@ void MotionWindow::updateTree()
             group->setData(0,Qt::UserRole,-1);
             group->setData(0,Qt::UserRole+2,entry.first);
             group->setData(0,Qt::UserRole+3,true);
+            if (m_selectionNode.kind == ModelNode::None && m_selectionNode.collection == entry.first)
+                m_tree->setCurrentItem(group);
         }
     }
     std::vector<const CadPart*> sorted;
@@ -895,6 +996,12 @@ void MotionWindow::updateParameters()
     const auto* part = m_document.part(m_partId);
     m_parameterTitle->setText(!m_meshForm->isHidden() ? tr("生成网格") : part ? part->name : tr("参数设置"));
     m_parameterDetails->setText(partSummary());
+    m_partSettings->setVisible(part && m_meshForm->isHidden());
+    if (part) {
+        const QSignalBlocker slider(m_partTransparencySlider), spin(m_partTransparencySpin);
+        m_partTransparencySlider->setValue(part->transparencyPercent);
+        m_partTransparencySpin->setValue(part->transparencyPercent / 100.0);
+    }
 }
 
 void MotionWindow::updateSelectionInfo()
@@ -1020,19 +1127,19 @@ void MotionWindow::syncViewport(bool fit, const std::shared_ptr<const PreparedCa
     m_viewport->setScene(m_document, m_meshes, m_hidden, prepared, preparedPartIds);
     // 场景数据刷新时才同步拾取拓扑和有限元节点编号。
     if (m_original) m_original->refreshMeshes();
-    m_viewport->setMotionSymbols(m_model.nativeDocument
-        ? nativeMotionSymbols(m_document,*m_model.nativeDocument,{},m_selectionNode.collection,m_selectionNode.id) : QVector<MotionSymbol>{});
+    refreshMotionSymbols();
     m_viewport->selectPart(m_partId);
     if (fit) m_viewport->fitAll();
 }
 
-void MotionWindow::selectPart(int id)
+void MotionWindow::selectPart(int id, const QString& selectedGroup)
 {
-    leaveRigidAnimation();
     m_viewport->clearViewportSelection();
     const int previous = m_partId;
     m_partId = m_document.part(id) ? id : -1;
-    m_selectionNode = m_partId > 0 ? ModelNode{ModelNode::Part, m_partId} : ModelNode{};
+    m_selectionNode = m_partId > 0 ? ModelNode{ModelNode::Part, m_partId}
+        : ModelNode{ModelNode::None, -1, selectedGroup};
+    leaveRigidAnimation();
     if (m_partId != previous || m_partId <= 0) closeEditor();
     if (m_jobPart == -1 && m_partId != previous) m_meshForm->hide();
     m_viewport->selectPart(m_partId);
@@ -1047,7 +1154,7 @@ void MotionWindow::selectPart(int id)
     }
     const auto* current = m_tree->currentItem();
     if (item) m_tree->setCurrentItem(item);
-    else if (current && current->data(0, partRole).isValid()) m_tree->setCurrentItem(nullptr);
+    else if (selectedGroup.isEmpty() && current && current->data(0, partRole).isValid()) m_tree->setCurrentItem(nullptr);
     m_syncingTree = false;
     updateParameters();
     updateActions();
@@ -1100,10 +1207,37 @@ void MotionWindow::showPartMenu(const QPoint& position)
 
 void MotionWindow::setNotice(const QString& message, bool error)
 {
-    m_notice->setText(message);
+    const auto level = error ? NoticeLevel::Error : NoticeLevel::Normal;
+    setStatusNotice(message, level);
+    appendOutput(message, level);
+}
+
+void MotionWindow::setStatusNotice(const QString& message, NoticeLevel level)
+{
+    m_notice->setText(message.section(QLatin1Char('\n'), 0, 0));
     m_notice->setToolTip(message);
-    m_notice->setStyleSheet(error ? QStringLiteral("color:%1").arg(UiPalette::errorHex()) : QString());
-    m_output->appendPlainText(message);
+    m_notice->setStyleSheet(level == NoticeLevel::Error
+        ? QStringLiteral("color:%1").arg(UiPalette::errorHex()) : QString());
+}
+
+void MotionWindow::appendOutput(const QString& message, NoticeLevel level, bool outputTime)
+{
+    if (message.isEmpty()) return;
+    const auto text = outputTime
+        ? QStringLiteral(">>  %1  [  %2  ]").arg(message, QTime::currentTime().toString(QStringLiteral("hh:mm:ss")))
+        : message;
+    auto* scrollbar = m_output->verticalScrollBar();
+    const bool follow = scrollbar->value() == scrollbar->maximum();
+    QTextCursor cursor(m_output->document());
+    cursor.movePosition(QTextCursor::End);
+    QTextBlockFormat block;
+    block.setProperty(outputColorRole, static_cast<int>(level));
+    cursor.beginEditBlock();
+    if (m_output->document()->isEmpty()) cursor.setBlockFormat(block);
+    else cursor.insertBlock(block, QTextCharFormat());
+    cursor.insertText(text, QTextCharFormat());
+    cursor.endEditBlock();
+    if (follow && !m_output->textCursor().hasSelection()) scrollbar->setValue(scrollbar->maximum());
 }
 
 bool MotionWindow::importCad(const QString& path)
@@ -1127,17 +1261,24 @@ bool MotionWindow::runGeometryImport(const QString& path, std::function<void()> 
         return false;
     }
     closeEditor();
+    const quint64 token = ++m_importGeneration;
     m_importingGeometry = true;
     m_progress->setRange(0, 0);
     m_progress->show();
+    if (m_cancelImportButton) m_cancelImportButton->show();
     setNotice(tr("正在后台导入 %1…").arg(QFileInfo(path).fileName()));
     updateActions();
     auto* watcher = new QFutureWatcher<QString>(this);
-    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, finish = std::move(finish)] {
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, token, finish = std::move(finish)] {
+        if (token != m_importGeneration) {
+            watcher->deleteLater();
+            return;
+        }
         const auto error = watcher->result();
         watcher->deleteLater();
         m_importingGeometry = false;
         m_progress->hide();
+        if (m_cancelImportButton) m_cancelImportButton->hide();
         updateActions();
         finish(error);
     });
@@ -1152,6 +1293,18 @@ bool MotionWindow::runGeometryImport(const QString& path, std::function<void()> 
         }
     }));
     return true;
+}
+
+void MotionWindow::cancelGeometryImport()
+{
+    if (!m_importingGeometry) return;
+    ++m_importGeneration;
+    m_importingGeometry = false;
+    m_progress->hide();
+    if (m_cancelImportButton) m_cancelImportButton->hide();
+    updateActions();
+    setNotice(tr("已取消后台导入，当前工程保留。"));
+    emit geometryImportFinished(false);
 }
 
 bool MotionWindow::startCadImport(const QString& path, bool replace, std::function<void(bool)> finished)
@@ -1187,7 +1340,7 @@ void MotionWindow::showImportedCad(const QString& path, const std::vector<int>& 
     updateTree();
     syncViewport(true, prepared, ids);
     selectPart(m_partId);
-    for (const auto& note : m_document.importNotes()) m_output->appendPlainText(note);
+    for (const auto& note : m_document.importNotes()) appendOutput(note);
     setNotice((replace ? tr("已打开 %1 · %2 个部件") : tr("已导入 %1 · %2 个部件"))
         .arg(QFileInfo(path).fileName()).arg(ids.size())
         + (m_document.importNotes().isEmpty() ? QString{} : tr(" · %1 条导入说明").arg(m_document.importNotes().size())));
@@ -1452,7 +1605,7 @@ void MotionWindow::endMesh(int exitCode, const QString& processError)
     m_meshTimeout->stop();
     const int part = m_jobPart;
     const auto log = QString::fromLocal8Bit(m_worker->readAllStandardOutput()).trimmed();
-    if (!log.isEmpty()) m_output->appendPlainText(log.right(10000));
+    if (!log.isEmpty()) appendOutput(log.right(10000), NoticeLevel::Normal, false);
     QString message = m_jobError.isEmpty() ? processError : m_jobError;
     FemMesh mesh;
     bool meshUpdated=false;

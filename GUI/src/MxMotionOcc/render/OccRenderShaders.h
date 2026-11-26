@@ -61,6 +61,7 @@ uniform bool uFlat;
 uniform bool uScalars;
 uniform bool uHighlight;
 uniform float uHighlightAlpha;
+uniform float uOpacity;
 out vec4 fragColor;
 void main() {
     if (uHighlight) {
@@ -87,7 +88,7 @@ void main() {
         float t = clamp(vScalar, 0.0, 1.0);
         color = clamp(vec3(1.5) - abs(4.0 * t - vec3(3.0, 2.0, 1.0)), 0.0, 1.0);
     }
-    fragColor = vec4(color * (0.38 + 0.62 * diffuse) + vec3(specular), 1.0);
+    fragColor = vec4(color * (0.38 + 0.62 * diffuse) + vec3(specular), uOpacity);
 }
 )GLSL";
 

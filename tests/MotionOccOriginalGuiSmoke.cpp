@@ -32,6 +32,7 @@
 #include <TopoDS_Compound.hxx>
 #include <QAbstractButton>
 #include <QAction>
+#include <QMap>
 #include <QApplication>
 #include <QComboBox>
 #include <QCheckBox>
@@ -527,17 +528,25 @@ int runMotionOccOriginalGuiSmoke(QApplication& app,const QString& directory) {
             log<<"PASS original curve/face collectors, global topology IDs, exact OCC fingerprints\n";log.flush();
             verifyParameterPages(window, output);
             log<<"PASS original sensor, control input and drive pages fit the active fields\n";log.flush();
-            // All restored original panel entry points must construct live
-            // widgets; keep the original incomplete templates distinguishable.
+            // 检查已接入的旧版编辑器，以及已退出界面的演示入口。
             const QStringList entries{"createMotionBodyBatch","createMotionBody","createMotionCoupling","createMotionSpring","createMotionVectorForce",
-                "createMotionContact","createMotionSensor","createMotionController","createControlInput","createMotionAutoFlex",
-                "createElectroImport","createElectroExport","createHydraulic","createRLPanel"};
+                "createMotionContact","createMotionSensor","createMotionController","createControlInput","createMotionAutoFlex"};
             for(const auto& action:entries) {
                 window.dispatchOriginalMotionAction(action,{});QApplication::processEvents();
                 bool visible=false;for(auto* widget:window.findChildren<QWidget*>())if(widget->objectName().startsWith("originalMotionEditor_") && widget->isVisible())visible=true;
                 require(visible,"Original panel failed to open: "+action);
             }
-            log<<"PASS restored original panel construction and repeated controller teardown\n";log.flush();
+            const QMap<QString,QString> hiddenActions{
+                {"createElectroImport","electroImports"},{"createElectroExport","electroExports"},
+                {"createHydraulic","hydraulics"},{"createRLPanel","rlTasks"},{"createMechanism","mechanisms"},
+                {"createTransmission","transmissions"},{"createMechElecHyd","mechElecHyd"}};
+            for(auto it=hiddenActions.cbegin();it!=hiddenActions.cend();++it) {
+                const auto previous=context()->document().collection(it.value());
+                window.dispatchOriginalMotionAction(it.key(),{});QApplication::processEvents();
+                require(!window.findChild<QWidget*>("originalMotionEditor_"+it.value()),"旧演示入口仍可打开："+it.key());
+                require(context()->document().collection(it.value())==previous,"旧演示入口仍可修改文档："+it.key());
+            }
+            log<<"PASS restored original panel construction, controller teardown and disabled legacy editors\n";log.flush();
         }
         {
             MotionWindow reopened;reopened.resize(1440,960);reopened.show();require(reopened.openRigidProject(savedProject),"Saved original-GUI edit did not reopen");
