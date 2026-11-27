@@ -70,8 +70,10 @@ QDoubleSpinBox
 /* QMenu 不再声明任何全局规则：命令菜单已全自绘（mUiMenu/mUiStyle，规则 1.0），
    容器底色/边框/行内容实时取 UiPalette；全局 QSS 一旦命中 QMenu，
    QStyleSheetStyle 会接管行/指示器绘制，自绘全部失效 */
-QTextEdit
+QTextEdit, QPlainTextEdit
 {
+	font-family: '@{font.family}';
+	font-size: @{font.body};
 	background-color:@{color.panel};
 	border:  1px solid @{color.border};
 }
@@ -107,6 +109,8 @@ QPushButton:disabled
 }
 QListWidget
 {
+	font-family: '@{font.family}';
+	font-size: @{font.body};
 	background-color:@{color.panel};
 	border: 1px solid @{color.border};
 }
@@ -643,11 +647,23 @@ QWidget#mGroupWidget QCheckBox::indicator
 }
 
 
+QTreeWidget, QTreeView
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
+}
+
 QTreeWidget
 {
 	background-color:@{color.header};
 	border:1px solid @{color.border};
 	
+}
+
+QStatusBar, QToolTip
+{
+	font-family: '@{font.family}';
+	font-size: @{font.body};
 }
 QTreeWidget::item {
 background: transparent;

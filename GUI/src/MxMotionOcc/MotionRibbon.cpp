@@ -183,9 +183,9 @@ QToolButton* originalSplit(mGroupWidget* group, MotionWindow& window,
 }
 
 void plannedButton(mGroupWidget* group, MotionWindow& window, const char* text,
-    const char* icon, int row, int column)
+    const char* icon, int row, int column, bool big = false, int rowSpan = 1)
 {
-    auto* button = originalButton(group, window, {text, icon, "", {}, false}, row, column, false);
+    auto* button = originalButton(group, window, {text, icon, "", {}, false}, row, column, big, rowSpan);
     button->setProperty("mxPlannedFeature", true);
     button->setToolTip(QString::fromUtf8(text) + QStringLiteral("（尚未实现）"));
 }
@@ -475,7 +475,7 @@ void buildMotionPages(const QList<RibbonPage*>& pages, MotionWindow& window)
     originalButton(couplings, window, {"齿轮副", "Motion/coupling_gear.png", "createMotionCoupling", "Gear"}, 0, 0, true, 2);
     originalButton(couplings, window, {"齿轮齿条副", "Motion/coupling_gearRack.png", "createMotionCoupling", "GearRack"}, 0, 1, true, 2);
     originalButton(couplings, window, {"线缆副", "Motion/coupling_cable.png", "createMotionCoupling", "Cable"}, 0, 2, true, 2);
-    plannedButton(couplings, window, "凸轮副", "Motion/coupling_gear.png", 0, 3);
+    plannedButton(couplings, window, "凸轮副", "Motion/coupling_cam.svg", 0, 3, true, 2);
 
     originalButton(flexible, window, {"体点弹簧", "Motion/force_spring.png", "createMotionSpring", "BodyPoint"}, 0, 0, false);
     originalButton(flexible, window, {"拉压弹簧", "Motion/tcSpring.png", "createMotionSpring", "Translational"}, 0, 1, false);
@@ -607,46 +607,46 @@ void buildAutomation(RibbonPage* page, MotionWindow& window)
 void buildMultiphysics(RibbonPage* page, MotionWindow& window)
 {
     auto* actuators = group(page, "液压执行");
-    actionButton(actuators, window, Command::AddHydraulicCylinder, false, 0, 0, "Motion/mech_hydraulic.png");
-    actionButton(actuators, window, Command::AddHydraulicMotor, false, 1, 0, "Motion/mech_hydraulic.png");
+    actionButton(actuators, window, Command::AddHydraulicCylinder, false, 0, 0, "Motion/mp_hyd_cylinder.svg");
+    actionButton(actuators, window, Command::AddHydraulicMotor, false, 1, 0, "Motion/mp_hyd_motor.svg");
 
     auto* power = group(page, "液压动力");
-    originalButton(power, window, {"液压泵", "Motion/mech_hydraulic.png", "createHydraulicComponent", "Pump"}, 0, 0, false);
-    originalButton(power, window, {"油箱", "Motion/mech_hydraulic.png", "createHydraulicNode", "Tank"}, 1, 0, false);
-    originalButton(power, window, {"压力源", "Motion/mech_hydraulic.png", "createHydraulicNode", "PressureSource"}, 0, 1, false);
-    originalButton(power, window, {"流量源", "Motion/mech_hydraulic.png", "createHydraulicComponent", "FlowSource"}, 1, 1, false);
+    originalButton(power, window, {"液压泵", "Motion/mp_hyd_pump.svg", "createHydraulicComponent", "Pump"}, 0, 0, false);
+    originalButton(power, window, {"油箱", "Motion/mp_hyd_tank.svg", "createHydraulicNode", "Tank"}, 1, 0, false);
+    originalButton(power, window, {"压力源", "Motion/mp_hyd_pressure_source.svg", "createHydraulicNode", "PressureSource"}, 0, 1, false);
+    originalButton(power, window, {"流量源", "Motion/mp_hyd_flow_source.svg", "createHydraulicComponent", "FlowSource"}, 1, 1, false);
 
     auto* valves = group(page, "液压控制");
-    originalButton(valves, window, {"换向阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "DirectionalValve"}, 0, 0, false);
-    originalButton(valves, window, {"伺服阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "ServoValve"}, 1, 0, false);
-    originalButton(valves, window, {"溢流阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "ReliefValve"}, 0, 1, false);
-    originalButton(valves, window, {"减压阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "PressureReducingValve"}, 1, 1, false);
-    originalButton(valves, window, {"单向阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "CheckValve"}, 0, 2, false);
-    originalButton(valves, window, {"节流阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "ThrottleValve"}, 1, 2, false);
-    originalButton(valves, window, {"顺序阀", "Motion/mech_hydraulic.png", "createHydraulicComponent", "SequenceValve"}, 0, 3, false);
+    originalButton(valves, window, {"换向阀", "Motion/mp_valve_directional.svg", "createHydraulicComponent", "DirectionalValve"}, 0, 0, false);
+    originalButton(valves, window, {"伺服阀", "Motion/mp_valve_servo.svg", "createHydraulicComponent", "ServoValve"}, 1, 0, false);
+    originalButton(valves, window, {"溢流阀", "Motion/mp_valve_relief.svg", "createHydraulicComponent", "ReliefValve"}, 0, 1, false);
+    originalButton(valves, window, {"减压阀", "Motion/mp_valve_reducing.svg", "createHydraulicComponent", "PressureReducingValve"}, 1, 1, false);
+    originalButton(valves, window, {"单向阀", "Motion/mp_valve_check.svg", "createHydraulicComponent", "CheckValve"}, 0, 2, false);
+    originalButton(valves, window, {"节流阀", "Motion/mp_valve_throttle.svg", "createHydraulicComponent", "ThrottleValve"}, 1, 2, false);
+    originalButton(valves, window, {"顺序阀", "Motion/mp_valve_sequence.svg", "createHydraulicComponent", "SequenceValve"}, 0, 3, false);
 
     auto* aux = group(page, "液压附件");
-    originalButton(aux, window, {"管路", "Motion/mech_hydraulic.png", "createHydraulicComponent", "Pipe"}, 0, 0, false);
-    originalButton(aux, window, {"蓄能器", "Motion/mech_hydraulic.png", "createHydraulicComponent", "Accumulator"}, 1, 0, false);
-    originalButton(aux, window, {"过滤器", "Motion/mech_hydraulic.png", "createHydraulicComponent", "Filter"}, 0, 1, false);
-    originalButton(aux, window, {"液压容腔", "Motion/mech_hydraulic.png", "createHydraulicNode", "Chamber"}, 1, 1, false);
+    originalButton(aux, window, {"管路", "Motion/mp_hyd_pipe.svg", "createHydraulicComponent", "Pipe"}, 0, 0, false);
+    originalButton(aux, window, {"蓄能器", "Motion/mp_hyd_accumulator.svg", "createHydraulicComponent", "Accumulator"}, 1, 0, false);
+    originalButton(aux, window, {"过滤器", "Motion/mp_hyd_filter.svg", "createHydraulicComponent", "Filter"}, 0, 1, false);
+    originalButton(aux, window, {"液压容腔", "Motion/mp_hyd_chamber.svg", "createHydraulicNode", "Chamber"}, 1, 1, false);
 
     auto* elec = group(page, "电气驱动");
-    actionButton(elec, window, Command::AddElectricMotor, false, 0, 0, "Motion/electromechanicalCoupling.png");
-    actionButton(elec, window, Command::AddPowerSupply, false, 1, 0, "Motion/electromechanicalCoupling.png");
-    actionButton(elec, window, Command::AddInverter, false, 0, 1, "Motion/electromechanicalCoupling.png");
+    actionButton(elec, window, Command::AddElectricMotor, false, 0, 0, "Motion/mp_elec_motor.svg");
+    actionButton(elec, window, Command::AddPowerSupply, false, 1, 0, "Motion/mp_power_supply.svg");
+    actionButton(elec, window, Command::AddInverter, false, 0, 1, "Motion/mp_inverter.svg");
 
     auto* integrated = group(page, "集成作动");
-    actionButton(integrated, window, Command::AddEhaActuator, false, 0, 0, "Motion/mech_elec_hyd.png");
-    actionButton(integrated, window, Command::AddEmaActuator, false, 1, 0, "Motion/mech_elec_hyd.png");
+    actionButton(integrated, window, Command::AddEhaActuator, false, 0, 0, "Motion/mp_eha_actuator.svg");
+    actionButton(integrated, window, Command::AddEmaActuator, false, 1, 0, "Motion/mp_ema_actuator.svg");
 
     auto* tools = group(page, "回路工具");
-    originalButton(tools, window, {"端口连接", "Motion/controlCalculation.png", "createHydraulicComponent", "PortConnection"}, 0, 0, false);
-    actionButton(tools, window, Command::ShowMultiphysicsSchematic, false, 1, 0, "Motion/controlCalculation.png");
-    actionButton(tools, window, Command::HydraulicCircuitCheck, false, 0, 1, "Motion/controlCalculation.png");
+    originalButton(tools, window, {"端口连接", "Motion/mp_port_connection.svg", "createHydraulicComponent", "PortConnection"}, 0, 0, false);
+    actionButton(tools, window, Command::ShowMultiphysicsSchematic, false, 1, 0, "Motion/mp_schematic.svg");
+    actionButton(tools, window, Command::HydraulicCircuitCheck, false, 0, 1, "Motion/mp_circuit_check.svg");
 
     auto* settings = group(page, "设置");
-    actionButton(settings, window, Command::EditHydraulicFluid, true, 0, 0, "Motion/mech_hydraulic.png");
+    actionButton(settings, window, Command::EditHydraulicFluid, true, 0, 0, "Motion/mp_hyd_fluid.svg");
 }
 
 void buildDisplay(RibbonPage* page, MotionWindow& window)

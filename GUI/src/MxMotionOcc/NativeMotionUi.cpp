@@ -1487,18 +1487,18 @@ void MotionWindow::createNativeCommands()
             {Command::AddController, "controllers", "controlCalculation.png"}, {Command::AddControlInput, "controlInputs", "controlInput.png"},
             {Command::AddAutoFlex, "autoFlexBodies", "mnf.png"}, {Command::AddSoftStop, "softStops", "force_spring.png"},
             {Command::AddTensionCable, "tensionCables", "force_spring.png"},
-            {Command::AddHydraulicCylinder, "hydraulicCylinders", "mech_hydraulic.png"},
-            {Command::AddHydraulicMotor, "hydraulicMotors", "mech_hydraulic.png"},
-            {Command::AddElectricMotor, "electricMotors", "electromechanicalCoupling.png"},
-            {Command::AddPowerSupply, "powerSupplies", "electromechanicalCoupling.png"},
-            {Command::AddInverter, "inverters", "electromechanicalCoupling.png"},
-            {Command::AddEhaActuator, "ehaActuators", "mech_elec_hyd.png"},
-            {Command::AddEmaActuator, "emaActuators", "mech_elec_hyd.png"}}) {
+            {Command::AddHydraulicCylinder, "hydraulicCylinders", "mp_hyd_cylinder.svg"},
+            {Command::AddHydraulicMotor, "hydraulicMotors", "mp_hyd_motor.svg"},
+            {Command::AddElectricMotor, "electricMotors", "mp_elec_motor.svg"},
+            {Command::AddPowerSupply, "powerSupplies", "mp_power_supply.svg"},
+            {Command::AddInverter, "inverters", "mp_inverter.svg"},
+            {Command::AddEhaActuator, "ehaActuators", "mp_eha_actuator.svg"},
+            {Command::AddEmaActuator, "emaActuators", "mp_ema_actuator.svg"}}) {
         const QString collection = QLatin1String(entry.collection);
         add(entry.command, entry.command == Command::AddNativeJoint ? tr("更多运动副") : label(collection), entry.icon,
             [this, collection] { if (ensureNativeModel()) editNativeEntity(collection); });
     }
-    add(Command::EditHydraulicFluid, tr("油液设置"), "mech_hydraulic.png", [this] { editHydraulicFluid(); });
+    add(Command::EditHydraulicFluid, tr("油液设置"), "mp_hyd_fluid.svg", [this] { editHydraulicFluid(); });
 }
 
 bool MotionWindow::ensureNativeModel()
@@ -1651,23 +1651,23 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"六自由度位姿","Motion/drive.png","createBodyDrive","Pose"}};
 #endif
     if(collection=="hydraulicNodes")return {
-        {"油箱","Motion/mech_hydraulic.png","createHydraulicNode","Tank"},
-        {"压力源","Motion/mech_hydraulic.png","createHydraulicNode","PressureSource"},
-        {"液压容腔","Motion/mech_hydraulic.png","createHydraulicNode","Chamber"}};
+        {"油箱","Motion/mp_hyd_tank.svg","createHydraulicNode","Tank"},
+        {"压力源","Motion/mp_hyd_pressure_source.svg","createHydraulicNode","PressureSource"},
+        {"液压容腔","Motion/mp_hyd_chamber.svg","createHydraulicNode","Chamber"}};
     if(collection=="hydraulicComponents")return {
-        {"液压泵","Motion/mech_hydraulic.png","createHydraulicComponent","Pump"},
-        {"流量源","Motion/mech_hydraulic.png","createHydraulicComponent","FlowSource"},
-        {"换向阀","Motion/mech_hydraulic.png","createHydraulicComponent","DirectionalValve"},
-        {"伺服阀","Motion/mech_hydraulic.png","createHydraulicComponent","ServoValve"},
-        {"溢流阀","Motion/mech_hydraulic.png","createHydraulicComponent","ReliefValve"},
-        {"减压阀","Motion/mech_hydraulic.png","createHydraulicComponent","PressureReducingValve"},
-        {"顺序阀","Motion/mech_hydraulic.png","createHydraulicComponent","SequenceValve"},
-        {"单向阀","Motion/mech_hydraulic.png","createHydraulicComponent","CheckValve"},
-        {"节流阀","Motion/mech_hydraulic.png","createHydraulicComponent","ThrottleValve"},
-        {"管路","Motion/mech_hydraulic.png","createHydraulicComponent","Pipe"},
-        {"蓄能器","Motion/mech_hydraulic.png","createHydraulicComponent","Accumulator"},
-        {"过滤器","Motion/mech_hydraulic.png","createHydraulicComponent","Filter"},
-        {"端口连接","Motion/controlCalculation.png","createHydraulicComponent","PortConnection"}};
+        {"液压泵","Motion/mp_hyd_pump.svg","createHydraulicComponent","Pump"},
+        {"流量源","Motion/mp_hyd_flow_source.svg","createHydraulicComponent","FlowSource"},
+        {"换向阀","Motion/mp_valve_directional.svg","createHydraulicComponent","DirectionalValve"},
+        {"伺服阀","Motion/mp_valve_servo.svg","createHydraulicComponent","ServoValve"},
+        {"溢流阀","Motion/mp_valve_relief.svg","createHydraulicComponent","ReliefValve"},
+        {"减压阀","Motion/mp_valve_reducing.svg","createHydraulicComponent","PressureReducingValve"},
+        {"顺序阀","Motion/mp_valve_sequence.svg","createHydraulicComponent","SequenceValve"},
+        {"单向阀","Motion/mp_valve_check.svg","createHydraulicComponent","CheckValve"},
+        {"节流阀","Motion/mp_valve_throttle.svg","createHydraulicComponent","ThrottleValve"},
+        {"管路","Motion/mp_hyd_pipe.svg","createHydraulicComponent","Pipe"},
+        {"蓄能器","Motion/mp_hyd_accumulator.svg","createHydraulicComponent","Accumulator"},
+        {"过滤器","Motion/mp_hyd_filter.svg","createHydraulicComponent","Filter"},
+        {"端口连接","Motion/mp_port_connection.svg","createHydraulicComponent","PortConnection"}};
     static const QMap<QString,OriginalTreeCreation> simple{
         {"bodies",{"新建运动体","BrowserTree/xinjian-23x.png","createMotionBody"}},
         {"markers",{"新建标记点","caotu/dian.png","createMotionMarker"}},
@@ -1675,13 +1675,13 @@ QVector<OriginalTreeCreation> originalTreeCreations(const QString& collection) {
         {"controlInputs",{"新建控制输入","BrowserTree/xinjian-23x.png","createControlInput"}},
         {"contacts",{"新建 3D 接触","","createMotionContact"}},
         {"autoFlexBodies",{"新建自动柔性体","BrowserTree/xinjian-23x.png","createMotionAutoFlex"}},
-        {"hydraulicCylinders",{"新建液压缸","Motion/mech_hydraulic.png","createHydraulicCylinder"}},
-        {"hydraulicMotors",{"新建液压马达","Motion/mech_hydraulic.png","createHydraulicMotor"}},
-        {"electricMotors",{"新建电机","Motion/electromechanicalCoupling.png","createElectricMotor"}},
-        {"powerSupplies",{"新建电源","Motion/electromechanicalCoupling.png","createPowerSupply"}},
-        {"inverters",{"新建逆变器","Motion/electromechanicalCoupling.png","createInverter"}},
-        {"ehaActuators",{"新建EHA","Motion/mech_elec_hyd.png","createEhaActuator"}},
-        {"emaActuators",{"新建EMA","Motion/mech_elec_hyd.png","createEmaActuator"}},
+        {"hydraulicCylinders",{"新建液压缸","Motion/mp_hyd_cylinder.svg","createHydraulicCylinder"}},
+        {"hydraulicMotors",{"新建液压马达","Motion/mp_hyd_motor.svg","createHydraulicMotor"}},
+        {"electricMotors",{"新建电机","Motion/mp_elec_motor.svg","createElectricMotor"}},
+        {"powerSupplies",{"新建电源","Motion/mp_power_supply.svg","createPowerSupply"}},
+        {"inverters",{"新建逆变器","Motion/mp_inverter.svg","createInverter"}},
+        {"ehaActuators",{"新建EHA","Motion/mp_eha_actuator.svg","createEhaActuator"}},
+        {"emaActuators",{"新建EMA","Motion/mp_ema_actuator.svg","createEmaActuator"}},
         {"scenarios",{"新建求解方案","BrowserTree/motion_solveParentItem.png","createMotionScenario"}}};
     return simple.contains(collection)?QVector<OriginalTreeCreation>{simple.value(collection)}:QVector<OriginalTreeCreation>{};
 }
@@ -1848,15 +1848,15 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
 #if defined(MX_HAS_BODY_DRIVES)
         submenu("bodyDrives",tr("新建运动体驱动"),TreeIcons::item("bodyDrives"),true);
 #endif
-        create(&menu,{"新建液压缸","Motion/mech_hydraulic.png","createHydraulicCylinder"});
-        create(&menu,{"新建液压马达","Motion/mech_hydraulic.png","createHydraulicMotor"});
+        create(&menu,{"新建液压缸","Motion/mp_hyd_cylinder.svg","createHydraulicCylinder"});
+        create(&menu,{"新建液压马达","Motion/mp_hyd_motor.svg","createHydraulicMotor"});
         submenu("hydraulicNodes",tr("新建液压节点"),TreeIcons::item("hydraulicNodes"),true);
         submenu("hydraulicComponents",tr("新建液压元件"),TreeIcons::item("hydraulicComponents"),true);
-        create(&menu,{"新建电机","Motion/electromechanicalCoupling.png","createElectricMotor"});
-        create(&menu,{"新建电源","Motion/electromechanicalCoupling.png","createPowerSupply"});
-        create(&menu,{"新建逆变器","Motion/electromechanicalCoupling.png","createInverter"});
-        create(&menu,{"新建EHA","Motion/mech_elec_hyd.png","createEhaActuator"});
-        create(&menu,{"新建EMA","Motion/mech_elec_hyd.png","createEmaActuator"});
+        create(&menu,{"新建电机","Motion/mp_elec_motor.svg","createElectricMotor"});
+        create(&menu,{"新建电源","Motion/mp_power_supply.svg","createPowerSupply"});
+        create(&menu,{"新建逆变器","Motion/mp_inverter.svg","createInverter"});
+        create(&menu,{"新建EHA","Motion/mp_eha_actuator.svg","createEhaActuator"});
+        create(&menu,{"新建EMA","Motion/mp_ema_actuator.svg","createEmaActuator"});
         create(&menu,originalTreeCreations("markers").first());
         submenu("sensors",tr("新建传感器"),TreeIcons::item("sensors"),true);
         create(&menu,{"新建控制器","Motion/controlCalculation.png","createMotionController"});
@@ -1886,9 +1886,9 @@ bool MotionWindow::showOriginalDynamicTreeMenu(QTreeWidgetItem* item,const QPoin
             if(!isHydGroup&&(multiple||collection=="contacts"))menu.addSeparator();
         }
         if(isHydGroup) {
-            action(&menu,"Motion/controlCalculation.png",tr("回路原理图…"),[this] { showMultiphysicsSchematic(); });
-            action(&menu,"Motion/controlCalculation.png",tr("回路检查…"),[this] { showModelDiagnostics(false,true); });
-            action(&menu,"Motion/mech_hydraulic.png",tr("油液设置…"),[this] { editHydraulicFluid(); });
+            action(&menu,"Motion/mp_schematic.svg",tr("回路原理图…"),[this] { showMultiphysicsSchematic(); });
+            action(&menu,"Motion/mp_circuit_check.svg",tr("回路检查…"),[this] { showModelDiagnostics(false,true); });
+            action(&menu,"Motion/mp_hyd_fluid.svg",tr("油液设置…"),[this] { editHydraulicFluid(); });
             menu.addSeparator();
         }
         const auto groupName=collection=="forceElements"?tr("力元"):label(collection);
@@ -1948,6 +1948,7 @@ bool MotionWindow::commitNativeDocument(NativeMotionDocument document, ModelNode
     if (!validateNativeMotionDocument(document, error) || !validateNativeMotionBindings(m_document, document, error)) {
         setNotice(error, true); return false;
     }
+    if (m_original) m_original->adoptExternalDocument(document);
     auto model = m_model;
     model.nativeDocument = std::make_shared<NativeMotionDocument>(std::move(document));
     syncNativeMotionModel(model);
@@ -2134,6 +2135,138 @@ bool MotionWindow::installMotionJson(const QString& path, NativeMotionDocument&&
         .arg(QFileInfo(path).fileName()).arg(bodies).arg(joints)); return true;
 }
 
+bool isMultiphysicsCircuitCollection(const QString& col)
+{
+    return col == QLatin1String("hydraulicCylinders")
+        || col == QLatin1String("hydraulicMotors")
+        || col == QLatin1String("hydraulicNodes")
+        || col == QLatin1String("hydraulicComponents")
+        || col == QLatin1String("electricMotors")
+        || col == QLatin1String("powerSupplies")
+        || col == QLatin1String("inverters")
+        || col == QLatin1String("ehaActuators")
+        || col == QLatin1String("emaActuators");
+}
+
+QString multiphysicsConnectionSummary(const NativeMotionDocument& doc, const QString& col, const QJsonObject& row)
+{
+    const auto entityName = [&](const QString& targetCol, int targetId, const QString& emptyText) -> QString {
+        if (targetId < 0) return emptyText;
+        const auto obj = doc.entity(targetCol, targetId);
+        if (obj.isEmpty()) return QStringLiteral("缺失[%1]").arg(targetId);
+        return obj.value("name").toString(QStringLiteral("#%1").arg(targetId));
+    };
+    const auto nodeName = [&](int nid) {
+        return entityName(QStringLiteral("hydraulicNodes"), nid, QStringLiteral("未接节点"));
+    };
+    const auto actuatorPortBoundSummary = [&](const QString& actType, int actId, const QString& portLetter, int directNid) {
+        QStringList connected;
+        if (directNid >= 0) connected.append(nodeName(directNid));
+        for (const auto& v : doc.collection("hydraulicComponents")) {
+            const auto pc = v.toObject();
+            if (!pc.value("enabled").toBool(true) || pc.value("componentType").toString() != QLatin1String("PortConnection")) continue;
+            if (pc.value("actuatorType").toString("Cylinder") == actType
+                && pc.value("actuatorId").toInt(-1) == actId
+                && pc.value("actuatorPort").toString("A") == portLetter) {
+                const int tn = pc.value("targetNodeId").toInt(-1);
+                if (tn >= 0) connected.append(QStringLiteral("%1(经%2)").arg(nodeName(tn), pc.value("name").toString()));
+            }
+        }
+        return connected.isEmpty() ? QStringLiteral("未接节点") : connected.join(QStringLiteral("+"));
+    };
+
+    if (col == QLatin1String("hydraulicNodes")) {
+        const int nid = row.value("id").toInt(-1);
+        const QString ntype = row.value("nodeType").toString("Chamber");
+        QStringList peers;
+        for (const auto& v : doc.collection("hydraulicComponents")) {
+            const auto o = v.toObject();
+            if (!o.value("enabled").toBool(true)) continue;
+            for (const char* k : {"suctionNodeId", "deliveryNodeId", "portPNodeId", "portTNodeId",
+                                  "portANodeId", "portBNodeId", "targetNodeId", "inletNodeId", "outletNodeId"}) {
+                if (o.contains(QLatin1String(k)) && o.value(QLatin1String(k)).toInt(-1) == nid) {
+                    peers.append(o.value("name").toString());
+                    break;
+                }
+            }
+        }
+        for (const char* ac : {"hydraulicCylinders", "hydraulicMotors"}) {
+            for (const auto& v : doc.collection(QLatin1String(ac))) {
+                const auto o = v.toObject();
+                if (!o.value("enabled").toBool(true) || o.value("supplyMode").toString() != QLatin1String("ExternalCircuit")) continue;
+                if (o.value("portANodeId").toInt(-1) == nid) peers.append(o.value("name").toString() + QStringLiteral(".A"));
+                if (o.value("portBNodeId").toInt(-1) == nid) peers.append(o.value("name").toString() + QStringLiteral(".B"));
+            }
+        }
+        const QString typeStr = enumLabel(ntype);
+        return peers.isEmpty()
+            ? QStringLiteral("二维回路：%1（当前尚未连接元件端口）").arg(typeStr)
+            : QStringLiteral("二维回路：%1 · 已连接 %2").arg(typeStr, peers.join(QStringLiteral("、")));
+    }
+    if (col == QLatin1String("hydraulicComponents")) {
+        const QString ctype = row.value("componentType").toString("ReliefValve");
+        if (ctype == QLatin1String("PortConnection")) {
+            const QString nStr = nodeName(row.value("targetNodeId").toInt(-1));
+            const QString atype = row.value("actuatorType").toString("Cylinder");
+            const QString acol = atype == QLatin1String("Motor") ? QStringLiteral("hydraulicMotors") : QStringLiteral("hydraulicCylinders");
+            const QString aStr = entityName(acol, row.value("actuatorId").toInt(-1), QStringLiteral("未选执行器"));
+            const QString portStr = row.value("actuatorPort").toString("A");
+            return QStringLiteral("端口连接：%1 ⇄ %2 · %3口").arg(nStr, aStr, portStr);
+        }
+        if (ctype == QLatin1String("Pump")) {
+            return QStringLiteral("二维回路：吸油口→%1，压油口→%2")
+                .arg(nodeName(row.value("suctionNodeId").toInt(-1)), nodeName(row.value("deliveryNodeId").toInt(-1)));
+        }
+        if (ctype == QLatin1String("DirectionalValve") || ctype == QLatin1String("ServoValve")) {
+            return QStringLiteral("二维回路：P→%1，T→%2，A→%3，B→%4")
+                .arg(nodeName(row.value("portPNodeId").toInt(-1)), nodeName(row.value("portTNodeId").toInt(-1)),
+                     nodeName(row.value("portANodeId").toInt(-1)), nodeName(row.value("portBNodeId").toInt(-1)));
+        }
+        if (ctype == QLatin1String("Accumulator")) {
+            return QStringLiteral("二维回路：挂载节点→%1").arg(nodeName(row.value("targetNodeId").toInt(-1)));
+        }
+        return QStringLiteral("二维回路：入口→%1，出口→%2")
+            .arg(nodeName(row.value("inletNodeId").toInt(-1)), nodeName(row.value("outletNodeId").toInt(-1)));
+    }
+    if (col == QLatin1String("hydraulicCylinders") || col == QLatin1String("hydraulicMotors")) {
+        const QString sm = row.value("supplyMode").toString("DirectionalValve");
+        const QString actType = col == QLatin1String("hydraulicMotors") ? QStringLiteral("Motor") : QStringLiteral("Cylinder");
+        const int aid = row.value("id").toInt(-1);
+        if (sm == QLatin1String("ExternalCircuit")) {
+            return QStringLiteral("外部回路油口：A口→%1，B口→%2")
+                .arg(actuatorPortBoundSummary(actType, aid, QStringLiteral("A"), row.value("portANodeId").toInt(-1)),
+                     actuatorPortBoundSummary(actType, aid, QStringLiteral("B"), row.value("portBNodeId").toInt(-1)));
+        }
+        return QStringLiteral("控制模式：%1（切换为“外部液压回路节点”可接入二维管网）").arg(enumLabel(sm));
+    }
+    if (col == QLatin1String("powerSupplies")) {
+        const int sid = row.value("id").toInt(-1);
+        QStringList invs;
+        for (const auto& v : doc.collection("inverters")) {
+            const auto o = v.toObject();
+            if (o.value("enabled").toBool(true) && o.value("supplyId").toInt(-1) == sid) invs.append(o.value("name").toString());
+        }
+        return invs.isEmpty()
+            ? QStringLiteral("直流母线：%1 V（尚未挂载伺服逆变器）").arg(row.value("nominalVoltage").toDouble(270.0), 0, 'g', 4)
+            : QStringLiteral("直流母线：%1 V · 供电逆变器：%2").arg(row.value("nominalVoltage").toDouble(270.0), 0, 'g', 4).arg(invs.join(QStringLiteral("、")));
+    }
+    if (col == QLatin1String("inverters")) {
+        return QStringLiteral("供电电源：%1 · 控制模式：%2")
+            .arg(entityName(QStringLiteral("powerSupplies"), row.value("supplyId").toInt(-1), QStringLiteral("独立母线")),
+                 row.value("controlMode").toString("SpeedClosedLoop"));
+    }
+    if (col == QLatin1String("electricMotors") || col == QLatin1String("ehaActuators") || col == QLatin1String("emaActuators")) {
+        const QString cm = row.value("controlMode").toString();
+        const QString jStr = entityName(QStringLiteral("joints"), row.value("targetJointId").toInt(-1), QStringLiteral("两点安装/未选副"));
+        if (cm == QLatin1String("ExternalInverter")) {
+            return QStringLiteral("电驱回路：逆变器→%1 · 机械端→%2")
+                .arg(entityName(QStringLiteral("inverters"), row.value("inverterId").toInt(-1), QStringLiteral("未选逆变器")), jStr);
+        }
+        return QStringLiteral("机械连接：%1 · 本地驱动：%2").arg(jStr, cm);
+    }
+    return {};
+}
+
 void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QString, QTreeWidgetItem*>& groups)
 {
     const QMap<QString, QString> groupNames{{"bodies", tr("运动体")}, {"autoFlexBodies", tr("柔性体")},
@@ -2155,7 +2288,13 @@ void MotionWindow::appendNativeNodes(QTreeWidgetItem* root, const std::map<QStri
             const auto row = value.toObject(); const int id = row.value("id").toInt();
             auto* item = new QTreeWidgetItem(group, {row.value("name").toString()});
             item->setIcon(0, TreeIcons::entity(it.key(), row));
-            item->setToolTip(0, label(it.key()) + QStringLiteral(" [%1]").arg(id));
+            QString tip = label(it.key()) + QStringLiteral(" [%1]").arg(id);
+            if (isMultiphysicsCircuitCollection(it.key())) {
+                const QString summary = multiphysicsConnectionSummary(*m_model.nativeDocument, it.key(), row);
+                if (!summary.isEmpty()) tip += QLatin1Char('\n') + summary;
+                tip += tr("\n提示：单击同步定位二维机电液回路原理图与参数栏");
+            }
+            item->setToolTip(0, tip);
             item->setData(0, Qt::UserRole, id); item->setData(0, Qt::UserRole + 1, int(ModelNode::Native)); item->setData(0, Qt::UserRole + 2, it.key());
             if(originalTreeType(it.key())!=MxFunctions::Physical_None || isNativeTreeManagedCollection(it.key())) {
                 item->setFlags(item->flags()|Qt::ItemIsEditable);
@@ -2315,6 +2454,145 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     } else {
         auto* title = new QLabel(label(collection)); title->setStyleSheet(QStringLiteral("font-weight:600")); form->addRow(title);
     }
+    QLabel* multiphysicsSummaryLabel = nullptr;
+    auto refreshMultiphysicsSummary = std::make_shared<std::function<void()>>();
+    if (hydraulicPanel) {
+        const QString fontFam = MxFunctions::UiMetrics::uiFontFamily();
+        const int fontPx = MxFunctions::UiMetrics::bodyFontSize();
+        auto* locatorCard = new QFrame(panel);
+        locatorCard->setObjectName(QStringLiteral("nativeMultiphysicsLocatorBar"));
+        locatorCard->setStyleSheet(QStringLiteral(
+            "QFrame#nativeMultiphysicsLocatorBar { background-color:%1; border:1px solid %2; border-radius:%3px; }"
+            "QLabel#nativeMultiphysicsTopologySummary { font-family:'%4'; font-size:%5px; color:%6; background:transparent; border:none; }")
+            .arg(MxFunctions::UiPalette::panelHex(), MxFunctions::UiPalette::borderHex())
+            .arg(MxFunctions::UiMetrics::zoneRadius())
+            .arg(fontFam).arg(fontPx).arg(MxFunctions::UiPalette::textHex()));
+        auto* locatorLayout = new QVBoxLayout(locatorCard);
+        locatorLayout->setContentsMargins(8, 6, 8, 6);
+        locatorLayout->setSpacing(5);
+        multiphysicsSummaryLabel = new QLabel(locatorCard);
+        multiphysicsSummaryLabel->setObjectName(QStringLiteral("nativeMultiphysicsTopologySummary"));
+        multiphysicsSummaryLabel->setWordWrap(true);
+        locatorLayout->addWidget(multiphysicsSummaryLabel);
+        auto* locateBtn = new QPushButton(tr("在二维机电液回路原理图中高亮定位"), locatorCard);
+        locateBtn->setObjectName(QStringLiteral("nativeLocateInSchematicBtn"));
+        locateBtn->setMinimumHeight(std::max(26, MxFunctions::UiMetrics::controlHeight()));
+        locatorLayout->addWidget(locateBtn);
+        connect(locateBtn, &QPushButton::clicked, panel, [this, collection, id] {
+            showMultiphysicsSchematic(true);
+            if (m_schematicDialog) m_schematicDialog->syncSelection(collection, id, true);
+        });
+        form->addRow(locatorCard);
+    }
+    const auto attachSchematicPickButton = [this, panel, collection, id, refreshMultiphysicsSummary](
+            QFormLayout* targetLayout,
+            const QString& comboObjectName,
+            const QString& pickBtnName,
+            const QString& btnText,
+            const QString& toolTip,
+            MultiphysicsSchematicDialog::PickTarget pickTarget,
+            const QString& ownerPinKey,
+            const QString& promptFieldTitle,
+            std::function<void(const QString& pickedCol, int pickedId, const QString& pickedPin)> applyPicked) -> QPushButton* {
+        auto* fieldWidget = panel->findChild<QWidget*>(comboObjectName);
+        if (!targetLayout || !fieldWidget) return nullptr;
+        int foundRow = -1;
+        QFormLayout::ItemRole foundRole = QFormLayout::FieldRole;
+        targetLayout->getWidgetPosition(fieldWidget, &foundRow, &foundRole);
+        if (foundRow < 0) return nullptr;
+        auto* labelItem = targetLayout->itemAt(foundRow, QFormLayout::LabelRole);
+        QWidget* labelWidget = labelItem ? labelItem->widget() : nullptr;
+        if (labelWidget) targetLayout->takeAt(targetLayout->indexOf(labelWidget));
+        targetLayout->takeAt(targetLayout->indexOf(fieldWidget));
+        targetLayout->removeRow(foundRow);
+
+        auto* wrap = new QWidget(targetLayout->parentWidget());
+        auto* h = new QHBoxLayout(wrap);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(MxFunctions::UiMetrics::choiceGap());
+        fieldWidget->setParent(wrap);
+        auto* pickBtn = new QPushButton(btnText, wrap);
+        pickBtn->setObjectName(pickBtnName);
+        pickBtn->setCheckable(true);
+        pickBtn->setToolTip(toolTip);
+        pickBtn->setCursor(Qt::PointingHandCursor);
+        const int hCtrl = std::max(26, MxFunctions::UiMetrics::controlHeight());
+        pickBtn->setFixedHeight(hCtrl);
+        pickBtn->setMinimumWidth(pickBtn->fontMetrics().horizontalAdvance(btnText) + 18);
+        pickBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { font-family:'%1'; font-size:%2px; padding:0 7px; border:1px solid %3; border-radius:%4px; background:%5; color:%6; }"
+            "QPushButton:hover { border-color:%7; background:%8; }"
+            "QPushButton:checked { border:1px solid #1890ff; background:#e6f4ff; color:#0958d9; font-weight:bold; }")
+            .arg(MxFunctions::UiMetrics::uiFontFamily())
+            .arg(MxFunctions::UiMetrics::bodyFontSize())
+            .arg(MxFunctions::UiPalette::borderHex())
+            .arg(MxFunctions::UiMetrics::zoneRadius())
+            .arg(MxFunctions::UiPalette::surfaceHex(), MxFunctions::UiPalette::textHex(),
+                 MxFunctions::UiPalette::primaryHex(), MxFunctions::UiPalette::hoverHex()));
+        h->addWidget(fieldWidget, 1);
+        h->addWidget(pickBtn);
+        if (labelWidget) targetLayout->insertRow(foundRow, labelWidget, wrap);
+        else targetLayout->insertRow(foundRow, wrap);
+
+        QPointer<QPushButton> safeBtn(pickBtn);
+        QPointer<QWidget> safePanel(panel);
+        connect(pickBtn, &QPushButton::clicked, panel, [this, safeBtn, safePanel, collection, id, pickTarget, ownerPinKey, promptFieldTitle, applyPicked, refreshMultiphysicsSummary](bool checked) {
+            if (!safeBtn || !safePanel) return;
+            if (!checked) {
+                if (m_schematicDialog) m_schematicDialog->cancelPortPick(false);
+                return;
+            }
+            for (auto* other : safePanel->findChildren<QPushButton*>()) {
+                if (other != safeBtn && other->objectName().startsWith(QLatin1String("native_pickPort_")) && other->isChecked()) {
+                    const QSignalBlocker blk(other);
+                    other->setChecked(false);
+                }
+            }
+            if (!m_schematicDialog || !m_schematicDialog->isVisible()) showMultiphysicsSchematic(false);
+            else m_schematicDialog->raise();
+            if (!m_schematicDialog) {
+                const QSignalBlocker blk(safeBtn);
+                safeBtn->setChecked(false);
+                return;
+            }
+            MultiphysicsSchematicDialog::PickRequest req;
+            req.target = pickTarget;
+            req.promptTitle = promptFieldTitle;
+            req.ownerCollection = collection;
+            req.ownerId = id;
+            req.ownerPinKey = ownerPinKey;
+            req.onPicked = [safeBtn, safePanel, applyPicked, refreshMultiphysicsSummary](const QString& pCol, int pId, const QString& pPin) {
+                if (safeBtn) {
+                    const QSignalBlocker blk(safeBtn);
+                    safeBtn->setChecked(false);
+                }
+                if (!safePanel) return;
+                if (applyPicked) applyPicked(pCol, pId, pPin);
+                if (refreshMultiphysicsSummary && *refreshMultiphysicsSummary) (*refreshMultiphysicsSummary)();
+            };
+            req.onCancelled = [safeBtn] {
+                if (safeBtn) {
+                    const QSignalBlocker blk(safeBtn);
+                    safeBtn->setChecked(false);
+                }
+            };
+            m_schematicDialog->beginPortPick(std::move(req));
+        });
+        return pickBtn;
+    };
+    const auto selectComboEntityId = [this, panel](const QString& comboObjName, const QString& targetCol, int pickedId) {
+        auto* combo = panel->findChild<QComboBox*>(comboObjName);
+        if (!combo) return;
+        int idx = combo->findData(pickedId);
+        if (idx < 0 && m_model.nativeDocument) {
+            const auto ent = m_model.nativeDocument->entity(targetCol, pickedId);
+            if (!ent.isEmpty()) {
+                combo->addItem(ent.value("name").toString(), pickedId);
+                idx = combo->count() - 1;
+            }
+        }
+        if (idx >= 0) combo->setCurrentIndex(idx);
+    };
     const auto addBodyDriveSection = [form](const QString& title, const QString& name) {
         auto* section = new MechMainWindow::FoldSection(title);
         section->setObjectName(name);
@@ -2503,6 +2781,20 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         fields.insert("portBNodeId", addField(extPortsLayout, "portBNodeId", QJsonValue(row.value("portBNodeId").toInt(-1)), document, collection, 0, picker, {}, tr("B口回路节点:")));
         specialisedFields.insert("portANodeId");
         specialisedFields.insert("portBNodeId");
+        attachSchematicPickButton(extPortsLayout, QStringLiteral("native_portANodeId"), QStringLiteral("native_pickPort_portANodeId"),
+            tr("图上拾取"), tr("在二维原理图中点击连接到液压缸 A 口的液压节点"),
+            MultiphysicsSchematicDialog::PickTarget::HydraulicNode, QStringLiteral("portANodeId"),
+            row.value("name").toString() + tr(" · A口回路节点"),
+            [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                selectComboEntityId(QStringLiteral("native_portANodeId"), QStringLiteral("hydraulicNodes"), pickedId);
+            });
+        attachSchematicPickButton(extPortsLayout, QStringLiteral("native_portBNodeId"), QStringLiteral("native_pickPort_portBNodeId"),
+            tr("图上拾取"), tr("在二维原理图中点击连接到液压缸 B 口的液压节点"),
+            MultiphysicsSchematicDialog::PickTarget::HydraulicNode, QStringLiteral("portBNodeId"),
+            row.value("name").toString() + tr(" · B口回路节点"),
+            [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                selectComboEntityId(QStringLiteral("native_portBNodeId"), QStringLiteral("hydraulicNodes"), pickedId);
+            });
         ctrlSec->layout()->addRow(extPortsWrap);
 
         bind(ctrlSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
@@ -2618,6 +2910,20 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         fields.insert("portBNodeId", addField(extPortsLayout, "portBNodeId", QJsonValue(row.value("portBNodeId").toInt(-1)), document, collection, 0, picker, {}, tr("B口回路节点:")));
         specialisedFields.insert("portANodeId");
         specialisedFields.insert("portBNodeId");
+        attachSchematicPickButton(extPortsLayout, QStringLiteral("native_portANodeId"), QStringLiteral("native_pickPort_portANodeId"),
+            tr("图上拾取"), tr("在二维原理图中点击连接到液压缸 A 口的液压节点"),
+            MultiphysicsSchematicDialog::PickTarget::HydraulicNode, QStringLiteral("portANodeId"),
+            row.value("name").toString() + tr(" · A口回路节点"),
+            [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                selectComboEntityId(QStringLiteral("native_portANodeId"), QStringLiteral("hydraulicNodes"), pickedId);
+            });
+        attachSchematicPickButton(extPortsLayout, QStringLiteral("native_portBNodeId"), QStringLiteral("native_pickPort_portBNodeId"),
+            tr("图上拾取"), tr("在二维原理图中点击连接到液压缸 B 口的液压节点"),
+            MultiphysicsSchematicDialog::PickTarget::HydraulicNode, QStringLiteral("portBNodeId"),
+            row.value("name").toString() + tr(" · B口回路节点"),
+            [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                selectComboEntityId(QStringLiteral("native_portBNodeId"), QStringLiteral("hydraulicNodes"), pickedId);
+            });
         ctrlSec->layout()->addRow(extPortsWrap);
 
         bind(ctrlSec, "ratedFlowLpm", tr("额定流量:"), QStringLiteral("L/min"));
@@ -2762,27 +3068,38 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         bind(typeSec, "componentType", tr("类型:"));
 
         auto* portSec = addBodyDriveSection(tr("端口拓扑连接"), "hydraulicCompPortSection");
+        const auto bindNodeWithPick = [&](const QString& key, const QString& titleText) {
+            bind(portSec, key, titleText);
+            attachSchematicPickButton(portSec->layout(), QStringLiteral("native_") + key, QStringLiteral("native_pickPort_") + key,
+                tr("图上拾取"), tr("在二维原理图中点击目标液压节点（油箱 / 压力源 / 容腔）"),
+                MultiphysicsSchematicDialog::PickTarget::HydraulicNode, key,
+                row.value("name").toString() + QStringLiteral(" · ") + titleText,
+                [selectComboEntityId, key](const QString&, int pickedId, const QString&) {
+                    selectComboEntityId(QStringLiteral("native_") + key, QStringLiteral("hydraulicNodes"), pickedId);
+                });
+        };
         if (ctype == "Pump") {
-            bind(portSec, "suctionNodeId", tr("吸油口节点:"));
-            bind(portSec, "deliveryNodeId", tr("压油口节点:"));
+            bindNodeWithPick("suctionNodeId", tr("吸油口节点:"));
+            bindNodeWithPick("deliveryNodeId", tr("压油口节点:"));
         } else if (ctype == "DirectionalValve" || ctype == "ServoValve") {
-            bind(portSec, "portPNodeId", tr("供油口 P:"));
-            bind(portSec, "portTNodeId", tr("回油口 T:"));
-            bind(portSec, "portANodeId", tr("工作口 A:"));
-            bind(portSec, "portBNodeId", tr("工作口 B:"));
+            bindNodeWithPick("portPNodeId", tr("供油口 P:"));
+            bindNodeWithPick("portTNodeId", tr("回油口 T:"));
+            bindNodeWithPick("portANodeId", tr("工作口 A:"));
+            bindNodeWithPick("portBNodeId", tr("工作口 B:"));
         } else if (ctype == "Accumulator") {
-            bind(portSec, "targetNodeId", tr("挂载容腔节点:"));
+            bindNodeWithPick("targetNodeId", tr("挂载容腔节点:"));
         } else if (ctype == "PortConnection") {
-            bind(portSec, "targetNodeId", tr("回路节点:"));
+            bindNodeWithPick("targetNodeId", tr("回路节点:"));
             bind(portSec, "actuatorType", tr("执行器类型:"));
             auto* actCombo = new QComboBox(portSec);
             actCombo->setObjectName(QStringLiteral("native_actuatorId"));
-            const auto rebuildActuators = [actCombo, document](const QString& atype, int currentId) {
+            const auto rebuildActuators = [this, actCombo, document](const QString& atype, int currentId) {
                 const QSignalBlocker blk(actCombo);
                 actCombo->clear();
                 actCombo->addItem(QStringLiteral(" "), -1);
                 const QString targetCol = atype == "Motor" ? QStringLiteral("hydraulicMotors") : QStringLiteral("hydraulicCylinders");
-                for (const auto& item : document.collection(targetCol)) {
+                const auto& liveDoc = m_model.nativeDocument ? *m_model.nativeDocument : document;
+                for (const auto& item : liveDoc.collection(targetCol)) {
                     const auto obj = item.toObject();
                     actCombo->addItem(obj.value("name").toString(), obj.value("id").toInt());
                 }
@@ -2799,9 +3116,95 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
                 });
             }
             bind(portSec, "actuatorPort", tr("连接油口:"));
+            const auto applyPickedActuatorPort = [panel, actCombo, rebuildActuators](const QString& pCol, int pId, const QString& pPin) {
+                const QString wantType = (pCol == QLatin1String("hydraulicMotors")) ? QStringLiteral("Motor") : QStringLiteral("Cylinder");
+                if (auto* atCombo = panel->findChild<QComboBox*>("native_actuatorType")) {
+                    const QSignalBlocker blk(atCombo);
+                    const int tIdx = atCombo->findData(wantType);
+                    if (tIdx >= 0) atCombo->setCurrentIndex(tIdx);
+                }
+                rebuildActuators(wantType, pId);
+                const int aIdx = actCombo->findData(pId);
+                if (aIdx >= 0) actCombo->setCurrentIndex(aIdx);
+                if (auto* apCombo = panel->findChild<QComboBox*>("native_actuatorPort")) {
+                    const QString wantPort = (pPin == QLatin1String("portBNodeId") || pPin == QLatin1String("B"))
+                        ? QStringLiteral("B")
+                        : QStringLiteral("A");
+                    const int pIdx = apCombo->findData(wantPort);
+                    if (pIdx >= 0) apCombo->setCurrentIndex(pIdx);
+                }
+            };
+            auto* pickActBtn = attachSchematicPickButton(
+                portSec->layout(), QStringLiteral("native_actuatorId"), QStringLiteral("native_pickPort_actuatorEndpoint"),
+                tr("图上选油口"), tr("在二维原理图中直接点击液压缸或液压马达的 A 口 / B 口圆点"),
+                MultiphysicsSchematicDialog::PickTarget::HydraulicActuatorPort, QStringLiteral("actuatorEndpoint"),
+                row.value("name").toString() + tr(" · 目标执行器油口 (A/B)"),
+                applyPickedActuatorPort);
+            auto* guidedBtn = new QPushButton(tr("双端连续拾取：先点液压节点 → 再点执行器 A/B 油口"), portSec);
+            guidedBtn->setObjectName(QStringLiteral("native_pickPort_guidedPair"));
+            guidedBtn->setCheckable(true);
+            guidedBtn->setMinimumHeight(std::max(26, MxFunctions::UiMetrics::controlHeight()));
+            portSec->layout()->addRow(guidedBtn);
+            QPointer<QPushButton> safeGuided(guidedBtn);
+            QPointer<QPushButton> safeActBtn(pickActBtn);
+            QPointer<QWidget> safePanel(panel);
+            connect(guidedBtn, &QPushButton::clicked, panel, [this, safeGuided, safeActBtn, safePanel, collection, id, rowName = row.value("name").toString(), selectComboEntityId, applyPickedActuatorPort](bool checked) {
+                if (!safeGuided || !safePanel) return;
+                if (!checked) {
+                    if (m_schematicDialog) m_schematicDialog->cancelPortPick(false);
+                    return;
+                }
+                for (auto* other : safePanel->findChildren<QPushButton*>()) {
+                    if (other != safeGuided && other->objectName().startsWith(QLatin1String("native_pickPort_")) && other->isChecked()) {
+                        const QSignalBlocker blk(other);
+                        other->setChecked(false);
+                    }
+                }
+                if (!m_schematicDialog || !m_schematicDialog->isVisible()) showMultiphysicsSchematic(false);
+                else m_schematicDialog->raise();
+                if (!m_schematicDialog) {
+                    const QSignalBlocker blk(safeGuided);
+                    safeGuided->setChecked(false);
+                    return;
+                }
+                MultiphysicsSchematicDialog::PickRequest step1;
+                step1.target = MultiphysicsSchematicDialog::PickTarget::HydraulicNode;
+                step1.promptTitle = rowName + tr(" · 第1步：点击回路液压节点");
+                step1.ownerCollection = collection;
+                step1.ownerId = id;
+                step1.ownerPinKey = QStringLiteral("targetNodeId");
+                step1.onCancelled = [safeGuided] {
+                    if (safeGuided) { const QSignalBlocker blk(safeGuided); safeGuided->setChecked(false); }
+                };
+                step1.onPicked = [this, safeGuided, safeActBtn, safePanel, collection, id, rowName, selectComboEntityId, applyPickedActuatorPort](const QString&, int pickedNodeId, const QString&) {
+                    if (!safePanel) return;
+                    selectComboEntityId(QStringLiteral("native_targetNodeId"), QStringLiteral("hydraulicNodes"), pickedNodeId);
+                    if (!m_schematicDialog) {
+                        if (safeGuided) { const QSignalBlocker blk(safeGuided); safeGuided->setChecked(false); }
+                        return;
+                    }
+                    MultiphysicsSchematicDialog::PickRequest step2;
+                    step2.target = MultiphysicsSchematicDialog::PickTarget::HydraulicActuatorPort;
+                    step2.promptTitle = rowName + tr(" · 第2步：点击液压缸或液压马达的 A/B 油口");
+                    step2.ownerCollection = collection;
+                    step2.ownerId = id;
+                    step2.ownerPinKey = QStringLiteral("actuatorEndpoint");
+                    step2.onCancelled = [safeGuided] {
+                        if (safeGuided) { const QSignalBlocker blk(safeGuided); safeGuided->setChecked(false); }
+                    };
+                    step2.onPicked = [safeGuided, safePanel, applyPickedActuatorPort](const QString& pCol, int pId, const QString& pPin) {
+                        if (safeGuided) { const QSignalBlocker blk(safeGuided); safeGuided->setChecked(false); }
+                        if (!safePanel) return;
+                        applyPickedActuatorPort(pCol, pId, pPin);
+                    };
+                    (void)safeActBtn;
+                    m_schematicDialog->beginPortPick(std::move(step2));
+                };
+                m_schematicDialog->beginPortPick(std::move(step1));
+            });
         } else {
-            bind(portSec, "inletNodeId", tr("入口节点:"));
-            bind(portSec, "outletNodeId", tr("出口节点:"));
+            bindNodeWithPick("inletNodeId", tr("入口节点:"));
+            bindNodeWithPick("outletNodeId", tr("出口节点:"));
         }
 
         auto* propSec = addBodyDriveSection(tr("元件特性参数"), "hydraulicCompPropSection");
@@ -2969,6 +3372,13 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             auto* busSec = addBodyDriveSection(tr("供电与功率级"), "inverterBusSection");
             fields.insert("supplyId", addField(busSec->layout(), "supplyId", QJsonValue(row.value("supplyId").toInt(-1)), document, collection, 0, picker, {}, tr("关联直流电源:")));
             specialisedFields.insert("supplyId");
+            attachSchematicPickButton(busSec->layout(), QStringLiteral("native_supplyId"), QStringLiteral("native_pickPort_supplyId"),
+                tr("图上拾取"), tr("在二维原理图中点击供电的直流电源"),
+                MultiphysicsSchematicDialog::PickTarget::PowerSupply, QStringLiteral("supplyId"),
+                row.value("name").toString() + tr(" · 关联直流电源"),
+                [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                    selectComboEntityId(QStringLiteral("native_supplyId"), QStringLiteral("powerSupplies"), pickedId);
+                });
             bind(busSec, "nominalBusVoltage", tr("独立母线电压:"), QStringLiteral("V"));
             bind(busSec, "efficiency", tr("逆变器效率:"));
             bind(busSec, "maxCurrent", tr("峰值相电流限制:"), QStringLiteral("A"));
@@ -3039,6 +3449,13 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             auto* invForm = new QFormLayout(invWrap); invForm->setContentsMargins(0, 0, 0, 0);
             fields.insert("inverterId", addField(invForm, "inverterId", QJsonValue(row.value("inverterId").toInt(-1)), document, collection, 0, picker, {}, tr("关联逆变器:")));
             specialisedFields.insert("inverterId");
+            attachSchematicPickButton(invForm, QStringLiteral("native_inverterId"), QStringLiteral("native_pickPort_inverterId"),
+                tr("图上拾取"), tr("在二维原理图中点击驱动该电机的伺服逆变器"),
+                MultiphysicsSchematicDialog::PickTarget::Inverter, QStringLiteral("inverterId"),
+                row.value("name").toString() + tr(" · 关联伺服逆变器"),
+                [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                    selectComboEntityId(QStringLiteral("native_inverterId"), QStringLiteral("inverters"), pickedId);
+                });
             ctrlSec->layout()->addRow(invWrap);
 
             auto* localCtrlWrap = new QWidget(ctrlSec);
@@ -3151,6 +3568,13 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             auto* invForm = new QFormLayout(invWrap); invForm->setContentsMargins(0, 0, 0, 0);
             fields.insert("inverterId", addField(invForm, "inverterId", QJsonValue(row.value("inverterId").toInt(-1)), document, collection, 0, picker, {}, tr("关联逆变器:")));
             specialisedFields.insert("inverterId");
+            attachSchematicPickButton(invForm, QStringLiteral("native_inverterId"), QStringLiteral("native_pickPort_inverterId"),
+                tr("图上拾取"), tr("在二维原理图中点击驱动该电机的伺服逆变器"),
+                MultiphysicsSchematicDialog::PickTarget::Inverter, QStringLiteral("inverterId"),
+                row.value("name").toString() + tr(" · 关联伺服逆变器"),
+                [selectComboEntityId](const QString&, int pickedId, const QString&) {
+                    selectComboEntityId(QStringLiteral("native_inverterId"), QStringLiteral("inverters"), pickedId);
+                });
             ctrlSec->layout()->addRow(invWrap);
 
             PanelLabel* cmdLbl = nullptr;
@@ -3477,6 +3901,25 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
             } catch (const std::exception& error) { setNotice(QString::fromUtf8(error.what()),true); }
         });
     }
+    if (hydraulicPanel && multiphysicsSummaryLabel) {
+        QPointer<QLabel> safeSummary(multiphysicsSummaryLabel);
+        *refreshMultiphysicsSummary = [this, safeSummary, document, row, fields, collection] {
+            if (!safeSummary) return;
+            auto preview = row;
+            for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
+                if (it.key() == QLatin1String("occPickReferences")) continue;
+                try { preview.insert(it.key(), it.value()()); } catch (...) {}
+            }
+            const auto& liveDoc = m_model.nativeDocument ? *m_model.nativeDocument : document;
+            safeSummary->setText(multiphysicsConnectionSummary(liveDoc, collection, preview));
+        };
+        (*refreshMultiphysicsSummary)();
+        for (auto* combo : panel->findChildren<QComboBox*>()) {
+            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), panel, [refreshMultiphysicsSummary] {
+                if (refreshMultiphysicsSummary && *refreshMultiphysicsSummary) (*refreshMultiphysicsSummary)();
+            });
+        }
+    }
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     if (unilateralForce || hydraulicPanel) {
         auto* actions = new QWidget;
@@ -3494,9 +3937,12 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
     }
     buttons->button(QDialogButtonBox::Ok)->setObjectName(QStringLiteral("motionApplyButton"));
     connect(buttons, &QDialogButtonBox::rejected, this, [this] { closeEditor(); updateParameters(); });
-    connect(buttons, &QDialogButtonBox::accepted, this, [this, document, row, fields, parts, collection, id, panel, picker]() mutable {
+    connect(buttons, &QDialogButtonBox::accepted, this, [this, document, row, fields, parts, collection, id, panel, picker, hydraulicPanel]() mutable {
         try {
             picker->finish();
+            if (hydraulicPanel && m_model.nativeDocument) {
+                document = *m_model.nativeDocument;
+            }
             if (auto* status=panel->findChild<QLabel*>("nativeMassStatus"); status && status->property("massError").toBool()) {
                 setNotice(status->text(),true); return;
             }
@@ -3591,6 +4037,9 @@ void MotionWindow::editNativeEntity(const QString& collection, int id, const QSt
         fitNativeFormToWidth(panel);
     }
     scroll->setWidget(panel); showEditor(scroll);
+    if (creating && hydraulicComponent && row.value("componentType").toString() == QLatin1String("PortConnection")) {
+        syncMultiphysicsSchematic(true, false);
+    }
 }
 
 void MotionWindow::removeNativeEntity(const QString& collection, int id)
@@ -3608,6 +4057,7 @@ void MotionWindow::removeNativeEntity(const QString& collection, int id)
     if (!validateNativeMotionDocument(document, error) || !validateNativeMotionBindings(m_document, document, error)) {
         setNotice(error, true); return;
     }
+    if (m_original) m_original->adoptExternalDocument(document);
     model.nativeDocument = std::make_shared<NativeMotionDocument>(std::move(document));
     syncNativeMotionModel(model); commitRigid(std::move(model), {});
 }
@@ -3873,16 +4323,44 @@ void MotionWindow::editHydraulicFluid()
     showEditor(scroll);
 }
 
-void MotionWindow::showMultiphysicsSchematic()
+void MotionWindow::syncMultiphysicsSchematic(bool autoOpen, bool centerInView)
+{
+    if (!m_projectActive || !m_model.nativeDocument) return;
+    if (!m_schematicDialog) {
+        if (!autoOpen) return;
+        showMultiphysicsSchematic(false);
+        return;
+    }
+    if (autoOpen && !m_schematicDialog->isVisible()) {
+        m_schematicDialog->setAttribute(Qt::WA_ShowWithoutActivating, true);
+        m_schematicDialog->show();
+    }
+
+    int scenarioId = -1;
+    if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves)
+        scenarioId = m_selectionNode.id;
+    else if (!m_model.scenarios.empty())
+        scenarioId = m_model.scenarios.front().id;
+    const RigidResult* solved = (scenarioId >= 0 && m_results.count(scenarioId) && m_results.at(scenarioId))
+                                    ? &m_results.at(scenarioId)->result
+                                    : nullptr;
+    const int curFrame = m_timeline ? m_timeline->value() : 0;
+
+    m_schematicDialog->syncDocument(*m_model.nativeDocument, solved, curFrame);
+    if (m_selectionNode.kind == ModelNode::Native && isMultiphysicsCircuitCollection(m_selectionNode.collection)) {
+        m_schematicDialog->syncSelection(m_selectionNode.collection, m_selectionNode.id, centerInView);
+    } else if (m_selectionNode.kind == ModelNode::None && isMultiphysicsCircuitCollection(m_selectionNode.collection)) {
+        m_schematicDialog->syncSelection(m_selectionNode.collection, -1, centerInView);
+    } else {
+        m_schematicDialog->syncSelection({}, -1, false);
+    }
+}
+
+void MotionWindow::showMultiphysicsSchematic(bool userActivated)
 {
     if (!m_projectActive || motionBusy() || m_jobPart >= 0) return;
     if (!ensureNativeModel() || !m_model.nativeDocument) return;
     if (m_original) m_original->flush();
-
-    if (auto* existing = findChild<MultiphysicsSchematicDialog*>(QStringLiteral("multiphysicsSchematicDialog"))) {
-        existing->close();
-        delete existing;
-    }
 
     int scenarioId = -1;
     if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves)
@@ -3895,16 +4373,79 @@ void MotionWindow::showMultiphysicsSchematic()
                                     : nullptr;
     const int curFrame = m_timeline ? m_timeline->value() : 0;
 
+    if (m_schematicDialog) {
+        m_schematicDialog->syncDocument(*m_model.nativeDocument, solved, curFrame);
+        if (m_selectionNode.kind == ModelNode::Native && isMultiphysicsCircuitCollection(m_selectionNode.collection))
+            m_schematicDialog->syncSelection(m_selectionNode.collection, m_selectionNode.id, true);
+        else if (m_selectionNode.kind == ModelNode::None && isMultiphysicsCircuitCollection(m_selectionNode.collection))
+            m_schematicDialog->syncSelection(m_selectionNode.collection, -1, true);
+        if (userActivated) {
+            m_schematicDialog->setAttribute(Qt::WA_ShowWithoutActivating, false);
+            m_schematicDialog->show();
+            m_schematicDialog->raise();
+            m_schematicDialog->activateWindow();
+        } else if (!m_schematicDialog->isVisible()) {
+            m_schematicDialog->setAttribute(Qt::WA_ShowWithoutActivating, true);
+            m_schematicDialog->show();
+        }
+        return;
+    }
+
     MultiphysicsSchematicDialog::Callbacks cb;
     cb.commitDocument = [this](NativeMotionDocument&& updated) {
         if (m_original) m_original->adoptExternalDocument(updated);
-        return commitNativeDocument(std::move(updated), m_selectionNode);
+        m_syncingSchematic = true;
+        const bool ok = commitNativeDocument(std::move(updated), m_selectionNode);
+        m_syncingSchematic = false;
+        return ok;
     };
-    cb.openEntityEditor = [this](const QString& col, int id) {
-        editNativeEntity(col, id);
+    cb.openEntityEditor = [this](const QString& col, int eid) {
+        m_syncingSchematic = true;
+        editNativeEntity(col, eid);
+        m_selectionNode = {ModelNode::Native, eid, col};
+        updateTree();
+        refreshMotionSymbols();
+        m_syncingSchematic = false;
     };
-    cb.runDiagnostics = [this, scenarioId](const NativeMotionDocument& doc) {
-        return diagnoseNativeMotion(m_document, doc, scenarioId);
+    cb.onEntitySelected = [this](const QString& col, int eid) {
+        if (!m_tree || col.isEmpty() || eid < 0) return;
+        m_syncingSchematic = true;
+        QTreeWidgetItem* foundItem = nullptr;
+        std::function<void(QTreeWidgetItem*)> search = [&](QTreeWidgetItem* cur) {
+            if (!cur || foundItem) return;
+            if (cur->data(0, Qt::UserRole + 1).toInt() == int(ModelNode::Native)
+                && cur->data(0, Qt::UserRole + 2).toString() == col
+                && cur->data(0, Qt::UserRole).toInt() == eid) {
+                foundItem = cur;
+                return;
+            }
+            for (int i = 0; i < cur->childCount(); ++i) search(cur->child(i));
+        };
+        for (int i = 0; i < m_tree->topLevelItemCount(); ++i) search(m_tree->topLevelItem(i));
+        if (foundItem) {
+            m_tree->setCurrentItem(foundItem);
+            m_tree->scrollToItem(foundItem);
+        } else {
+            selectRigidNode({ModelNode::Native, eid, col});
+        }
+        m_syncingSchematic = false;
+    };
+    cb.onFrameScrubbed = [this](int fIdx) {
+        if (!m_animationActive) return;
+        const auto it = m_results.find(m_resultScenario);
+        if (it == m_results.end()) return;
+        const auto& frames = it->second->result.frames;
+        if (fIdx >= 0 && std::size_t(fIdx) < frames.size()) {
+            seekRigidTime(frames[std::size_t(fIdx)].seconds);
+        }
+    };
+    cb.runDiagnostics = [this](const NativeMotionDocument& doc) {
+        int activeScenarioId = -1;
+        if (m_selectionNode.kind >= ModelNode::Scenario && m_selectionNode.kind <= ModelNode::Curves)
+            activeScenarioId = m_selectionNode.id;
+        else if (!m_model.scenarios.empty())
+            activeScenarioId = m_model.scenarios.front().id;
+        return diagnoseNativeMotion(m_document, doc, activeScenarioId);
     };
     cb.createDefaultEntity = [](const NativeMotionDocument& doc, const QString& col, const QString& subType) {
         return templateRecord(doc, col, subType);
@@ -3913,9 +4454,34 @@ void MotionWindow::showMultiphysicsSchematic()
     auto* dialog = new MultiphysicsSchematicDialog(*m_model.nativeDocument, solved, curFrame, std::move(cb), this);
     dialog->setAttribute(Qt::WA_DeleteOnClose, true);
     dialog->setModal(false);
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
+    m_schematicDialog = dialog;
+
+    // 自动在主窗口右侧区域弹出，避开左侧模型树，方便边看树边选配端口
+    if (QWidget* host = m_viewHost ? m_viewHost : static_cast<QWidget*>(this)) {
+        const QPoint winTopLeft = mapToGlobal(QPoint(0, 0));
+        const QPoint hostGlobal = host->mapToGlobal(QPoint(0, 0));
+        const int targetW = std::clamp(std::max(host->width() - 24, 1020), 980, 1140);
+        const int targetH = std::clamp(host->height() - 24, 540, 740);
+        dialog->resize(targetW, targetH);
+        const int targetX = winTopLeft.x() + std::max(260, width() - targetW - 16);
+        const int targetY = hostGlobal.y() + std::max(12, (host->height() - targetH) / 2);
+        dialog->move(targetX, targetY);
+    }
+
+    if (m_selectionNode.kind == ModelNode::Native && isMultiphysicsCircuitCollection(m_selectionNode.collection))
+        dialog->syncSelection(m_selectionNode.collection, m_selectionNode.id, true);
+    else if (m_selectionNode.kind == ModelNode::None && isMultiphysicsCircuitCollection(m_selectionNode.collection))
+        dialog->syncSelection(m_selectionNode.collection, -1, true);
+
+    if (userActivated) {
+        dialog->setAttribute(Qt::WA_ShowWithoutActivating, false);
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
+    } else {
+        dialog->setAttribute(Qt::WA_ShowWithoutActivating, true);
+        dialog->show();
+    }
 }
 
 } // namespace MotionOcc

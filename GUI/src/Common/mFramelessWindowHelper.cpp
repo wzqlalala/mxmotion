@@ -22,6 +22,7 @@
 #include <QTimer>
 #include <QVariant>
 #include <QWidget>
+#include <QWindow>
 
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
@@ -39,26 +40,34 @@ namespace MechMainWindow
 			// 兼容性：GetSystemMetricsForDpi 是 Win10 1607 新增 API，静态导入会让
 			// 程序在 Win7 启动即失败（找不到输入点），必须 GetProcAddress 动态解析；
 			// Win7 只有系统级 DPI，回退到普通 GetSystemMetrics 返回值即正确。
-			int maximizedTopOverlap(const QWidget* wnd)
+			// 启用 Qt 官方 Windows OpenGL 全屏/最大化边框保护（QTBUG-41309 / QTBUG-50271）：
+			// 当宿主内嵌 QOpenGLWidget（如三维视口）且通过 WM_NCCALCSIZE 清零原生边框时，
+			// 部分显卡驱动（Intel/NVIDIA Optimus/AMD）在窗口最大化后会把 WGL 交换链提升为
+			// 独占/独立翻转（Fullscreen / Independent Flip）模式，导致所有 WS_POPUP | WS_EX_LAYERED
+			// 子弹窗（如“文件”下拉菜单、模型树右键菜单、组合框下拉列表）被压在 OpenGL 图层下方无法显示，
+			// 还原窗口后又恢复正常。向 qwindows 平台插件显式开启 HasBorderInFullScreen 可阻断该提升。
+			void ensureOpenGlPopupSafeMaximized(QWidget* wnd)
 			{
-				Q_UNUSED(wnd);
-				using GetSystemMetricsForDpi_t = UINT(WINAPI*)(int, UINT);
-				static const auto pGetForDpi = reinterpret_cast<GetSystemMetricsForDpi_t>(
-					reinterpret_cast<void*>(GetProcAddress(
-						GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi")));
-				if (pGetForDpi)
-				{
-					UINT dpi = 96;
-					if (const HDC hdc = GetDC(nullptr))
+				if (!wnd) return;
+				using SetBorderDefaultFn = void (*)(bool);
+				static const bool s_defaultApplied = []() {
+					if (auto fn = reinterpret_cast<SetBorderDefaultFn>(
+							QGuiApplication::platformFunction(QByteArrayLiteral("WindowsSetHasBorderInFullScreenDefault"))))
 					{
-						dpi = GetDeviceCaps(hdc, LOGPIXELSY);
-						ReleaseDC(nullptr, hdc);
+						fn(true);
 					}
-					return int(pGetForDpi(SM_CYSIZEFRAME, dpi))
-						 + int(pGetForDpi(SM_CXPADDEDBORDER, dpi));
+					return true;
+				}();
+				Q_UNUSED(s_defaultApplied);
+				if (QWindow* wh = wnd->windowHandle())
+				{
+					using SetBorderFn = void (*)(QWindow*, bool);
+					if (auto fn = reinterpret_cast<SetBorderFn>(
+							QGuiApplication::platformFunction(QByteArrayLiteral("WindowsSetHasBorderInFullScreen"))))
+					{
+						fn(wh, true);
+					}
 				}
-				return GetSystemMetrics(SM_CYSIZEFRAME)
-					 + GetSystemMetrics(SM_CXPADDEDBORDER);
 			}
 
 			/*
@@ -111,13 +120,26 @@ namespace MechMainWindow
 			if (msg->wParam != TRUE)
 				return false;
 			NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
-			if (wnd && wnd->isMaximized())
+			// 注意：必须以 Win32 实时状态 IsZoomed(msg->hwnd) 判定最大化，而不能仅看 wnd->isMaximized()
+			//（Win+Up / 双击标题栏 / ShowWindow(SW_MAXIMIZE) 触发的首个 WM_NCCALCSIZE 早于 WM_SIZE，
+			//  此时 Qt 的 isMaximized() 可能尚未同步）。
+			// 最大化时直接将客户区矩形对齐到所属显示器的工作区 mi.rcWork（彻底消除高 DPI 与多屏下
+			// WM_GETMINMAXINFO + overlap 双重扣减造成的坐标偏移与边缘死区），并在底边预留 1 物理像素，
+			// 确保即使在“自动隐藏任务栏”（rcWork == rcMonitor）或不同显卡 WDDM 驱动下，
+			// 最大化 OpenGL 窗口也绝不会被驱动误判为全屏独占表面而吞掉 QMenu 菜单弹窗。
+			if (::IsZoomed(msg->hwnd))
 			{
-				const int overlap = maximizedTopOverlap(wnd);
-				params->rgrc[0].top += overlap;
-				params->rgrc[0].left += overlap;
-				params->rgrc[0].right -= overlap;
-				params->rgrc[0].bottom -= overlap;
+				if (const HMONITOR hMon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST))
+				{
+					MONITORINFO mi{};
+					mi.cbSize = sizeof(mi);
+					if (GetMonitorInfoW(hMon, &mi))
+					{
+						params->rgrc[0] = mi.rcWork;
+						if (params->rgrc[0].bottom > params->rgrc[0].top + 2)
+							params->rgrc[0].bottom -= 1;
+					}
+				}
 			}
 			*result = 0;
 			return true;
@@ -129,34 +151,26 @@ namespace MechMainWindow
 		// 还原后 DWM 可能重置阴影状态，需重复声明
 		if (msg->message == WM_SHOWWINDOW && msg->wParam == TRUE)
 		{
+			ensureOpenGlPopupSafeMaximized(wnd);
 			MARGINS m{ 0, 0, 0, 1 };
 			DwmExtendFrameIntoClientArea(msg->hwnd, &m);
 
-			// 首帧客户区对齐：Qt 创建窗口时按"客户区+原生边框"预留窗口矩形，
-			// 而 WM_NCCALCSIZE 清零后实际客户区=窗口矩形，比部件大一圈（右/下
-			// 各一个边框宽），部件按原尺寸绘制，右/下条带露出窗口类底色成灰边
-			// （固定尺寸弹窗最明显，如首选项 800x600 显示为 816x639）。用户手动
-			// 拉伸会触发一次真实 WM_SIZE 完成重同步——这里在显示时主动把窗口
-			// 收齐到部件尺寸，等效那次拉伸。上面的 WM_GETMINMAXINFO 接管已解除
-			// Qt 按"固定尺寸+边框"下发的 track size 钳制，本 SetWindowPos 才能生效；
-			// 最大化/全屏窗口尺寸由系统管理，跳过。幂等：尺寸一致时不做任何事。
-			if (wnd && !wnd->isMaximized() && !wnd->isFullScreen())
+			if (wnd && !wnd->isMaximized() && !wnd->isFullScreen() && !::IsZoomed(msg->hwnd))
 			{
-				// 目标客户区尺寸：固定尺寸窗（min==max，提示框等）取声明值——
-				// 膨胀经原生 WM_SIZE 一路透传会把 Qt 侧部件连带撑大，以当前
-				// width() 为目标等于把膨胀值奉为正统；可缩放窗取当前值
 				const QSize declared = wnd->minimumSize() == wnd->maximumSize()
 					? wnd->minimumSize() : QSize();
 				const auto resyncClientSize = [wnd, declared]()
 				{
 					if (!wnd || !wnd->isVisible() || wnd->isMaximized() || wnd->isFullScreen())
 						return;
+					const HWND hwnd = reinterpret_cast<HWND>(wnd->winId());
+					if (::IsZoomed(hwnd))
+						return;
 					const qreal dpr = wnd->devicePixelRatioF();
 					const int targetW = qRound((declared.isValid() ? declared.width()
 						: wnd->width()) * dpr);
 					const int targetH = qRound((declared.isValid() ? declared.height()
 						: wnd->height()) * dpr);
-					const HWND hwnd = reinterpret_cast<HWND>(wnd->winId());
 					RECT crc{};
 					if (!GetClientRect(hwnd, &crc))
 						return;
@@ -169,29 +183,17 @@ namespace MechMainWindow
 				};
 
 				resyncClientSize();
-				// Qt 显示管线在 ShowWindow 返回后仍按"客户区+原生边框"再下发一次
-				// 窗口矩形（+帧宽 16/帧高 39，固定尺寸弹窗 602x230→618x269 即此根
-				// 因，上面的同步收拢会被这次下发覆盖；可缩放窗用户随后手动拉伸会
-				// 触发真实 WM_SIZE 完成重同步所以看不出）。事件循环零延时再收拢：
-				// 此时管线已全部落地，Qt 对收到的 WM_SIZE 不回发重设，本次即终态
 				QTimer::singleShot(0, wnd, resyncClientSize);
 			}
 		}
 			if (msg->message == WM_SIZE && (msg->wParam == SIZE_RESTORED || msg->wParam == SIZE_MAXIMIZED))
 			{
+				ensureOpenGlPopupSafeMaximized(wnd);
 				MARGINS m{ 0, 0, 0, 1 };
 				DwmExtendFrameIntoClientArea(msg->hwnd, &m);
 			}
 
-		// 边框缩放命中：非客户区清零后系统不再提供缩放热区，
-		// 在 WM_NCHITTEST 里按窗口边缘窄命中带返回 HTLEFT/HTRIGHT 等。
-		// 最大化时不允许边框缩放（与原生一致）。
-		// 命中带不能太宽：标题栏按钮、图标与停靠区/状态栏里的按钮都贴着窗口边，
-		// 太宽的命中带会把按钮点击吞成边框拉伸（表现为边缘按钮点不到）。
-		// 因此带宽只取系统边框宽（≥4 物理像素），且命中带上若正压着按钮或
-		// 标题栏交互区（最小化/最大化/关闭按钮、图标），直接不消费本消息，
-		// 走 DefWindowProc 得到 HTCLIENT，点击仍归客户区控件。
-		if (msg->message == WM_NCHITTEST && wnd && !wnd->isMaximized() && !wnd->isFullScreen())
+		if (msg->message == WM_NCHITTEST && wnd && !wnd->isMaximized() && !wnd->isFullScreen() && !::IsZoomed(msg->hwnd))
 		{
 			// 固定尺寸窗（min==max，提示框等）：无缩放形态，不提供边缘缩放热区
 			const bool fixedForm = wnd->minimumSize() == wnd->maximumSize()
@@ -238,30 +240,22 @@ namespace MechMainWindow
 			}
 		}
 
-			// 最大化时修正窗口几何：非客户区清零后 Windows 最大化会把窗口
-			// 撑得比工作区大一个边框宽，这里用 MINMAXINFO 把最大化位置/尺寸
-			// 钳制到显示器工作区（原生行为）；边框外扩量的内缩由上面的
-			// WM_NCCALCSIZE 最大化分支统一承担，不在这里重复扣减。
+			// 固定尺寸弹窗（min==max，如提示框/固定对话框）：解除 Qt 默认附加原生边框后的
+			// ptMinTrackSize 钳制，使 WM_SHOWWINDOW 中的 resyncClientSize 能将窗口精准收拢到声明尺寸。
+			// 可缩放主窗口不在此拦截 WM_GETMINMAXINFO：由系统与 Qt 原生维护最大化外框与高 DPI 最小尺寸，
+			// 再由上方 WM_NCCALCSIZE(IsZoomed) 一步把最大化客户区精准映射到 mi.rcWork，避免双重扣减与全屏误判。
 			if (msg->message == WM_GETMINMAXINFO && wnd)
 			{
-				MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(msg->lParam);
-				if (const HMONITOR hMon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST))
+				const bool fixedForm = wnd->minimumSize() == wnd->maximumSize()
+					&& !wnd->minimumSize().isNull();
+				if (fixedForm)
 				{
-					MONITORINFO mi{};
-					mi.cbSize = sizeof(mi);
-					if (GetMonitorInfoW(hMon, &mi))
-					{
-						mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
-						mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
-						mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
-						mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
-						if (wnd->minimumWidth() > 0)
-							mmi->ptMinTrackSize.x = wnd->minimumWidth();
-						if (wnd->minimumHeight() > 0)
-							mmi->ptMinTrackSize.y = wnd->minimumHeight();
-						*result = 0;
-						return true;
-					}
+					MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(msg->lParam);
+					const qreal dpr = wnd->devicePixelRatioF();
+					mmi->ptMinTrackSize.x = qRound(wnd->minimumWidth() * dpr);
+					mmi->ptMinTrackSize.y = qRound(wnd->minimumHeight() * dpr);
+					*result = 0;
+					return true;
 				}
 			}
 

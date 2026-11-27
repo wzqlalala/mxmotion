@@ -8,6 +8,7 @@
 
 #include <QElapsedTimer>
 #include <QMainWindow>
+#include <QPointer>
 #include <QVariant>
 #include <atomic>
 #include <functional>
@@ -55,6 +56,7 @@ class RigidPlot;
 class LegacyMotionContext;
 class MotionWorkspace;
 class MotionViewPages;
+class MultiphysicsSchematicDialog;
 
 struct ModelNode {
     enum Kind { None, Part, Body, Joint, Drive, Scenario, Animation, Export, Curves, Native } kind = None;
@@ -66,6 +68,8 @@ enum class Command {
     New, Open, Save, SaveAs, Import, Export, Remove,
     Box, Cylinder, Sphere,
     Fit, Front, Back, Top, Bottom, Left, Right, Isometric,
+    OrbitSpaceMode, OrbitPlaneMode, PanDragMode,
+    ViewRotationCenter, ModelRotationCenter, CustomRotationCenter,
     NavigationClassic, NavigationNx,
     ShadedEdges, Shaded, Wireframe, MeshDisplay,
     ClearSelection, ShowAll, HideSelected, HideOthers, InvertVisibility,
@@ -78,7 +82,7 @@ enum class Command {
     AddContact, AddMarker, AddSensor, AddController, AddControlInput, AddAutoFlex,
     AddSoftStop, AddTensionCable, AddHydraulicCylinder, AddHydraulicMotor,
     AddElectricMotor, AddPowerSupply, AddInverter, AddEhaActuator, AddEmaActuator,
-    EditHydraulicFluid, HydraulicCircuitCheck, ShowMultiphysicsSchematic,
+    EditHydraulicFluid, HydraulicCircuitCheck, ShowMultiphysicsSchematic, ToggleMotionSymbols,
     ModelCheck, ConstraintDiagnostics,
     ResetLayout, ManageLayout, QuickShot, About, Exit
 };
@@ -98,7 +102,8 @@ public:
     bool geometryImportInProgress() const { return m_importingGeometry; }
     void cancelGeometryImport();
     void showModelDiagnostics(bool focusConstraints = false, bool focusHydraulics = false);
-    void showMultiphysicsSchematic();
+    void showMultiphysicsSchematic(bool userActivated = true);
+    void syncMultiphysicsSchematic(bool autoOpen = false, bool centerInView = true);
     void editHydraulicFluid();
     void dispatchOriginalMotionAction(const QString& action, const QVariant& argument = {});
 
@@ -162,6 +167,7 @@ private:
     void updateTree();
     void updateParameters();
     void showSelectionInfo(const SelectionInfo& info);
+    void populateSelectionTable(const SelectionInfo& info);
     void startPartSelectionMeasurement();
     void updateActions();
     void syncViewport(bool fit = false, const std::shared_ptr<const PreparedCadScene>& prepared = {},
@@ -263,6 +269,9 @@ private:
     int m_modelNumber = 1;
     bool m_modified = false;
     bool m_syncingTree = false;
+    bool m_syncingSchematic = false;
+    bool m_showAllMotionSymbols = false;
+    QPointer<MultiphysicsSchematicDialog> m_schematicDialog;
     MotionWorkspace* m_workspace = nullptr;
     bool m_projectActive = true;
     bool m_restoreProjectEditor = false;
@@ -281,6 +290,7 @@ private:
     QToolButton* m_viewSyncButton = nullptr;
     QAction* m_previousViewPage = nullptr;
     QAction* m_nextViewPage = nullptr;
+    QDoubleSpinBox* m_rotateStepSpin = nullptr;
     int m_nextProjectViewNumber = 1;
     std::function<void(bool)> m_refreshViewportPickControls;
     ads::CDockManager* m_docks = nullptr;
@@ -328,6 +338,9 @@ private:
     QLabel* m_notice = nullptr;
     QLabel* m_selection = nullptr;
     QTableWidget* m_selectionDetails = nullptr;
+    SelectionInfo m_cachedSelectionInfo;
+    bool m_selectionTableDeferred = false;
+    bool m_selectionDetailsDirty = false;
     QVector<SelectedPartGeometry> m_pendingPartSelection;
     QFutureWatcher<SelectionInfo>* m_partSelectionWorker = nullptr;
     quint64 m_selectionInfoRevision = 0;

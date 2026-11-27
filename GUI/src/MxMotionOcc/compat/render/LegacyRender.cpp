@@ -84,11 +84,25 @@ void LegacyHighLightRender::publish() {
     if(!context_)return;
     QVector<PickResult> picks;
     for(const auto& [type,ids]:geometry_.values) for(int id:ids) {
-        auto p=context_->resolve(pickType(type),RenderPickResultData{id,-1,type==SelectionInfoType::GeoPart ? id : -1});
+        if (type == SelectionInfoType::GeoPart) {
+            if (context_->document().part(id)) {
+                PickResult p; p.kind = PickKind::Part; p.partId = id;
+                picks.append(p);
+            }
+            continue;
+        }
+        auto p=context_->resolve(pickType(type),RenderPickResultData{id,-1,-1});
         if(p.isValid())picks.append(p);
     }
     for(const auto& [type,ids]:mesh_.values)for(const auto& id:ids) {
-        const int value=type==SelectionInfoType::MeshPart ? id.part_id : type==SelectionInfoType::MeshNode ? id.data_id.node_id : id.data_id.element_id;
+        if (type == SelectionInfoType::MeshPart) {
+            if (context_->document().part(id.part_id)) {
+                PickResult p; p.kind = PickKind::Part; p.partId = id.part_id;
+                picks.append(p);
+            }
+            continue;
+        }
+        const int value=type==SelectionInfoType::MeshNode ? id.data_id.node_id : id.data_id.element_id;
         auto p=context_->resolve(pickType(type),RenderPickResultData{value,-1,id.part_id});
         if(p.isValid())picks.append(p);
     }

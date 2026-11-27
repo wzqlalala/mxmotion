@@ -1,4 +1,5 @@
 #include "MotionWindow.h"
+#include "MultiphysicsSchematicDialog.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "MotionTreeIcons.h"
 #include "OccViewport.h"
@@ -175,8 +176,8 @@ void MotionWindow::createRigidCommands()
     });
     add(Command::ModelCheck, tr("模型检查"), "joint_fixed.png", [this] { showModelDiagnostics(false, false); });
     add(Command::ConstraintDiagnostics, tr("约束诊断"), "joint_fixed.png", [this] { showModelDiagnostics(true, false); });
-    add(Command::HydraulicCircuitCheck, tr("回路检查"), "controlCalculation.png", [this] { showModelDiagnostics(false, true); });
-    add(Command::ShowMultiphysicsSchematic, tr("回路图"), "controlCalculation.png", [this] { showMultiphysicsSchematic(); });
+    add(Command::HydraulicCircuitCheck, tr("回路检查"), "mp_circuit_check.svg", [this] { showModelDiagnostics(false, true); });
+    add(Command::ShowMultiphysicsSchematic, tr("回路图"), "mp_schematic.svg", [this] { showMultiphysicsSchematic(); });
     add(Command::LoadRigidExample, tr("刚体示例"), "movingBody.png", [this] { loadRigidExample(); });
     const auto addResult = [this](Command id, const QString& text, const char* icon, ModelNode::Kind kind) {
         auto* action = new QAction(TreeIcons::item(QString::fromLatin1(icon)), text, this);
@@ -471,6 +472,19 @@ void MotionWindow::selectRigidNode(ModelNode node)
     default: break;
     }
     if (!m_animationActive) refreshMotionSymbols();
+    if (!m_syncingSchematic) {
+        const bool multiphysicsEntity = node.kind == ModelNode::Native
+            && (node.collection == QLatin1String("hydraulicCylinders")
+                || node.collection == QLatin1String("hydraulicMotors")
+                || node.collection == QLatin1String("hydraulicNodes")
+                || node.collection == QLatin1String("hydraulicComponents")
+                || node.collection == QLatin1String("electricMotors")
+                || node.collection == QLatin1String("powerSupplies")
+                || node.collection == QLatin1String("inverters")
+                || node.collection == QLatin1String("ehaActuators")
+                || node.collection == QLatin1String("emaActuators"));
+        syncMultiphysicsSchematic(multiphysicsEntity, multiphysicsEntity);
+    }
 }
 
 void MotionWindow::showRigidMenu(ModelNode node, const QPoint& globalPosition)
@@ -568,6 +582,7 @@ void MotionWindow::showEditor(QWidget* editor)
 
 void MotionWindow::closeEditor(bool immediate)
 {
+    if (m_schematicDialog && m_schematicDialog->isPortPicking()) m_schematicDialog->cancelPortPick(false);
     if (m_original && m_editor && m_editor->property("mxOriginalMotionPanel").toBool()) m_original->endEdit();
     if (m_viewport && m_viewport->isPicking()) { m_viewport->endPick(); m_viewport->setProperty("nativePickOwner",QVariant{}); }
     if (!m_editor) return;
@@ -575,6 +590,7 @@ void MotionWindow::closeEditor(bool immediate)
     m_editor = nullptr;
     editor->hide();
     m_parameterLayout->removeWidget(editor);
+    editor->setParent(nullptr);
     if (immediate) delete editor;
     else editor->deleteLater();
     m_parameterLayout->setContentsMargins(8, 7, 8, 7);
@@ -804,6 +820,7 @@ void MotionWindow::commitRigid(RigidModel model, ModelNode selection)
     updateParameters();
     updateActions();
     refreshMotionSymbols();
+    syncMultiphysicsSchematic(false, false);
     setNotice(tr("已更新运动模型。"));
 }
 
@@ -902,6 +919,7 @@ void MotionWindow::pollRigidSolve()
         m_results[id] = run;
         m_selectionNode = {ModelNode::Scenario, id};
         updateTree();
+        syncMultiphysicsSchematic(false, false);
         const auto message = run->result.termination == ResultTermination::StaticEquilibrium
             ? tr("静力平衡完成。已保存平衡构型与载荷，可打开动画查看变形或导出结果。")
             : run->result.termination != ResultTermination::EndTime
@@ -1006,7 +1024,12 @@ void MotionWindow::seekRigidTime(double seconds)
         }
     }
     m_viewport->setPartPoses(sample.partPoses);
-    if (run.input.nativeInput) m_viewport->setMotionSymbols(nativeMotionSymbols(m_document,run.input.nativeInput->document,sample.partPoses,{},-1,sample.bodyPoses));
+    if (run.input.nativeInput) {
+        const QString symCol = m_showAllMotionSymbols ? QStringLiteral("*") : m_selectionNode.collection;
+        const int symId = m_showAllMotionSymbols ? -1 : m_selectionNode.id;
+        m_viewport->setMotionSymbols(nativeMotionSymbols(
+            m_document, run.input.nativeInput->document, sample.partPoses, symCol, symId, sample.bodyPoses));
+    }
     m_viewport->setDeformedMeshes(sample.flexMeshes, sample.flexHiddenParts);
     if (m_flexContour->currentData().toInt()>=0 && !run.result.flexBodies.empty()) {
         const auto kind=FlexContourKind(m_flexContour->currentData().toInt());
@@ -1060,6 +1083,7 @@ void MotionWindow::seekRigidTime(double seconds)
     m_timeline->setValue(sample.frameIndex);
     m_timeLabel->setText(tr("时间: %1 s / %2 s").arg(sample.seconds, 0, 'f', 3).arg(frames.back().seconds, 0, 'f', 3));
     if (m_followCurveMarker->isChecked()) m_rigidPlot->setTime(sample.seconds);
+    if (m_schematicDialog) m_schematicDialog->setPlaybackFrame(sample.frameIndex);
 }
 
 void MotionWindow::setPlayback(bool play)
@@ -1089,8 +1113,10 @@ void MotionWindow::stopRigidPlayback()
 void MotionWindow::refreshMotionSymbols()
 {
     if (!m_viewport) return;
+    const QString symCol = m_showAllMotionSymbols ? QStringLiteral("*") : m_selectionNode.collection;
+    const int symId = m_showAllMotionSymbols ? -1 : m_selectionNode.id;
     m_viewport->setMotionSymbols(m_model.nativeDocument
-        ? nativeMotionSymbols(m_document, *m_model.nativeDocument, {}, m_selectionNode.collection, m_selectionNode.id)
+        ? nativeMotionSymbols(m_document, *m_model.nativeDocument, {}, symCol, symId)
         : QVector<MotionSymbol>{});
 }
 

@@ -1,6 +1,7 @@
 #include "MotionWindow.h"
 #include "MotionWorkspace.h"
 #include "MotionViewPages.h"
+#include "MultiphysicsSchematicDialog.h"
 #include "compat/model/LegacyMotionContext.h"
 #include "compat/picking/LegacyPickContext.h"
 #include "MotionTreeIcons.h"
@@ -231,6 +232,11 @@ MotionWindow::~MotionWindow()
     }
     // Original editors retain pointers into the typed model and callbacks
     // into the viewport. Release them while both services still exist.
+    if (m_schematicDialog) {
+        m_schematicDialog->disconnect(this);
+        m_schematicDialog->close();
+        delete m_schematicDialog;
+    }
     closeEditor(true);
     if(m_original) {
         m_original->disconnect(this);
@@ -310,6 +316,54 @@ void MotionWindow::createCommands()
     add(Command::Right, tr("右视图"), view + "youshitu.png", [this] { m_viewport->viewRight(); });
     add(Command::Isometric, tr("轴侧视图"), view + "zhouceshitu.png", [this] { m_viewport->viewIsometric(); });
 
+    auto* leftDragModes = new QActionGroup(this);
+    leftDragModes->setExclusive(true);
+    auto leftDragMode = [&](Command id, const QString& label, const QString& image,
+                            OccViewport::LeftButtonMode value, const QString& hint, const char* objectName) {
+        auto* action = add(id, label, view + image, [this, value] {
+            if (m_viewport->mouseNavigationMode() != OccViewport::MouseNavigationMode::Classic) {
+                m_viewport->setMouseNavigationMode(OccViewport::MouseNavigationMode::Classic);
+                command(Command::NavigationClassic)->setChecked(true);
+            }
+            m_viewport->setLeftButtonMode(value);
+            setStatusNotice(m_viewport->mouseNavigationHint());
+        });
+        action->setObjectName(QString::fromLatin1(objectName));
+        action->setCheckable(true);
+        action->setToolTip(hint);
+        leftDragModes->addAction(action);
+    };
+    leftDragMode(Command::OrbitSpaceMode, tr("空间旋转"), QStringLiteral("kongjianxuanzhuan1.png"),
+        OccViewport::LeftButtonMode::OrbitSpace,
+        tr("空间旋转（左键拖动绕当前旋转中心三维旋转；中键拖动平移；滚轮缩放；左键单击点选）"), "viewOrbitSpaceAction");
+    leftDragMode(Command::OrbitPlaneMode, tr("平面旋转"), QStringLiteral("pingmianxuanzhuan.png"),
+        OccViewport::LeftButtonMode::OrbitPlane,
+        tr("平面旋转（左键拖动绕当前旋转中心在屏幕平面内旋转；中键拖动平移；滚轮缩放）"), "viewOrbitPlaneAction");
+    leftDragMode(Command::PanDragMode, tr("平移"), QStringLiteral("pingyi3x.png"),
+        OccViewport::LeftButtonMode::Pan,
+        tr("平移（左键或中键拖动平移视图；滚轮缩放；左键单击点选）"), "viewPanDragAction");
+    command(Command::OrbitSpaceMode)->setChecked(true);
+
+    auto* viewCenterAct = add(Command::ViewRotationCenter, tr("视图旋转中心"), view + "shituxuanzhuanzhongxin.png", [this] {
+        m_viewport->setRotationCenterToView();
+    });
+    viewCenterAct->setObjectName(QStringLiteral("viewCenterPivotAction"));
+    viewCenterAct->setToolTip(tr("视图旋转中心（以当前视口屏幕中心位置作为旋转中心）"));
+
+    auto* modelCenterAct = add(Command::ModelRotationCenter, tr("模型旋转中心"), view + "moxingxuanzhuanzhongxin.png", [this] {
+        m_viewport->setRotationCenterToModel();
+    });
+    modelCenterAct->setObjectName(QStringLiteral("modelCenterPivotAction"));
+    modelCenterAct->setToolTip(tr("模型旋转中心（恢复默认：以整个可见模型的包围盒中心作为旋转中心）"));
+
+    auto* customCenterAct = add(Command::CustomRotationCenter, tr("自定义旋转中心"), view + "zidingyixuanzhuanzhongxin.png", [this] {
+        if (command(Command::CustomRotationCenter)->isChecked()) m_viewport->beginPickRotationCenter();
+        else m_viewport->cancelPickRotationCenter();
+    });
+    customCenterAct->setObjectName(QStringLiteral("customCenterPivotAction"));
+    customCenterAct->setCheckable(true);
+    customCenterAct->setToolTip(tr("自定义旋转中心（点击模型顶点、棱边或表面设定旋转中心；也可直接双击模型表面）"));
+
     auto* navigation = new QActionGroup(this);
     auto navigationMode = [&](Command id, const QString& label, OccViewport::MouseNavigationMode value,
                               const QString& hint, const char* objectName) {
@@ -323,7 +377,7 @@ void MotionWindow::createCommands()
         navigation->addAction(action);
     };
     navigationMode(Command::NavigationClassic, tr("经典导航"), OccViewport::MouseNavigationMode::Classic,
-        tr("左键拖动旋转；中键或右键拖动平移；滚轮按光标缩放；左键点选。"), "mouseNavigationClassic");
+        tr("左键拖动旋转；中键拖动平移；滚轮按光标缩放；左键点选；默认绕整个模型包围盒中心旋转。"), "mouseNavigationClassic");
     navigationMode(Command::NavigationNx, tr("NX 导航"), OccViewport::MouseNavigationMode::Nx,
         tr("中键旋转；Shift+中键平移；Ctrl+中键拖动或滚轮缩放；左键点选。双击表面设旋转中心，双击空白适合全部。"), "mouseNavigationNx");
     command(Command::NavigationClassic)->setChecked(true);
@@ -339,8 +393,18 @@ void MotionWindow::createCommands()
     mode(Command::Wireframe, tr("线框模型"), "xiankuangmoxing.png", OccViewport::DisplayMode::Wireframe);
     mode(Command::MeshDisplay, tr("网格显示"), "wanggexianshi3x.png", OccViewport::DisplayMode::Mesh);
     command(Command::ShadedEdges)->setChecked(true);
+    auto* toggleSymbols = add(Command::ToggleMotionSymbols, tr("显示运动符号"), "BrowserTree/motion_jointParentItem.png", [this] {
+        m_showAllMotionSymbols = command(Command::ToggleMotionSymbols)->isChecked();
+        if (m_animationActive) seekRigidTime(m_playbackTime);
+        else refreshMotionSymbols();
+    });
+    toggleSymbols->setObjectName(QStringLiteral("toggleMotionSymbolsAction"));
+    toggleSymbols->setCheckable(true);
+    toggleSymbols->setChecked(false);
+    toggleSymbols->setToolTip(tr("全局预览全部三维运动学与作动器符号（默认仅按模型树当前选中项显示）"));
     add(Command::ClearSelection, tr("清除选择"), "display/yincangquanbu.png", [this] {
-        if (m_viewport->isPicking()) { m_viewport->endPick(); emit m_viewport->pickCancelled(); }
+        if (m_viewport->isPickingRotationCenter()) m_viewport->cancelPickRotationCenter();
+        else if (m_viewport->isPicking()) { m_viewport->endPick(); emit m_viewport->pickCancelled(); }
         else selectPart(-1);
     }, QKeySequence(Qt::Key_Escape));
     auto visibilityChanged = [this] { syncViewport(); updateTree(); updateParameters(); updateActions(); };
@@ -463,6 +527,11 @@ void MotionWindow::createWorkspace()
     });
     selectionScroll->setWidget(m_selectionDetails);
     m_selectionDock = addPane("Select", tr("选择信息"), selectionPage);
+    connect(m_selectionDock, &ads::CDockWidget::viewToggled, this, [this](bool open) {
+        if (!open) return;
+        if (m_selectionTableDeferred) updateSelectionInfo();
+        else if (m_selectionDetailsDirty) populateSelectionTable(m_cachedSelectionInfo);
+    });
     auto* bottom = m_docks->addDockWidget(ads::BottomDockWidgetArea, m_selectionDock);
     auto* outputPage = new QWidget;
     auto* outputLayout = new QVBoxLayout(outputPage);
@@ -532,18 +601,19 @@ void MotionWindow::applyDockTheme()
         "ads--CDockAreaTitleBar,ads--CDockAreaTabBar,ads--CDockWidgetTab { background:%1; border:none; }"
         "ads--CDockAreaTitleBar { border-bottom:1px solid %2; }"
         "ads--CDockWidgetTab { height:%3px; }"
-        "ads--CDockWidgetTab QLabel { color:%4; font-size:%5px; background:transparent; font-weight:400; }"
+        "ads--CDockWidgetTab QLabel { font-family:'%8'; color:%4; font-size:%5px; background:transparent; font-weight:400; }"
         "ads--CDockWidgetTab[activeTab=\"true\"] { background:%6; }"
         "ads--CDockWidgetTab:hover { background:%7; }"
         "QWidget[mxSurface=\"true\"], QToolBar#viewToolBar, QToolBar#viewDisplayBar { background:%6; }"
         "QToolBar#viewToolBar, QToolBar#viewDisplayBar { border:none; spacing:1px; }"
         "QToolButton#viewportPickMode { min-width:90px; }"
+        "QDoubleSpinBox#viewRotateStepSpin { font-family:'%8'; font-size:%5px; color:%4; background:%6; border:1px solid %2; border-radius:3px; padding:0 3px; }"
         "ads--CDockSplitter::handle { background:#a8b3c2; }"
         "ads--CDockSplitter::handle:horizontal { width:1px; }"
         "ads--CDockSplitter::handle:vertical { height:1px; }")
         .arg(UiPalette::headerHex(), UiPalette::borderHex()).arg(UiMetrics::windowHeaderHeight())
         .arg(UiPalette::textHex()).arg(UiMetrics::bodyFontSize())
-        .arg(UiPalette::surfaceHex(), UiPalette::hoverHex());
+        .arg(UiPalette::surfaceHex(), UiPalette::hoverHex(), UiMetrics::uiFontFamily());
     m_docks->setStyleSheet(css);
     m_output->setStyleSheet(QStringLiteral(
         "QTextEdit#motionOutput { background:%1; color:%2; border:1px solid %3; font-family:'%4'; font-size:14px; }")
@@ -552,11 +622,13 @@ void MotionWindow::applyDockTheme()
             m_output->property("outputFontFamily").toString()));
     m_output->document()->findChild<QSyntaxHighlighter*>()->rehighlight();
     statusBar()->setStyleSheet(QStringLiteral(
-        "QStatusBar { background:%1; color:%2; border-top:1px solid %3; }"
+        "QStatusBar { font-family:'%5'; font-size:%6px; background:%1; color:%2; border-top:1px solid %3; }"
         "QStatusBar::item { border:none; }"
-        "QLabel#selectionStatus { background:transparent; color:%2; border:none; padding:0 5px; }"
+        "QLabel#selectionStatus { font-family:'%5'; font-size:%6px; background:transparent; color:%2; border:none; padding:0 5px; }"
         "QLabel#selectionStatus:hover { background:%4; }")
-        .arg(UiPalette::surfaceHex(), UiPalette::textHex(), UiPalette::borderHex(), UiPalette::hoverHex()));
+        .arg(UiPalette::surfaceHex(), UiPalette::textHex(), UiPalette::borderHex(), UiPalette::hoverHex(),
+             UiMetrics::uiFontFamily())
+        .arg(UiMetrics::bodyFontSize()));
     updateSelectionInfo();
 }
 
@@ -576,6 +648,9 @@ QWidget* MotionWindow::createViewportFrame()
     viewTools->setObjectName(QStringLiteral("viewToolBar"));
     viewTools->setIconSize(QSize(20, 20));
     viewTools->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    for (const auto id : { Command::OrbitSpaceMode, Command::OrbitPlaneMode, Command::PanDragMode })
+        viewTools->addAction(command(id));
+    viewTools->addSeparator();
     viewTools->addAction(command(Command::Fit));
     const auto addViewTool = [this, viewTools](const QString& image, const QString& text, auto operation) {
         connect(viewTools->addAction(icon(QStringLiteral("CenterMainWindow/") + image), text),
@@ -583,14 +658,33 @@ QWidget* MotionWindow::createViewportFrame()
     };
     addViewTool("suoxiaoyibei.png", tr("缩小一倍"), [this] { m_viewport->zoomView(false, 2); });
     addViewTool("fangdayibei.png", tr("放大一倍"), [this] { m_viewport->zoomView(true, 2); });
-    addViewTool("nishizhenxuanzhuan.png", tr("逆时针旋转 30°"), [this] { m_viewport->rotateView("Sz", 30); });
-    addViewTool("shunshizhenxuanzhuan.png", tr("顺时针旋转 30°"), [this] { m_viewport->rotateView("Sz", -30); });
+    viewTools->addSeparator();
+    for (const auto id : { Command::ViewRotationCenter, Command::ModelRotationCenter, Command::CustomRotationCenter })
+        viewTools->addAction(command(id));
+    addViewTool("nishizhenxuanzhuan.png", tr("逆时针旋转"), [this] {
+        m_viewport->rotateView(QStringLiteral("Sz"), m_rotateStepSpin ? m_rotateStepSpin->value() : 30.0);
+    });
+    m_rotateStepSpin = new QDoubleSpinBox(viewTools);
+    m_rotateStepSpin->setObjectName(QStringLiteral("viewRotateStepSpin"));
+    m_rotateStepSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_rotateStepSpin->setRange(0.1, 360.0);
+    m_rotateStepSpin->setDecimals(1);
+    m_rotateStepSpin->setSingleStep(5.0);
+    m_rotateStepSpin->setValue(30.0);
+    m_rotateStepSpin->setAlignment(Qt::AlignCenter);
+    m_rotateStepSpin->setFixedSize(44, 22);
+    m_rotateStepSpin->setToolTip(tr("单步平面旋转角度（度）"));
+    viewTools->addWidget(m_rotateStepSpin);
+    addViewTool("shunshizhenxuanzhuan.png", tr("顺时针旋转"), [this] {
+        m_viewport->rotateView(QStringLiteral("Sz"), -(m_rotateStepSpin ? m_rotateStepSpin->value() : 30.0));
+    });
     viewTools->addSeparator();
     for (const auto id : { Command::Front, Command::Back, Command::Bottom, Command::Top, Command::Left, Command::Right, Command::Isometric })
         viewTools->addAction(command(id));
     viewTools->addSeparator();
     for (const auto id : { Command::ShadedEdges, Command::Wireframe, Command::Shaded, Command::MeshDisplay })
         viewTools->addAction(command(id));
+    viewTools->addAction(command(Command::ToggleMotionSymbols));
     viewTools->addSeparator();
     auto* pickButton = new QToolButton(frame);
     pickButton->setObjectName(QStringLiteral("viewportPickMode"));
@@ -723,10 +817,12 @@ QWidget* MotionWindow::createModelBrowser()
     connect(m_tree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
         if (m_syncingTree) return;
         const auto node = treeNode(item);
-        const bool jointGroup = node.kind == ModelNode::None &&
-            (node.collection == "joints" || node.collection == "drives" || node.collection == "couplings");
+        const bool motionGroup = node.kind == ModelNode::None
+            && !node.collection.isEmpty()
+            && node.collection != QStringLiteral("__motionRoot")
+            && node.collection != QStringLiteral("parts");
         if (node.kind == ModelNode::Part || node.kind == ModelNode::None)
-            selectPart(node.id, jointGroup ? node.collection : QString{});
+            selectPart(node.id, motionGroup ? node.collection : QString{});
         else selectRigidNode(node);
     });
     connect(m_tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
@@ -764,7 +860,8 @@ QWidget* MotionWindow::createParameterPage()
     layout->setContentsMargins(8, 7, 8, 7);
     layout->setSpacing(6);
     m_parameterTitle = new QLabel(tr("参数设置"), panel);
-    auto titleFont = m_parameterTitle->font();
+    QFont titleFont(UiMetrics::uiFontFamily());
+    titleFont.setPixelSize(UiMetrics::bodyFontSize() + 1);
     titleFont.setBold(true);
     m_parameterTitle->setFont(titleFont);
     m_parameterTitle->setTextFormat(Qt::PlainText);
@@ -1050,6 +1147,33 @@ void MotionWindow::updateSelectionInfo()
         startPartSelectionMeasurement();
         return;
     }
+    m_selectionTableDeferred = false;
+    if (m_selectionDock && m_selectionDock->isClosed() && picks.size() > 3) {
+        // 选择信息面板未展开且批量选中大量点/节点/面时，先即时更新状态栏计数，展开面板时再按需测量与填表
+        const auto kind = picks.front().kind;
+        const bool uniformKind = std::all_of(picks.cbegin(), picks.cend(),
+            [kind](const PickResult& pick) { return pick.kind == kind; });
+        auto entityLabel = [](PickKind k) -> QString {
+            switch (k) {
+            case PickKind::Part: return QStringLiteral("部件");
+            case PickKind::Vertex: return QStringLiteral("几何点");
+            case PickKind::Edge: return QStringLiteral("几何线");
+            case PickKind::Face: return QStringLiteral("几何面");
+            case PickKind::Solid: return QStringLiteral("几何体");
+            case PickKind::Node: return QStringLiteral("节点");
+            case PickKind::MeshEdge: return QStringLiteral("单元线");
+            case PickKind::MeshFace: return QStringLiteral("单元面");
+            case PickKind::Element: return QStringLiteral("单元");
+            }
+            return QStringLiteral("项");
+        };
+        const QString statusText = uniformKind
+            ? QStringLiteral("%1 %2").arg(picks.size()).arg(entityLabel(kind))
+            : QStringLiteral("%1 项").arg(picks.size());
+        showSelectionInfo({statusText, {}, {}});
+        m_selectionTableDeferred = true;
+        return;
+    }
     showSelectionInfo(describeSelection(m_document, m_meshes, picks));
 }
 
@@ -1081,6 +1205,17 @@ void MotionWindow::showSelectionInfo(const SelectionInfo& info)
         .arg(label.toHtmlEscaped(), UiPalette::textHex()));
     m_selection->setToolTip(tr("打开选择信息\n%1").arg(status));
 
+    m_cachedSelectionInfo = info;
+    if (m_selectionDock && m_selectionDock->isClosed()) {
+        m_selectionDetailsDirty = true;
+        return;
+    }
+    populateSelectionTable(info);
+}
+
+void MotionWindow::populateSelectionTable(const SelectionInfo& info)
+{
+    m_selectionDetailsDirty = false;
     m_selectionDetails->setUpdatesEnabled(false);
     m_selectionDetails->setRowCount(0);
     m_selectionDetails->setColumnCount(std::max(1, info.columns.size()));
@@ -1098,7 +1233,7 @@ void MotionWindow::showSelectionInfo(const SelectionInfo& info)
             m_selectionDetails->setItem(row + 1, column, item);
         }
     }
-    m_selectionDetails->resizeColumnsToContents();
+    if (info.rows.size() <= 400) m_selectionDetails->resizeColumnsToContents();
     m_selectionDetails->setUpdatesEnabled(true);
 }
 
@@ -1164,6 +1299,19 @@ void MotionWindow::selectPart(int id, const QString& selectedGroup)
     if (item) m_tree->setCurrentItem(item);
     else if (selectedGroup.isEmpty() && current && current->data(0, partRole).isValid()) m_tree->setCurrentItem(nullptr);
     m_syncingTree = false;
+    refreshMotionSymbols();
+    const bool multiphysicsGroup = selectedGroup == QLatin1String("hydraulicCylinders")
+        || selectedGroup == QLatin1String("hydraulicMotors")
+        || selectedGroup == QLatin1String("hydraulicNodes")
+        || selectedGroup == QLatin1String("hydraulicComponents")
+        || selectedGroup == QLatin1String("electricMotors")
+        || selectedGroup == QLatin1String("powerSupplies")
+        || selectedGroup == QLatin1String("inverters")
+        || selectedGroup == QLatin1String("ehaActuators")
+        || selectedGroup == QLatin1String("emaActuators");
+    if (!m_syncingSchematic) {
+        syncMultiphysicsSchematic(multiphysicsGroup, multiphysicsGroup);
+    }
     updateParameters();
     updateActions();
 }
@@ -1484,6 +1632,7 @@ void MotionWindow::setProjectActive(bool active)
 void MotionWindow::newModel()
 {
     if (!confirmReplace()) return;
+    if (m_schematicDialog) m_schematicDialog->close();
     closeEditor();
     clearResults();
     m_model = {};

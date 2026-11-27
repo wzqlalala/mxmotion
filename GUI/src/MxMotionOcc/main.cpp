@@ -1,5 +1,6 @@
 #include "MotionWindow.h"
 #include "MotionWorkspace.h"
+#include "UiMetrics.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -9,6 +10,10 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QEventLoop>
+#include <QFileInfo>
+#include <QFont>
+#include <QFontDatabase>
+#include <QLibraryInfo>
 #include <QLocale>
 #include <QMessageBox>
 #include <QResource>
@@ -82,11 +87,35 @@ int main(int argc, char* argv[])
     QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
+#ifdef Q_OS_WIN
+    // 全局启用 Windows OpenGL 全屏/最大化边框兼容，防止部分显卡驱动在最大化时把内嵌 QOpenGLWidget 的主窗口
+    // 提升为独占/独立翻转表面而遮挡“文件”菜单与模型树右键 QMenu 弹窗（QTBUG-41309 / QTBUG-50271）。
+    if (auto fn = reinterpret_cast<void (*)(bool)>(
+            QGuiApplication::platformFunction(QByteArrayLiteral("WindowsSetHasBorderInFullScreenDefault")))) {
+        fn(true);
+    }
+#endif
     app.setOrganizationName(QStringLiteral("MxSim"));
     app.setApplicationName(QStringLiteral("MxMotionOcc"));
     app.setApplicationVersion(QStringLiteral("1.0"));
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     QLocale::setDefault(QLocale(QLocale::Chinese, QLocale::China));
+
+    // 与主程序一致：先加载可选保底字体，再将全局默认字体统一设为规范 UI 字体（Windows 下为微软雅黑），
+    // 防止未单独声明 QSS font-family 的树、列表、状态栏、Qwt 坐标轴及画布回退到系统默认宋体。
+    const QString bundledFontPath = QCoreApplication::applicationDirPath() + QStringLiteral("/SourceHanSansSC-Normal.otf");
+    if (QFileInfo::exists(bundledFontPath))
+        QFontDatabase::addApplicationFont(bundledFontPath);
+    QFont appFont(MxFunctions::UiMetrics::uiFontFamily());
+    appFont.setPixelSize(MxFunctions::UiMetrics::bodyFontSize());
+    app.setFont(appFont);
+
+    auto* qtTranslator = new QTranslator(&app);
+    const QString localTransDir = QCoreApplication::applicationDirPath() + QStringLiteral("/translations");
+    if (qtTranslator->load(QStringLiteral("qt_zh_CN.qm"), localTransDir)
+        || qtTranslator->load(QStringLiteral("qt_zh_CN.qm"), QLibraryInfo::location(QLibraryInfo::TranslationsPath))) {
+        app.installTranslator(qtTranslator);
+    }
 
     QCommandLineParser args;
     args.setApplicationDescription(QStringLiteral("MxSim.Motion — OCC / OpenGL / Netgen"));

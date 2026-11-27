@@ -167,19 +167,11 @@ void main() {
 }
 )GLSL";
 
-inline constexpr char BackdropVertex[] = R"GLSL(#version 330 core
-out float vHeight;
-void main() {
-    const vec2 corners[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
-    vec2 p = corners[gl_VertexID];
-    gl_Position = vec4(p, 0.0, 1.0);
-    vHeight = 0.5 * p.y + 0.5;
-}
-)GLSL";
-
 // CAD vertices use a screen-sized, depth-tested marker. The geometry shader
 // avoids platform-dependent glPointSize limits and keeps Qt logical-pixel size.
 inline constexpr char PointVertex[] = R"GLSL(#version 330 core
+layout(location=0) in vec3 aPosition;
+uniform bool uUseAttribute;
 uniform vec3 uPointPosition;
 uniform mat4 uView;
 uniform mat4 uProjection;
@@ -188,8 +180,9 @@ uniform vec3 uPartOrigin;
 uniform mat4 uPartToPivot;
 uniform bool uPosed;
 void main() {
-    vec3 local = uPointPosition - uPivot;
-    if (uPosed) local = mat3(uPartToPivot) * (uPointPosition - uPartOrigin) + uPartToPivot[3].xyz;
+    vec3 src = uUseAttribute ? aPosition : uPointPosition;
+    vec3 local = src - uPivot;
+    if (uPosed) local = mat3(uPartToPivot) * (src - uPartOrigin) + uPartToPivot[3].xyz;
     gl_Position = uProjection * uView * vec4(local, 1.0);
 }
 )GLSL";
@@ -231,16 +224,6 @@ void main() {
     if (coverage <= 0.0) discard;
     float border = smoothstep(radius - uBorderPixels - 0.5, radius - uBorderPixels + 0.5, distance);
     fragColor = vec4(mix(uColor.rgb, vec3(1.0), border), uColor.a * coverage);
-}
-)GLSL";
-
-inline constexpr char BackdropFragment[] = R"GLSL(#version 330 core
-in float vHeight;
-uniform vec3 uBottom;
-uniform vec3 uTop;
-out vec4 fragColor;
-void main() {
-    fragColor = vec4(mix(uBottom, uTop, clamp(vHeight, 0.0, 1.0)), 1.0);
 }
 )GLSL";
 

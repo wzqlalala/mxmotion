@@ -957,19 +957,19 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
 
         setCollection(doc, "hydraulicNodes", {
             QJsonObject{{"id", 1}, {"name", "主回油箱"}, {"enabled", true}, {"nodeType", "Tank"},
-                        {"pressureMPa", 0.1}, {"schemX", -520.0}, {"schemY", 0.0}},
+                        {"pressureMPa", 0.1}, {"schemX", -591.0}, {"schemY", -170.0}},
             QJsonObject{{"id", 2}, {"name", "泵出口高压母管"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 180.0}, {"initialPressureMPa", 11.2}, {"schemX", -180.0}, {"schemY", -80.0}},
+                        {"volumeMl", 180.0}, {"initialPressureMPa", 11.2}, {"schemX", -121.0}, {"schemY", -170.0}},
             QJsonObject{{"id", 3}, {"name", "高压精滤后腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 90.0}, {"initialPressureMPa", 11.2}, {"schemX", 30.0}, {"schemY", -80.0}},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 11.2}, {"schemX", 347.0}, {"schemY", -170.0}},
             QJsonObject{{"id", 4}, {"name", "支路减压稳压腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 100.0}, {"initialPressureMPa", 7.8}, {"schemX", 240.0}, {"schemY", -80.0}},
+                        {"volumeMl", 100.0}, {"initialPressureMPa", 7.8}, {"schemX", -567.0}, {"schemY", 145.0}},
             QJsonObject{{"id", 5}, {"name", "输油管末端阀前腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 80.0}, {"initialPressureMPa", 7.8}, {"schemX", 450.0}, {"schemY", -80.0}},
+                        {"volumeMl", 80.0}, {"initialPressureMPa", 7.8}, {"schemX", -123.0}, {"schemY", 145.0}},
             QJsonObject{{"id", 6}, {"name", "马达正向A口腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 45.0}, {"initialPressureMPa", 0.6}, {"schemX", 730.0}, {"schemY", -135.0}},
+                        {"volumeMl", 45.0}, {"initialPressureMPa", 0.6}, {"schemX", 321.0}, {"schemY", 99.0}},
             QJsonObject{{"id", 7}, {"name", "马达反向B口腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 45.0}, {"initialPressureMPa", 0.6}, {"schemX", 730.0}, {"schemY", -20.0}}
+                        {"volumeMl", 45.0}, {"initialPressureMPa", 0.6}, {"schemX", 321.0}, {"schemY", 191.0}}
         });
 
         setCollection(doc, "hydraulicComponents", {
@@ -978,38 +978,38 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"suctionNodeId", 1}, {"deliveryNodeId", 2},
                 {"displacementCcRev", 6.0}, {"speedExpression", "1500"},
                 {"volumetricEfficiency", 0.95}, {"mechanicalEfficiency", 0.90}, {"ratedPressureMPa", 14.0},
-                {"schemX", -355.0}, {"schemY", -80.0}
+                {"schemX", -367.0}, {"schemY", -170.0}
             },
             QJsonObject{
                 {"id", 2}, {"name", "先导式安全溢流阀"}, {"enabled", true}, {"componentType", "ReliefValve"},
                 {"inletNodeId", 2}, {"outletNodeId", 1},
                 {"crackingPressureMPa", 11.5}, {"pressureOverrideMPa", 0.8}, {"ratedFlowLpm", 24.0},
-                {"schemX", -355.0}, {"schemY", 65.0}
+                {"schemX", -121.0}, {"schemY", -38.0}
             },
             QJsonObject{
                 {"id", 3}, {"name", "隔膜式稳压蓄能器"}, {"enabled", true}, {"componentType", "Accumulator"},
                 {"targetNodeId", 2},
                 {"prechargePressureMPa", 7.0}, {"gasVolumeL", 0.35}, {"polytropicGamma", 1.3},
-                {"schemX", -180.0}, {"schemY", 65.0}
+                {"schemX", -121.0}, {"schemY", -298.0}
             },
             QJsonObject{
                 {"id", 4}, {"name", "高压管路过滤器"}, {"enabled", true}, {"componentType", "Filter"},
                 {"inletNodeId", 2}, {"outletNodeId", 3},
                 {"ratedFlowLpm", 30.0}, {"cleanPressureDropMPa", 0.12}, {"foulingFactor", 1.05},
-                {"schemX", -75.0}, {"schemY", -80.0}
+                {"schemX", 125.0}, {"schemY", -170.0}
             },
             QJsonObject{
                 {"id", 5}, {"name", "定值减压阀"}, {"enabled", true}, {"componentType", "PressureReducingValve"},
                 {"inletNodeId", 3}, {"outletNodeId", 4},
                 {"regulatedPressureMPa", 7.8}, {"pressureBandMPa", 0.6},
                 {"ratedFlowLpm", 18.0}, {"ratedPressureDropMPa", 1.0},
-                {"schemX", 135.0}, {"schemY", -80.0}
+                {"schemX", 569.0}, {"schemY", -170.0}
             },
             QJsonObject{
                 {"id", 6}, {"name", "高压输油无缝钢管"}, {"enabled", true}, {"componentType", "Pipe"},
                 {"inletNodeId", 4}, {"outletNodeId", 5},
                 {"lengthMm", 850.0}, {"diameterMm", 10.0}, {"localLossCoeff", 0.5},
-                {"schemX", 345.0}, {"schemY", -80.0}
+                {"schemX", -345.0}, {"schemY", 145.0}
             },
             QJsonObject{
                 {"id", 7}, {"name", "四通电液比例伺服换向阀"}, {"enabled", true}, {"componentType", "ServoValve"},
@@ -1019,7 +1019,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"commandExpression", "0"},
                 {"commandTableX", QJsonArray{0.0, 0.08, 0.14, 0.64, 0.70, 0.90, 0.96, 1.46, 1.52, 1.60}},
                 {"commandTableY", QJsonArray{0.0, 0.0, 0.72, 0.72, 0.0, 0.0, -0.72, -0.72, 0.0, 0.0}},
-                {"schemX", 590.0}, {"schemY", -80.0}
+                {"schemX", 99.0}, {"schemY", 145.0}
             }
         });
 
@@ -1035,7 +1035,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
             {"ratedFlowLpm", 10.0}, {"ratedPressureDrop", 3.0},
             {"commandExpression", "0"},
             {"initialPressureA", 0.6}, {"initialPressureB", 0.6},
-            {"schemX", 910.0}, {"schemY", -80.0}
+            {"schemX", 543.0}, {"schemY", 145.0}
         }});
 
         const QJsonArray curves{
@@ -1110,7 +1110,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
             {"nominalVoltage", 48.0}, {"voltageExpression", "48"},
             {"internalResistance", 0.25}, {"capacitanceMf", 4.7},
             {"maxCurrent", 80.0}, {"chopperVoltage", 52.0}, {"chopperResistance", 4.0},
-            {"schemX", -430.0}, {"schemY", 0.0}
+            {"schemX", -320.0}, {"schemY", 0.0}
         }});
 
         const QStringList axisLabels{
@@ -1127,7 +1127,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
         QJsonArray inverters, motors;
         for (int idx = 0; idx < 6; ++idx) {
             const int id = idx + 1;
-            const double sy = -275.0 + idx * 110.0;
+            const double sy = -270.0 + idx * 108.0;
             inverters.append(QJsonObject{
                 {"id", id}, {"name", axisLabels[idx] + QStringLiteral("伺服驱动器")}, {"enabled", true},
                 {"supplyId", 1}, {"nominalBusVoltage", 48.0},
@@ -1135,7 +1135,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"efficiency", 0.96}, {"maxCurrent", maxCurrents[idx]},
                 {"kpPosition", 8.0}, {"kpSpeed", kpSpeeds[idx]}, {"kiSpeed", kiSpeeds[idx]}, {"kpCurrent", kpCurrents[idx]},
                 {"commandExpression", jointTrajExpr.value(idx)},
-                {"schemX", -70.0}, {"schemY", sy}
+                {"schemX", 0.0}, {"schemY", sy}
             });
             motors.append(QJsonObject{
                 {"id", id}, {"name", axisLabels[idx] + QStringLiteral("减速伺服电机")}, {"enabled", true},
@@ -1147,7 +1147,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"busVoltage", 48.0}, {"maxCurrent", maxCurrents[idx]},
                 {"controlMode", "ExternalInverter"}, {"inverterId", id},
                 {"commandExpression", "0"},
-                {"schemX", 290.0}, {"schemY", sy}
+                {"schemX", 320.0}, {"schemY", sy}
             });
         }
         setCollection(doc, "inverters", inverters);
@@ -1243,19 +1243,19 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
 
         setCollection(doc, "hydraulicNodes", {
             QJsonObject{{"id", 1}, {"name", "增压液压油箱_0.35MPa"}, {"enabled", true}, {"nodeType", "Tank"},
-                        {"pressureMPa", 0.35}, {"schemX", -520.0}, {"schemY", -150.0}},
+                        {"pressureMPa", 0.35}, {"schemX", -813.0}, {"schemY", -195.0}},
             QJsonObject{{"id", 2}, {"name", "EDP_5000psi高压供油母管"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 400.0}, {"initialPressureMPa", 33.8}, {"schemX", -160.0}, {"schemY", -210.0}},
+                        {"volumeMl", 400.0}, {"initialPressureMPa", 33.8}, {"schemX", -343.0}, {"schemY", -195.0}},
             QJsonObject{{"id", 3}, {"name", "高压管路精滤后腔"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 220.0}, {"initialPressureMPa", 33.8}, {"schemX", 75.0}, {"schemY", -210.0}},
+                        {"volumeMl", 220.0}, {"initialPressureMPa", 33.8}, {"schemX", 125.0}, {"schemY", -195.0}},
             QJsonObject{{"id", 4}, {"name", "前作动筒OD1无杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 90.0}, {"initialPressureMPa", 2.0}, {"schemX", 485.0}, {"schemY", -310.0}},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 2.0}, {"schemX", 569.0}, {"schemY", -343.0}},
             QJsonObject{{"id", 5}, {"name", "前作动筒OD1有杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 90.0}, {"initialPressureMPa", 1.5}, {"schemX", 485.0}, {"schemY", -235.0}},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 1.5}, {"schemX", 569.0}, {"schemY", -251.0}},
             QJsonObject{{"id", 6}, {"name", "后作动筒OD2无杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 90.0}, {"initialPressureMPa", 2.0}, {"schemX", 485.0}, {"schemY", -145.0}},
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 2.0}, {"schemX", 569.0}, {"schemY", -139.0}},
             QJsonObject{{"id", 7}, {"name", "后作动筒OD2有杆腔口"}, {"enabled", true}, {"nodeType", "Chamber"},
-                        {"volumeMl", 90.0}, {"initialPressureMPa", 1.5}, {"schemX", 485.0}, {"schemY", -70.0}}
+                        {"volumeMl", 90.0}, {"initialPressureMPa", 1.5}, {"schemX", 569.0}, {"schemY", -47.0}}
         });
 
         setCollection(doc, "hydraulicComponents", {
@@ -1264,25 +1264,25 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"suctionNodeId", 1}, {"deliveryNodeId", 2},
                 {"displacementCcRev", 32.0}, {"speedExpression", "3000"},
                 {"volumetricEfficiency", 0.96}, {"mechanicalEfficiency", 0.92}, {"ratedPressureMPa", 35.0},
-                {"schemX", -345.0}, {"schemY", -210.0}
+                {"schemX", -589.0}, {"schemY", -195.0}
             },
             QJsonObject{
                 {"id", 2}, {"name", "34.5MPa高压安全溢流阀"}, {"enabled", true}, {"componentType", "ReliefValve"},
                 {"inletNodeId", 2}, {"outletNodeId", 1},
                 {"crackingPressureMPa", 34.5}, {"pressureOverrideMPa", 1.2}, {"ratedFlowLpm", 140.0},
-                {"schemX", -345.0}, {"schemY", -65.0}
+                {"schemX", -343.0}, {"schemY", -63.0}
             },
             QJsonObject{
                 {"id", 3}, {"name", "氮气隔膜稳压蓄能器"}, {"enabled", true}, {"componentType", "Accumulator"},
                 {"targetNodeId", 2},
                 {"prechargePressureMPa", 21.0}, {"gasVolumeL", 1.25}, {"polytropicGamma", 1.35},
-                {"schemX", -160.0}, {"schemY", -65.0}
+                {"schemX", -343.0}, {"schemY", -323.0}
             },
             QJsonObject{
                 {"id", 4}, {"name", "高压管路精滤器"}, {"enabled", true}, {"componentType", "Filter"},
                 {"inletNodeId", 2}, {"outletNodeId", 3},
                 {"ratedFlowLpm", 150.0}, {"cleanPressureDropMPa", 0.18}, {"foulingFactor", 1.05},
-                {"schemX", -40.0}, {"schemY", -210.0}
+                {"schemX", -97.0}, {"schemY", -195.0}
             },
             QJsonObject{
                 {"id", 5}, {"name", "主外舱门前通道电液伺服阀"}, {"enabled", true}, {"componentType", "ServoValve"},
@@ -1292,7 +1292,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"commandExpression", "0"},
                 {"commandTableX", QJsonArray{0.0, 0.15, 0.25, 1.85, 1.95, 2.40}},
                 {"commandTableY", QJsonArray{0.0, 0.0, 0.65, 0.65, 0.0, 0.0}},
-                {"schemX", 280.0}, {"schemY", -270.0}
+                {"schemX", 347.0}, {"schemY", -297.0}
             },
             QJsonObject{
                 {"id", 6}, {"name", "主外舱门后通道电液伺服阀"}, {"enabled", true}, {"componentType", "ServoValve"},
@@ -1302,7 +1302,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"commandExpression", "0"},
                 {"commandTableX", QJsonArray{0.0, 0.15, 0.25, 1.85, 1.95, 2.40}},
                 {"commandTableY", QJsonArray{0.0, 0.0, 0.65, 0.65, 0.0, 0.0}},
-                {"schemX", 280.0}, {"schemY", -110.0}
+                {"schemX", 347.0}, {"schemY", -93.0}
             }
         });
 
@@ -1324,7 +1324,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
                 {"commandExpression", "0"},
                 {"initialPressureA", 1.5}, {"initialPressureB", 1.5},
-                {"schemX", 715.0}, {"schemY", -270.0}
+                {"schemX", 791.0}, {"schemY", -297.0}
             },
             QJsonObject{
                 {"id", 2}, {"name", "主外舱门后液压作动筒_OD2"}, {"enabled", true},
@@ -1340,7 +1340,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"ratedFlowLpm", 40.0}, {"ratedPressureDrop", 3.5},
                 {"commandExpression", "0"},
                 {"initialPressureA", 1.5}, {"initialPressureB", 1.5},
-                {"schemX", 715.0}, {"schemY", -110.0}
+                {"schemX", 791.0}, {"schemY", -93.0}
             }
         });
 
@@ -1351,7 +1351,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
             {"nominalVoltage", 270.0}, {"voltageExpression", "270"},
             {"internalResistance", 0.08}, {"capacitanceMf", 6.0},
             {"maxCurrent", 220.0}, {"chopperVoltage", 282.0}, {"chopperResistance", 4.0},
-            {"schemX", -345.0}, {"schemY", 155.0}
+            {"schemX", -320.0}, {"schemY", 150.0}
         }});
 
         setCollection(doc, "inverters", {
@@ -1364,7 +1364,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"commandExpression", "40"},
                 {"commandTableX", QJsonArray{0.0, 0.15, 2.00, 2.40}},
                 {"commandTableY", QJsonArray{40.0, 40.0, 220.0, 220.0}},
-                {"schemX", 15.0}, {"schemY", 95.0}
+                {"schemX", 0.0}, {"schemY", 96.0}
             },
             QJsonObject{
                 {"id", 2}, {"name", "折叠舱门EMA四象限逆变器"}, {"enabled", true},
@@ -1375,7 +1375,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
                 {"commandExpression", "20"},
                 {"commandTableX", QJsonArray{0.0, 0.35, 2.05, 2.40}},
                 {"commandTableY", QJsonArray{20.0, 20.0, 110.0, 110.0}},
-                {"schemX", 15.0}, {"schemY", 225.0}
+                {"schemX", 0.0}, {"schemY", 204.0}
             }
         });
 
@@ -1393,7 +1393,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
             {"viscousFriction", 8.0},
             {"controlMode", "ExternalInverter"}, {"inverterId", 1},
             {"commandExpression", "40"},
-            {"schemX", 390.0}, {"schemY", 95.0}
+            {"schemX", 320.0}, {"schemY", 96.0}
         }});
 
         setCollection(doc, "emaActuators", {QJsonObject{
@@ -1409,7 +1409,7 @@ void buildRealMultiphysicsCases(const QString& workspaceRoot)
             {"busVoltage", 270.0}, {"maxCurrent", 85.0},
             {"controlMode", "ExternalInverter"}, {"inverterId", 2},
             {"commandExpression", "20"},
-            {"schemX", 390.0}, {"schemY", 225.0}
+            {"schemX", 320.0}, {"schemY", 204.0}
         }});
 
         const QJsonArray curves{

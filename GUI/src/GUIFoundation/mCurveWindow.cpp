@@ -370,6 +370,8 @@ namespace MechMainWindow
         splitter->setStretchFactor(0, 2);
         splitter->setStretchFactor(1, 1);
         splitter->setSizes(QList<int>{800, 400});
+        // 曲线面板默认隐藏右侧“曲线设置/样式”子窗口，需要时仍可通过“曲线样式”入口或 setViewStyleVisible(true) 打开
+        styleDlg->hide();
         
         vLayout->addWidget(splitter);
 
@@ -384,11 +386,13 @@ namespace MechMainWindow
                 getPlotView()->getPlotViewStyleWidget()->show();
             });
 
-        QFont font(MxFunctions::UiMetrics::uiFontFamily(), 10);   // 第二参数是点阵大小
+        QFont font(MxFunctions::UiMetrics::uiFontFamily());
+        font.setPixelSize(MxFunctions::UiMetrics::helperFontSize());
         _plotView->getQwtPlot()->setAxisFont(X_Bottom, font);
         _plotView->getQwtPlot()->setAxisFont(X_Top, font);
         _plotView->getQwtPlot()->setAxisFont(Y_Left, font);
         _plotView->getQwtPlot()->setAxisFont(Y_Right, font);
+        setPlotTitle(QString());
     }
 
     /*================== 析构：释放曲线 ==================*/
@@ -407,7 +411,9 @@ namespace MechMainWindow
 
     void mCurveWindow::setPlotTitle(QString title)
     {
-        _plotView->getQwtPlot()->setTitle(title);
+        auto s = _plotView->getPlotSettings();
+        s.title = title;
+        _plotView->setPlotSettings(s);
     }
 
     void mCurveWindow::clearAllPlot()

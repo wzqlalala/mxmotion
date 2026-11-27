@@ -197,8 +197,11 @@ class OrientationTriadInteraction final : public QObject {
         return m_availability ? m_availability() : TriadNavigationAvailability::Available;
     }
     OrientationTriadHit Hit(const QPointF& viewport_point) const {
-        QFont font(QStringLiteral("Segoe UI")); font.setStyleHint(QFont::SansSerif);
-        font.setPointSizeF(std::max(7.5, m_hud.font().pointSizeF() * .85));
+        QFont font(MxFunctions::UiMetrics::uiFontFamily()); font.setStyleHint(QFont::SansSerif);
+        if (m_hud.font().pointSizeF() > 0.0)
+            font.setPointSizeF(std::max(7.5, m_hud.font().pointSizeF() * .85));
+        else
+            font.setPixelSize(std::max(10, int(std::lround(std::max(12, m_hud.font().pixelSize()) * .85))));
         return PickOrientationTriad(m_camera.Orientation(), m_hud.size(), QFontMetricsF(font).height(),
                                     viewport_point - m_hud.pos());
     }
@@ -272,7 +275,7 @@ class OrientationTriadInteraction final : public QObject {
             m_panel->setObjectName(QStringLiteral("orientationTriadAnglePanel"));
             m_panel->setFrameShape(QFrame::StyledPanel);
             m_panel->setAutoFillBackground(true);
-            QFont panel_font = m_hud.font(); panel_font.setFamily(QStringLiteral("Segoe UI"));
+            QFont panel_font = m_hud.font(); panel_font.setFamily(MxFunctions::UiMetrics::uiFontFamily());
             panel_font.setStyleHint(QFont::SansSerif); panel_font.setItalic(false); panel_font.setBold(false);
             m_panel->setFont(panel_font);
             auto* layout = new QHBoxLayout(m_panel); layout->setContentsMargins(4, 3, 4, 3); layout->setSpacing(4);
@@ -302,6 +305,9 @@ class OrientationTriadInteraction final : public QObject {
         if (!IsAvailable()) return;
         if (m_menu) delete m_menu.data();
         m_menu = new QMenu(m_viewport); m_menu->setObjectName(QStringLiteral("orientationTriadMenu"));
+        QFont menu_font(MxFunctions::UiMetrics::uiFontFamily());
+        menu_font.setPixelSize(MxFunctions::UiMetrics::bodyFontSize());
+        m_menu->setFont(menu_font);
         for (int axis = 0; axis < 3; ++axis) for (int sign : {-1, 1})
             m_menu->addAction(FaceName(axis, sign), this, [this, axis, sign] { SnapFace(axis, sign); });
         m_menu->addAction(QStringLiteral("轴测视图"), this, [this] {

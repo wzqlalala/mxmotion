@@ -166,12 +166,16 @@ int runMotionOccOriginalAutoFlexSmoke(QApplication&,const QString& directory) {
         for(std::size_t node=0;node<mesh.nodes.size();++node)
             if(box.contains(viewport->projectPoint(mesh.nodes[node],actualPart)))expected.insert(ids[int(node)]);
         require(expected.count(firstId)&&!box.contains(second),"Invalid AutoFlex box fixture");
-        gesture(Qt::LeftButton,box.topLeft(),box.bottomRight());
-        require(selectedIds()==expected,"Plain left rectangle did not add the projected attachment nodes");
-        gesture(Qt::RightButton,box.bottomRight(),box.topLeft());
-        require(selectedIds()==std::set<int>{secondId},"Right rectangle did not preserve the outside attachment node");
-        gesture(Qt::LeftButton,box.topLeft(),box.bottomRight(),Qt::ControlModifier);
-        require(selectedIds()==expected,"Ctrl+left rectangle no longer adds attachment nodes");
+        gesture(Qt::LeftButton,box.topLeft(),box.bottomRight(),Qt::ShiftModifier);
+        require(selectedIds()==expected,"Shift+left rectangle did not box-add the projected attachment nodes");
+        gesture(Qt::RightButton,box.bottomRight(),box.topLeft(),Qt::ShiftModifier);
+        require(selectedIds()==std::set<int>{secondId},"Shift+right rectangle did not box-subtract while preserving outside attachment node");
+        gesture(Qt::LeftButton,first,first,Qt::ControlModifier);
+        require(selectedIds().count(firstId)&&selectedIds().count(secondId),"Ctrl+left click did not single-add attachment node");
+        gesture(Qt::RightButton,first,first,Qt::ControlModifier);
+        require(selectedIds()==std::set<int>{secondId},"Ctrl+right click did not single-subtract attachment node");
+        gesture(Qt::LeftButton,box.topLeft(),box.bottomRight(),Qt::ShiftModifier);
+        require(selectedIds()==expected,"Shift+left rectangle did not re-add attachment nodes");
         require(viewport->projectPoint(mesh.nodes[targets[0].node],actualPart)==first&&
                     viewport->projectPoint(mesh.nodes[targets[1].node],actualPart)==second,
                 "Attachment rectangle gestures unexpectedly moved the camera");

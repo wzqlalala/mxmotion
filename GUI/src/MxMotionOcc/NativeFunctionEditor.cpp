@@ -1,4 +1,5 @@
 #include "NativeFunctionEditor.h"
+#include "compat/UiMetrics.h"
 
 #include "motion/functions/Function_Expr.h"
 #include "motion/functions/Function_Table.h"
@@ -29,6 +30,7 @@
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_grid.h>
+#include <qwt_text.h>
 
 #include <algorithm>
 #include <array>
@@ -217,6 +219,9 @@ public:
     {
         setWindowTitle(QStringLiteral("函数编辑与预览"));
         setObjectName(QStringLiteral("nativeFunctionEditor"));
+        QFont uiFont(MxFunctions::UiMetrics::uiFontFamily());
+        uiFont.setPixelSize(MxFunctions::UiMetrics::bodyFontSize());
+        setFont(uiFont);
         resize(680, 720);
         auto* layout = new QVBoxLayout(this);
         auto* modeForm = new QFormLayout;
@@ -381,10 +386,23 @@ public:
         m_status->setWordWrap(true); layout->addWidget(m_status);
         m_plot = new QwtPlot;
         m_plot->setObjectName(QStringLiteral("nativeFunctionPlot"));
+        m_plot->setFont(uiFont);
         m_plot->setMinimumHeight(200);
         m_plot->setCanvasBackground(Qt::white);
-        m_plot->setAxisTitle(QwtPlot::xBottom, QStringLiteral("时间 t (s)"));
-        m_plot->setAxisTitle(QwtPlot::yLeft, units.isEmpty() ? QStringLiteral("数值") : units);
+        {
+            QFont tickFont(MxFunctions::UiMetrics::uiFontFamily());
+            tickFont.setPixelSize(MxFunctions::UiMetrics::helperFontSize());
+            for (int axis = 0; axis < QwtPlot::axisCnt; ++axis)
+                m_plot->setAxisFont(axis, tickFont);
+            QFont axisTitleFont = uiFont;
+            axisTitleFont.setBold(true);
+            QwtText xTitle(QStringLiteral("时间 t (s)"));
+            xTitle.setFont(axisTitleFont);
+            QwtText yTitle(units.isEmpty() ? QStringLiteral("数值") : units);
+            yTitle.setFont(axisTitleFont);
+            m_plot->setAxisTitle(QwtPlot::xBottom, xTitle);
+            m_plot->setAxisTitle(QwtPlot::yLeft, yTitle);
+        }
         auto* grid = new QwtPlotGrid; grid->setMajorPen(QPen(QColor(220, 225, 230), 0, Qt::DotLine)); grid->attach(m_plot);
         m_curve = new QwtPlotCurve(QStringLiteral("激励函数"));
         m_curve->setRenderHint(QwtPlotItem::RenderAntialiased, true);

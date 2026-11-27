@@ -1,9 +1,11 @@
 #include "MotionWindow.h"
+#include "MultiphysicsSchematicDialog.h"
 #include "NativeMotionExchange.h"
 #include "OccViewport.h"
 #include "OriginalSelection.h"
 #include "compat/mViewportModelManager.h"
 #include "compat/model/LegacyMotionContext.h"
+#include "mPickWidgetData.h"
 
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
@@ -15,7 +17,13 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QGraphicsObject>
+#include <QGraphicsScene>
+#include <QGraphicsView>
+#include <QJsonDocument>
 #include <QLabel>
+#include <QTabBar>
+#include <QToolButton>
 #include <QMouseEvent>
 #include <QTextEdit>
 #include <QTableWidget>
@@ -195,7 +203,7 @@ int runMotionOccTreeSelectionSmoke(const QString& outputDirectory, const QString
         QElapsedTimer reference;
         reference.start();
         Bnd_Box bounds;
-        for (const auto& part : cad.parts()) BRepBndLib::AddOptimal(part.shape, bounds, false, false);
+        for (const auto& part : cad.parts()) BRepBndLib::AddOptimal(part.shape, bounds, true, false);
         const double assemblyBoundsMs = reference.nsecsElapsed() / 1e6;
         require(!bounds.IsVoid(), QStringLiteral("未取得装配包围盒"));
         reference.restart();
@@ -213,10 +221,146 @@ int runMotionOccTreeSelectionSmoke(const QString& outputDirectory, const QString
         require(displayedVolume->text() == exact.rows.last().at(1), QStringLiteral("选择信息的体积与精确测量不一致"));
         require(status->toolTip().contains(QStringLiteral("体积 = %1").arg(displayedVolume->text())),
             QStringLiteral("精确测量完成后状态栏未更新体积"));
+
+        // 测量进入视口交互拾取模式、Ribbon 选择页拾取、运动副点拾取及连续悬停拾取耗时
+        window.command(Command::ClearSelection)->trigger();
+        QElapsedTimer pickTimer;
+        pickTimer.start();
+        if (auto* pickFaceAct = window.findChild<QAction*>(QStringLiteral("pickFace"))) pickFaceAct->trigger();
+        const double enterFacePickMs = pickTimer.nsecsElapsed() / 1e6;
+
+        pickTimer.restart();
+        const QPoint centerPt(viewport->width() / 2, viewport->height() / 2);
+        for (int step = -5; step < 5; ++step) {
+            const QPoint pos(centerPt.x() + step * 8, centerPt.y() + step * 5);
+            QMouseEvent move(QEvent::MouseMove, pos, viewport->mapToGlobal(pos), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(viewport, &move);
+        }
+        const double hoverFaceAvgMs = (pickTimer.nsecsElapsed() / 1e6) / 10.0;
+
+        if (auto* pickSmartAct = window.findChild<QAction*>(QStringLiteral("pickSmart"))) pickSmartAct->trigger();
+        pickTimer.restart();
+        for (int step = -5; step < 5; ++step) {
+            const QPoint pos(centerPt.x() + step * 8, centerPt.y() + step * 5);
+            QMouseEvent move(QEvent::MouseMove, pos, viewport->mapToGlobal(pos), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(viewport, &move);
+        }
+        const double hoverSmartAvgMs = (pickTimer.nsecsElapsed() / 1e6) / 10.0;
+
+        if (auto* pickPartAct = window.findChild<QAction*>(QStringLiteral("pickPart"))) pickPartAct->trigger();
+        pickTimer.restart();
+        window.dispatchOriginalMotionAction(QStringLiteral("activePickSig"), int(MxFunctions::PickDataType::GeoFace));
+        const double enterRibbonPickMs = pickTimer.nsecsElapsed() / 1e6;
+        window.command(Command::ClearSelection)->trigger();
+
+        pickTimer.restart();
+        window.command(Command::AddRevolute)->trigger();
+        const double enterJointPickMs = pickTimer.nsecsElapsed() / 1e6;
+
+        // 若导入算例包含机电液元件，自动验证二维机电液原理图零重叠、缩放可读性并导出截图与坐标快照
+        const auto& mpDoc = getCVM->getModelData()->context->document();
+        const bool hasMultiphysics = !mpDoc.collection("hydraulicNodes").isEmpty()
+                                  || !mpDoc.collection("hydraulicComponents").isEmpty()
+                                  || !mpDoc.collection("powerSupplies").isEmpty()
+                                  || !mpDoc.collection("inverters").isEmpty();
+        if (hasMultiphysics) {
+            // 切换到“运动副与约束”与“机电液”菜单栏分页，导出实拍图并校验机电液按钮图标均非空且两两互不重复
+            if (auto* menuTabs = window.findChild<QTabBar*>(QStringLiteral("MenuTabBar"))) {
+                for (int ti = 0; ti < menuTabs->count(); ++ti) {
+                    if (menuTabs->tabText(ti) == QStringLiteral("运动副与约束")) {
+                        menuTabs->setCurrentIndex(ti);
+                        QApplication::processEvents();
+                        if (auto* ribbon = window.findChild<QWidget*>(QStringLiteral("mMenuWidget")))
+                            ribbon->grab().save(output.filePath(QStringLiteral("joints-ribbon.png")));
+                        break;
+                    }
+                }
+                for (int ti = 0; ti < menuTabs->count(); ++ti) {
+                    if (menuTabs->tabText(ti) == QStringLiteral("机电液")) {
+                        menuTabs->setCurrentIndex(ti);
+                        QApplication::processEvents();
+                        break;
+                    }
+                }
+            }
+            if (auto* ribbon = window.findChild<QWidget*>(QStringLiteral("mMenuWidget"))) {
+                ribbon->grab().save(output.filePath(QStringLiteral("multiphysics-ribbon.png")));
+                if (auto* stack = ribbon->findChild<QWidget*>(QStringLiteral("RibbonMenuStackeWidget"))) {
+                    QVector<QImage> seenIcons;
+                    QStringList seenLabels;
+                    for (auto* tb : stack->findChildren<QToolButton*>()) {
+                        if (!tb->isVisible() || tb->text().isEmpty()) continue;
+                        const QImage img = tb->icon().pixmap(24, 24).toImage();
+                        require(!img.isNull(), QStringLiteral("机电液菜单栏按钮缺少图标：%1").arg(tb->text()));
+                        for (int k = 0; k < seenIcons.size(); ++k) {
+                            require(img != seenIcons[k],
+                                    QStringLiteral("机电液菜单栏存在重复图标：%1 与 %2").arg(seenLabels[k], tb->text()));
+                        }
+                        seenIcons.push_back(img);
+                        seenLabels.push_back(tb->text());
+                    }
+                    log << "multiphysics_unique_ribbon_icons=" << seenIcons.size() << '\n';
+                }
+            }
+            for (QTreeWidgetItemIterator it(tree); *it; ++it) (*it)->setExpanded(true);
+            tree->scrollToBottom();
+            QApplication::processEvents();
+            tree->grab().save(output.filePath(QStringLiteral("multiphysics-tree.png")));
+
+            window.showMultiphysicsSchematic(true);
+            QApplication::processEvents();
+            auto* schem = window.findChild<MultiphysicsSchematicDialog*>(QStringLiteral("multiphysicsSchematicDialog"));
+            require(schem && schem->isVisible(), QStringLiteral("机电液原理图工作台未能打开"));
+            auto* schemView = schem->findChild<QGraphicsView*>(QStringLiteral("multiphysicsSchematicView"));
+            require(schemView && schemView->scene(), QStringLiteral("机电液原理图画布缺失"));
+            if (auto* autoBtn = schem->findChild<QAbstractButton*>(QStringLiteral("schemAutoLayoutButton"))) {
+                // 先抓取导入初始态截图，检验导入即零重叠
+                schem->exportPng(output.filePath(QStringLiteral("schematic-initial-canvas.png")));
+                schem->grab().save(output.filePath(QStringLiteral("schematic-initial-dialog.png")));
+                QVector<QRectF> cardBoxes;
+                for (QGraphicsItem* gi : schemView->scene()->items()) {
+                    if (auto* go = dynamic_cast<QGraphicsObject*>(gi)) {
+                        // 校验实际卡片主体外框（扣除端口悬停光圈与底部遥测预留边距）不发生任何重叠
+                        cardBoxes.push_back(go->boundingRect().adjusted(26, 22, -26, -32).translated(go->scenePos()));
+                    }
+                }
+                for (int i = 0; i < cardBoxes.size(); ++i) {
+                    for (int j = i + 1; j < cardBoxes.size(); ++j) {
+                        require(!cardBoxes[i].intersects(cardBoxes[j]),
+                                QStringLiteral("机电液原理图初始排布存在图元重叠"));
+                    }
+                }
+                // 再验证点击“自动排布”并导出最终坐标快照
+                autoBtn->click();
+                QApplication::processEvents();
+            }
+            const double schemScale = schemView->transform().m11();
+            require(schemScale >= 0.45,
+                    QStringLiteral("机电液原理图自适应缩放过小：%1").arg(schemScale, 0, 'f', 3));
+            require(schem->exportPng(output.filePath(QStringLiteral("schematic-canvas.png"))),
+                    QStringLiteral("导出机电液原理图 PNG 失败"));
+            schem->grab().save(output.filePath(QStringLiteral("schematic-dialog.png")));
+            QFile coordFile(output.filePath(QStringLiteral("schematic-motionData.json")));
+            if (coordFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                coordFile.write(QJsonDocument(schem->currentDocument().root.value(QStringLiteral("motionData")).toObject())
+                                    .toJson(QJsonDocument::Indented));
+            }
+            log << "schematic_scale=" << schemScale << '\n';
+        }
+
+        std::size_t totalTriangles = 0;
+        for (const auto& part : cad.parts()) totalTriangles += part.display.triangles.size();
+
         log << "parts=" << parts.size() << '\n'
+            << "triangles=" << qulonglong(totalTriangles) << '\n'
             << "first_native_node_ms=" << firstBodyMs << '\n' << "repeat_native_node_ms=" << repeatBodyMs << '\n'
             << "first_part_ms=" << firstPartMs << '\n' << "second_part_ms=" << secondPartMs << '\n'
             << "repeat_part_ms=" << repeatPartMs << '\n' << "return_from_native_to_part_ms=" << backToPartMs << '\n'
+            << "enter_face_pick_ms=" << enterFacePickMs << '\n'
+            << "enter_ribbon_pick_ms=" << enterRibbonPickMs << '\n'
+            << "enter_joint_pick_ms=" << enterJointPickMs << '\n'
+            << "hover_face_avg_ms=" << hoverFaceAvgMs << '\n'
+            << "hover_smart_avg_ms=" << hoverSmartAvgMs << '\n'
             << "uncached_assembly_bounds_ms=" << assemblyBoundsMs << '\n' << "exact_part_measurement_ms=" << exactMeasureMs << '\n'
             << "PASS selection, viewport highlight, empty-space retention and exact selection details\n";
         log.flush();

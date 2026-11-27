@@ -25,15 +25,15 @@ inline QIcon item(const QString& type)
         {"couplings", "BrowserTree/motion_couplingParentItem.png"},
         {"drives", "BrowserTree/motion_driveParentItem.png"},
         {"bodyDrives", "BrowserTree/motion_driveParentItem.png"},
-        {"hydraulicCylinders", "Motion/mech_hydraulic.png"},
-        {"hydraulicMotors", "Motion/mech_hydraulic.png"},
-        {"hydraulicNodes", "Motion/mech_hydraulic.png"},
-        {"hydraulicComponents", "Motion/mech_hydraulic.png"},
-        {"electricMotors", "Motion/electromechanicalCoupling.png"},
-        {"powerSupplies", "Motion/electromechanicalCoupling.png"},
-        {"inverters", "Motion/electromechanicalCoupling.png"},
-        {"ehaActuators", "Motion/mech_elec_hyd.png"},
-        {"emaActuators", "Motion/mech_elec_hyd.png"},
+        {"hydraulicCylinders", "Motion/mp_hyd_cylinder.svg"},
+        {"hydraulicMotors", "Motion/mp_hyd_motor.svg"},
+        {"hydraulicNodes", "Motion/mp_hyd_node_group.svg"},
+        {"hydraulicComponents", "Motion/mp_hyd_comp_group.svg"},
+        {"electricMotors", "Motion/mp_elec_motor.svg"},
+        {"powerSupplies", "Motion/mp_power_supply.svg"},
+        {"inverters", "Motion/mp_inverter.svg"},
+        {"ehaActuators", "Motion/mp_eha_actuator.svg"},
+        {"emaActuators", "Motion/mp_ema_actuator.svg"},
         {"springs", "Motion/force_spring.png"},
         {"forceElements", "BrowserTree/motion_liYuanParentItem.png"},
         {"sensors", "Motion/sensor.png"},
@@ -95,7 +95,7 @@ inline QIcon entity(const QString& collection, const QJsonObject& row)
     if (collection == "couplings") {
         static const QMap<QString, const char*> paths{
             {"Gear", "Motion/coupling_gear.png"}, {"GearRack", "Motion/coupling_gearRack.png"},
-            {"Cable", "Motion/coupling_cable.png"}
+            {"Cable", "Motion/coupling_cable.png"}, {"Cam", "Motion/coupling_cam.svg"}
         };
         return resource(paths.value(row.value("couplingType").toString(), "BrowserTree/motion_couplingParentItem.png"));
     }
@@ -135,13 +135,37 @@ inline QIcon entity(const QString& collection, const QJsonObject& row)
     // New engine force elements reuse the existing cable and unilateral-force artwork.
     if (collection == "tensionCables") return resource("Motion/coupling_cable.png");
     if (collection == "softStops") return resource("Motion/force_uni.png");
-    if (collection == "hydraulicCylinders" || collection == "hydraulicMotors"
-        || collection == "hydraulicNodes" || collection == "hydraulicComponents")
-        return resource("Motion/mech_hydraulic.png");
-    if (collection == "electricMotors" || collection == "powerSupplies" || collection == "inverters")
-        return resource("Motion/electromechanicalCoupling.png");
-    if (collection == "ehaActuators" || collection == "emaActuators")
-        return resource("Motion/mech_elec_hyd.png");
+    if (collection == "hydraulicCylinders") return resource("Motion/mp_hyd_cylinder.svg");
+    if (collection == "hydraulicMotors") return resource("Motion/mp_hyd_motor.svg");
+    if (collection == "hydraulicNodes") {
+        const QString nt = row.value("nodeType").toString("Chamber");
+        if (nt == "Tank") return resource("Motion/mp_hyd_tank.svg");
+        if (nt == "PressureSource") return resource("Motion/mp_hyd_pressure_source.svg");
+        return resource("Motion/mp_hyd_chamber.svg");
+    }
+    if (collection == "hydraulicComponents") {
+        static const QMap<QString, const char*> compPaths{
+            {"Pump", "Motion/mp_hyd_pump.svg"},
+            {"FlowSource", "Motion/mp_hyd_flow_source.svg"},
+            {"DirectionalValve", "Motion/mp_valve_directional.svg"},
+            {"ServoValve", "Motion/mp_valve_servo.svg"},
+            {"ReliefValve", "Motion/mp_valve_relief.svg"},
+            {"PressureReducingValve", "Motion/mp_valve_reducing.svg"},
+            {"SequenceValve", "Motion/mp_valve_sequence.svg"},
+            {"CheckValve", "Motion/mp_valve_check.svg"},
+            {"ThrottleValve", "Motion/mp_valve_throttle.svg"},
+            {"Pipe", "Motion/mp_hyd_pipe.svg"},
+            {"Filter", "Motion/mp_hyd_filter.svg"},
+            {"Accumulator", "Motion/mp_hyd_accumulator.svg"},
+            {"PortConnection", "Motion/mp_port_connection.svg"}
+        };
+        return resource(compPaths.value(row.value("componentType").toString(), "Motion/mp_hyd_comp_group.svg"));
+    }
+    if (collection == "electricMotors") return resource("Motion/mp_elec_motor.svg");
+    if (collection == "powerSupplies") return resource("Motion/mp_power_supply.svg");
+    if (collection == "inverters") return resource("Motion/mp_inverter.svg");
+    if (collection == "ehaActuators") return resource("Motion/mp_eha_actuator.svg");
+    if (collection == "emaActuators") return resource("Motion/mp_ema_actuator.svg");
     return item(collection);
 }
 

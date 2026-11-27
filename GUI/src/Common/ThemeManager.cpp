@@ -303,6 +303,17 @@ namespace MechMainWindow
 		// 相等跳过保证未变化的串零成本
 		applyPalette(root);
 
+		// 保持应用级默认字体始终跟随规范字体族（覆盖未走 QSS 的自绘控件、Qwt 坐标轴等）
+		if (qApp)
+		{
+			QFont appFont = qApp->font();
+			if (appFont.family() != UiMetrics::uiFontFamily())
+			{
+				appFont.setFamily(UiMetrics::uiFontFamily());
+				qApp->setFont(appFont);
+			}
+		}
+
 		// 全局基础控件样式（原静态 qss）：按当前令牌填空后全局重发，
 		// 与菜单栏树同代数生效——不再出现"启动后全局串压顶令牌"的时序
 		applyGlobalQss();
@@ -599,11 +610,13 @@ namespace MechMainWindow
 		// Show 事件过滤器按代数差懒补发
 		dialog->setProperty("mxThemeGen", s_themeGeneration);
 
-		// 对话框本体与所有容器底：surface（内容底色）
+		// 对话框本体与所有容器底：surface（内容底色），统一绑定规范字体族与正文字号
+		const QString fontFam = UiMetrics::uiFontFamily();
+		const int bodyPx = UiMetrics::bodyFontSize();
 		setQss(dialog, QStringLiteral(
-			"QDialog, QWidget { background-color:%1; color:%2; font-family:'%3'; }"
-		).arg(UiPalette::surfaceHex(), UiPalette::textHex())
-		 .arg(UiMetrics::uiFontFamily()));
+			"QDialog, QWidget { background-color:%1; color:%2; font-family:'%3'; font-size:%4px; }"
+		).arg(UiPalette::surfaceHex(), UiPalette::textHex(), fontFam)
+		 .arg(bodyPx));
 
 		const auto children = dialog->findChildren<QWidget*>();
 		for (QWidget* w : children)
@@ -624,12 +637,13 @@ namespace MechMainWindow
 				if (tree->property("mxTreeNoTheme").toBool())
 					continue;
 				setQss(tree, QStringLiteral(
-					"QTreeWidget { background:%1; color:%2; border:1px solid %3; }"
+					"QTreeWidget { font-family:'%7'; font-size:%8px; background:%1; color:%2; border:1px solid %3; }"
 					"QTreeWidget::item { height:26px; background:transparent; color:%2; }"
 					"QTreeWidget::item:hover { background:%4; }"
 					"QTreeWidget::item:selected { background:%5; color:%6; }"
 				).arg(UiPalette::surfaceHex(), UiPalette::textHex(), UiPalette::borderHex(),
-					  UiPalette::hoverHex(), UiPalette::selectedHex(), UiPalette::selectedTextHex()));
+					  UiPalette::hoverHex(), UiPalette::selectedHex(), UiPalette::selectedTextHex(),
+					  fontFam).arg(bodyPx));
 				continue;
 			}
 			// 下拉框及其弹出列表
@@ -641,15 +655,15 @@ namespace MechMainWindow
 				if (combo->property("mxComboNoTheme").toBool())
 					continue;
 				setQss(combo, QStringLiteral(
-					"QComboBox { color:%1; background:%2; border:1px solid %3; border-radius:2px; padding:1px 4px; }"
+					"QComboBox { font-family:'%9'; font-size:%10px; color:%1; background:%2; border:1px solid %3; border-radius:2px; padding:1px 4px; }"
 					"QComboBox:hover { border-color:%4; }"
 					"QComboBox:focus { border-color:%4; }"
 					"QComboBox:disabled { color:%5; background:%6; }"
-					"QComboBox QAbstractItemView { background:%2; color:%1; border:1px solid %3;"
+					"QComboBox QAbstractItemView { font-family:'%9'; font-size:%10px; background:%2; color:%1; border:1px solid %3;"
 					" selection-background-color:%7; selection-color:%8; }"
 				).arg(UiPalette::textHex(), UiPalette::surfaceHex(), UiPalette::borderHex(),
 					  UiPalette::focusHex(), UiPalette::disabledHex(), UiPalette::panelHex(),
-					  UiPalette::selectedHex(), UiPalette::selectedTextHex()));
+					  UiPalette::selectedHex(), UiPalette::selectedTextHex(), fontFam).arg(bodyPx));
 				continue;
 			}
 			// 输入框 / 计算输入框
@@ -661,12 +675,13 @@ namespace MechMainWindow
 					|| qobject_cast<QAbstractSpinBox*>(edit->parentWidget()))
 					continue;
 				setQss(edit, QStringLiteral(
-					"QLineEdit { color:%1; background:%2; border:1px solid %3; border-radius:2px; padding:1px 4px; }"
+					"QLineEdit { font-family:'%7'; font-size:%8px; color:%1; background:%2; border:1px solid %3; border-radius:2px; padding:1px 4px; }"
 					"QLineEdit:hover { border-color:%4; }"
 					"QLineEdit:focus { border-color:%4; }"
 					"QLineEdit:disabled { color:%5; background:%6; }"
 				).arg(UiPalette::textHex(), UiPalette::surfaceHex(), UiPalette::borderHex(),
-					  UiPalette::focusHex(), UiPalette::disabledHex(), UiPalette::panelHex()));
+					  UiPalette::focusHex(), UiPalette::disabledHex(), UiPalette::panelHex(),
+					  fontFam).arg(bodyPx));
 				continue;
 			}
 			// 数字输入框
@@ -675,12 +690,12 @@ namespace MechMainWindow
 				// 文字贴左：默认右对齐，且被样式表接管后上下箭头 subcontrol 回退
 				// 默认宽度会挤压左侧文本，这里把文字钉在左缘、上下按钮收窄到 16px
 				setQss(spin, QStringLiteral(
-					"QDoubleSpinBox { color:%1; background:%2; border:1px solid %3; border-radius:2px; padding:1px 4px; text-align:left; }"
+					"QDoubleSpinBox { font-family:'%6'; font-size:%7px; color:%1; background:%2; border:1px solid %3; border-radius:2px; padding:1px 4px; text-align:left; }"
 					"QDoubleSpinBox:disabled { color:%4; background:%5; }"
 					"QDoubleSpinBox::up-button { width:16px; border:none; }"
 					"QDoubleSpinBox::down-button { width:16px; border:none; }"
 				).arg(UiPalette::textHex(), UiPalette::surfaceHex(), UiPalette::borderHex(),
-					  UiPalette::disabledHex(), UiPalette::panelHex()));
+					  UiPalette::disabledHex(), UiPalette::panelHex(), fontFam).arg(bodyPx));
 				if (auto* le = spin->findChild<QLineEdit*>())
 					le->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 				continue;
@@ -689,12 +704,13 @@ namespace MechMainWindow
 			if (auto* table = qobject_cast<QTableWidget*>(w))
 			{
 				setQss(table, QStringLiteral(
-					"QTableWidget { background:%1; color:%2; border:1px solid %3; gridline-color:%3; }"
+					"QTableWidget { font-family:'%7'; font-size:%8px; background:%1; color:%2; border:1px solid %3; gridline-color:%3; }"
 					"QTableWidget::item:selected { background:%4; color:%5; }"
-					"QHeaderView::section { background:%6; color:%2; border:1px solid %3; font-weight:normal; }"
+					"QHeaderView::section { font-family:'%7'; font-size:%8px; background:%6; color:%2; border:1px solid %3; font-weight:normal; }"
 					"QTableCornerButton::section { background:%6; border:1px solid %3; }"
 				).arg(UiPalette::surfaceHex(), UiPalette::textHex(), UiPalette::borderHex(),
-					  UiPalette::selectedHex(), UiPalette::selectedTextHex(), UiPalette::headerHex()));
+					  UiPalette::selectedHex(), UiPalette::selectedTextHex(), UiPalette::headerHex(),
+					  fontFam).arg(bodyPx));
 				continue;
 			}
 			// 按钮
@@ -705,7 +721,7 @@ namespace MechMainWindow
 				if (pbtn->property("mxBtnNoTheme").toBool())
 					continue;
 				setQss(pbtn, QStringLiteral(
-				"QPushButton { font-family:'%9'; color:%1;"
+				"QPushButton { font-family:'%9'; font-size:%10px; color:%1;"
 				" background:%2; border:1px solid %3; border-radius:3px; padding:3px 10px; }"
 				"QPushButton:hover { background:%4; }"
 				"QPushButton:pressed, QPushButton:checked { background:%5; color:%6; }"
@@ -718,43 +734,46 @@ namespace MechMainWindow
 			 .arg(UiPalette::selectedTextHex())
 			 .arg(UiPalette::disabledHex())
 			 .arg(UiPalette::panelHex())
-			 .arg(UiMetrics::uiFontFamily()));
+			 .arg(fontFam)
+			 .arg(bodyPx));
 				continue;
 			}
 			if (auto* tbtn = qobject_cast<QToolButton*>(w))
 			{
 				setQss(tbtn, QStringLiteral(
-					"QToolButton { color:%1; background:%2; border:1px solid %3; border-radius:3px; padding:1px 4px; }"
+					"QToolButton { font-family:'%8'; font-size:%9px; color:%1; background:%2; border:1px solid %3; border-radius:3px; padding:1px 4px; }"
 					"QToolButton:hover { background:%4; }"
 					"QToolButton:pressed, QToolButton:checked { background:%5; }"
 					"QToolButton:disabled { color:%6; background:%7; }"
 				).arg(UiPalette::textHex(), UiPalette::surfaceHex(), UiPalette::borderHex(),
 					  UiPalette::hoverHex(), UiPalette::selectedHex(),
-					  UiPalette::disabledHex(), UiPalette::panelHex()));
+					  UiPalette::disabledHex(), UiPalette::panelHex(), fontFam).arg(bodyPx));
 				continue;
 			}
 			// 标签
 			if (auto* lbl = qobject_cast<QLabel*>(w))
 			{
+				if (lbl->property("mxLblNoTheme").toBool())
+					continue;
 				setQss(lbl, QStringLiteral(
-					"QLabel { color:%1; background:transparent; border:none; }"
-				).arg(UiPalette::textHex()));
+					"QLabel { font-family:'%2'; font-size:%3px; color:%1; background:transparent; border:none; }"
+				).arg(UiPalette::textHex(), fontFam).arg(bodyPx));
 				continue;
 			}
 			if (auto* chk = qobject_cast<QCheckBox*>(w))
 			{
 				setQss(chk, QStringLiteral(
-					"QCheckBox { color:%1; background:transparent; }"
+					"QCheckBox { font-family:'%3'; font-size:%4px; color:%1; background:transparent; }"
 					"QCheckBox:disabled { color:%2; }"
-				).arg(UiPalette::textHex(), UiPalette::disabledHex()));
+				).arg(UiPalette::textHex(), UiPalette::disabledHex(), fontFam).arg(bodyPx));
 				continue;
 			}
 			if (auto* radio = qobject_cast<QRadioButton*>(w))
 			{
 				setQss(radio, QStringLiteral(
-					"QRadioButton { color:%1; background:transparent; }"
+					"QRadioButton { font-family:'%3'; font-size:%4px; color:%1; background:transparent; }"
 					"QRadioButton:disabled { color:%2; }"
-				).arg(UiPalette::textHex(), UiPalette::disabledHex()));
+				).arg(UiPalette::textHex(), UiPalette::disabledHex(), fontFam).arg(bodyPx));
 				continue;
 			}
 			// 分割条
@@ -1382,8 +1401,9 @@ namespace MechMainWindow
 		// 树结构本身（行高/缩进/字号/箭头/选中样式）按最新规则不随档位，保持 Qt 原生/委托现状。
 		// 只走 QSS：style sheet 规则优先于 QPalette，同时 setPalette 属于被覆盖的死设置
 		setQss(tv, QStringLiteral(
-			"QTreeView { background-color:%1; color:%2; border:none; }"
-		).arg(UiPalette::surfaceHex(), UiPalette::textHex()));
+			"QTreeView { font-family:'%3'; font-size:%4px; background-color:%1; color:%2; border:none; }"
+		).arg(UiPalette::surfaceHex(), UiPalette::textHex(), UiMetrics::uiFontFamily())
+		 .arg(UiMetrics::bodyFontSize()));
 		tv->update();
 	}
 
@@ -1394,10 +1414,11 @@ namespace MechMainWindow
 		// 两处窗口各持有同构控件组，统一下发避免两份 QSS 手写漂移。幂等。
 		if (!bar.paletteHost)
 			return;
+		const QString fontFam = UiMetrics::uiFontFamily();
 		const QString comboBoxQss = QStringLiteral(
 			"QComboBox { border:1px solid %1; border-radius:4px; height:%2px;"
-			" font-size:%3px; color:%4; background:%5; padding-left:6px; }"
-			"QComboBox QAbstractItemView { background:%5; color:%4; border:1px solid %1;"
+			" font-family:'%8'; font-size:%3px; color:%4; background:%5; padding-left:6px; }"
+			"QComboBox QAbstractItemView { font-family:'%8'; font-size:%3px; background:%5; color:%4; border:1px solid %1;"
 			" selection-background-color:%6; selection-color:%7; outline:none; }"
 		).arg(UiPalette::borderHex())
 		 .arg(UiMetrics::controlHeight())
@@ -1405,17 +1426,19 @@ namespace MechMainWindow
 		 .arg(UiPalette::textHex())
 		 .arg(UiPalette::surfaceHex())
 		 .arg(UiPalette::selectedHex())
-		 .arg(UiPalette::selectedTextHex());
+		 .arg(UiPalette::selectedTextHex())
+		 .arg(fontFam);
 		const QString lineEditQss = QStringLiteral(
 			"QLineEdit { border:1px solid %1; border-radius:4px; height:%2px;"
-			" font-size:%3px; color:%4; background:%5; padding-left:6px; }"
+			" font-family:'%6'; font-size:%3px; color:%4; background:%5; padding-left:6px; }"
 		).arg(UiPalette::borderHex())
 		 .arg(UiMetrics::controlHeight())
 		 .arg(UiMetrics::bodyFontSize())
 		 .arg(UiPalette::textHex())
-		 .arg(UiPalette::surfaceHex());
-		const QString labelQss = QStringLiteral("color:%1; font-size:%2px;")
-			.arg(UiPalette::labelHex()).arg(UiMetrics::bodyFontSize());
+		 .arg(UiPalette::surfaceHex())
+		 .arg(fontFam);
+		const QString labelQss = QStringLiteral("font-family:'%3'; color:%1; font-size:%2px;")
+			.arg(UiPalette::labelHex()).arg(UiMetrics::bodyFontSize()).arg(fontFam);
 
 		if (bar.nameCombo) setQss(bar.nameCombo, comboBoxQss);
 		if (bar.statusCombo) setQss(bar.statusCombo, comboBoxQss);

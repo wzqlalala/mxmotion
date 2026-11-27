@@ -1,4 +1,5 @@
 #include "RigidPlot.h"
+#include "UiMetrics.h"
 #include "UiPalette.h"
 #include "mCurveNameLabel.h"
 #include "mFoldSection.h"
@@ -36,6 +37,7 @@
 #include <qwt_plot_grid.h>
 #include <qwt_plot_marker.h>
 #include <qwt_plot_zoomer.h>
+#include <qwt_text.h>
 
 #include <algorithm>
 #include <cmath>
@@ -43,6 +45,31 @@
 
 namespace MotionOcc {
 namespace {
+
+QwtText makePlotTitleText(const QString& content)
+{
+    QFont font(MxFunctions::UiMetrics::uiFontFamily());
+    font.setPixelSize(MxFunctions::UiMetrics::bodyFontSize());
+    font.setWeight(QFont::Bold);
+    QwtText text(content);
+    text.setFont(font);
+    text.setColor(MxFunctions::UiPalette::text());
+    return text;
+}
+
+void applyRigidPlotFonts(QwtPlot* plot)
+{
+    if (!plot) return;
+    QFont bodyFont(MxFunctions::UiMetrics::uiFontFamily());
+    bodyFont.setPixelSize(MxFunctions::UiMetrics::bodyFontSize());
+    plot->setFont(bodyFont);
+    QFont tickFont(MxFunctions::UiMetrics::uiFontFamily());
+    tickFont.setPixelSize(MxFunctions::UiMetrics::helperFontSize());
+    for (int axis = 0; axis < QwtPlot::axisCnt; ++axis)
+        plot->setAxisFont(axis, tickFont);
+    if (auto* legend = plot->legend())
+        legend->setFont(bodyFont);
+}
 
 class CurveLegend final : public QwtLegend {
 protected:
@@ -84,8 +111,9 @@ RigidPlot::RigidPlot(QWidget* parent) : QWidget(parent)
     // QwtPlot owns its attached items and legend; the canvas owns the pickers.
     auto* canvas = static_cast<QwtPlotCanvas*>(m_plot->canvas());
     canvas->setFrameShape(QFrame::NoFrame);
-    m_plot->setAxisTitle(QwtPlot::xBottom, tr("时间 (s)"));
+    m_plot->setAxisTitle(QwtPlot::xBottom, makePlotTitleText(tr("时间 (s)")));
     m_plot->insertLegend(new CurveLegend, QwtPlot::BottomLegend);
+    applyRigidPlotFonts(m_plot);
     layout->addWidget(m_plot, 1);
     m_readout = new QLabel(this);
     m_readout->setObjectName(QStringLiteral("motionCurveReadout"));
@@ -118,6 +146,10 @@ RigidPlot::RigidPlot(QWidget* parent) : QWidget(parent)
         setPalette(colors);
         setAutoFillBackground(true);
         m_plot->setCanvasBackground(UiPalette::surface());
+        applyRigidPlotFonts(m_plot);
+        m_plot->setAxisTitle(QwtPlot::xBottom, makePlotTitleText(m_plot->axisTitle(QwtPlot::xBottom).text()));
+        if (!m_plot->axisTitle(QwtPlot::yLeft).text().isEmpty())
+            m_plot->setAxisTitle(QwtPlot::yLeft, makePlotTitleText(m_plot->axisTitle(QwtPlot::yLeft).text()));
         grid->setMajorPen(UiPalette::border());
         m_cursor->setLinePen(UiPalette::text(), 1.5, Qt::DashLine);
         m_zoomer->setRubberBandPen(QPen(UiPalette::primary(), 1, Qt::DashLine));
@@ -577,7 +609,9 @@ void RigidPlot::replotCurves()
         const bool sameUnit = std::all_of(m_visible.begin(), m_visible.end(), [&](const VisibleCurve& item) { return item.series.unit == unit; });
         yTitle = sameUnit ? (unit.isEmpty() ? tr("数值") : tr("数值 (%1)").arg(unit)) : tr("数值（单位见图例）");
     }
-    m_plot->setAxisTitle(QwtPlot::yLeft, yTitle);
+    applyRigidPlotFonts(m_plot);
+    m_plot->setAxisTitle(QwtPlot::xBottom, makePlotTitleText(tr("时间 (s)")));
+    m_plot->setAxisTitle(QwtPlot::yLeft, makePlotTitleText(yTitle));
     const double pad = m_end == m_start ? 0.5 : 0.0;
     m_plot->setAxisScale(QwtPlot::xBottom, m_start - pad, m_end + pad);
     m_plot->setAxisAutoScale(QwtPlot::yLeft);

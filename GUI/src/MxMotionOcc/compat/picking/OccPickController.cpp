@@ -189,7 +189,7 @@ void mPickWidgetController::refreshHighlight()
         c->clearHighlightLayer(m_layer);
         return;
     }
-    const auto picks=c->resolve(resolvedData());
+    const auto picks=c->resolvePickerFeedback(resolvedData());
     QColor color=m_view->colorBlockColor();if(!color.isValid())color=QColor(232,130,28);
     c->setHighlightLayer(m_layer,picks,color);
 }
@@ -229,6 +229,12 @@ void mPickWidgetController::receiveViewportSelection(Type type,const std::vector
     data.erase(type);
     std::vector<RenderPickResultData> accepted;
     for(const auto& value:picks) {
+        if (type == Type::Part) {
+            const int pid = value.part_id > 0 ? value.part_id : value.result_id;
+            if (!context()->document().part(pid) || (!m_allowedParts.empty() && !m_allowedParts.count(pid))) continue;
+            accepted.push_back(value);
+            continue;
+        }
         const auto pick=context()->resolve(type,value);
         if(!pick.isValid() || (!m_allowedParts.empty()&&!m_allowedParts.count(pick.partId)))continue;
         if(m_edgeLoadFilter&&(type==Type::GeoEdge||type==Type::ElementEdge)&&!context()->acceptsEdgeLoad(type,value))continue;

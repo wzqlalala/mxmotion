@@ -60,6 +60,7 @@
         <file>Icon/floating.png</file>
         <file>Icon/close.png</file>
         <file>Icon/logo.png</file>
+        <file>Icon/viewport_mxsim_logo.png</file>
         <file>Icon/promptWarning.png</file>
         <file>Icon/bg.png</file>
         <file>Icon/Pick any.png</file>
@@ -1314,6 +1315,35 @@
         <file>Icon/Motion/mech_electro_import.png</file>
         <file>Icon/Motion/mech_electro_export.png</file>
         <file>Icon/Motion/mech_hydraulic.png</file>
+        <file>Icon/Motion/mp_hyd_cylinder.svg</file>
+        <file>Icon/Motion/mp_hyd_motor.svg</file>
+        <file>Icon/Motion/mp_hyd_pump.svg</file>
+        <file>Icon/Motion/mp_hyd_tank.svg</file>
+        <file>Icon/Motion/mp_hyd_pressure_source.svg</file>
+        <file>Icon/Motion/mp_hyd_flow_source.svg</file>
+        <file>Icon/Motion/mp_hyd_chamber.svg</file>
+        <file>Icon/Motion/mp_hyd_node_group.svg</file>
+        <file>Icon/Motion/mp_hyd_comp_group.svg</file>
+        <file>Icon/Motion/mp_valve_directional.svg</file>
+        <file>Icon/Motion/mp_valve_servo.svg</file>
+        <file>Icon/Motion/mp_valve_relief.svg</file>
+        <file>Icon/Motion/mp_valve_reducing.svg</file>
+        <file>Icon/Motion/mp_valve_check.svg</file>
+        <file>Icon/Motion/mp_valve_throttle.svg</file>
+        <file>Icon/Motion/mp_valve_sequence.svg</file>
+        <file>Icon/Motion/mp_hyd_pipe.svg</file>
+        <file>Icon/Motion/mp_hyd_accumulator.svg</file>
+        <file>Icon/Motion/mp_hyd_filter.svg</file>
+        <file>Icon/Motion/mp_elec_motor.svg</file>
+        <file>Icon/Motion/mp_power_supply.svg</file>
+        <file>Icon/Motion/mp_inverter.svg</file>
+        <file>Icon/Motion/mp_eha_actuator.svg</file>
+        <file>Icon/Motion/mp_ema_actuator.svg</file>
+        <file>Icon/Motion/mp_port_connection.svg</file>
+        <file>Icon/Motion/mp_schematic.svg</file>
+        <file>Icon/Motion/mp_circuit_check.svg</file>
+        <file>Icon/Motion/mp_hyd_fluid.svg</file>
+        <file>Icon/Motion/coupling_cam.svg</file>
         <file>Icon/BrowserTree/motion_chartChildItem.png</file>
         <file>Icon/BrowserTree/motion_connectorParentItem.png</file>
         <file>Icon/BrowserTree/motion_curveChildItem.png</file>

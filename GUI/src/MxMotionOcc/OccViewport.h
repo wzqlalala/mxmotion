@@ -62,6 +62,10 @@ public:
     Q_ENUM(DisplayMode)
     enum class MouseNavigationMode { Classic, Nx };
     Q_ENUM(MouseNavigationMode)
+    enum class LeftButtonMode { OrbitSpace, OrbitPlane, Pan };
+    Q_ENUM(LeftButtonMode)
+    enum class RotationCenterMode { ModelCenter, ViewCenter, CustomPoint };
+    Q_ENUM(RotationCenterMode)
     struct ViewCameraState {
         QVector3D eye, target, up;
         double ortho_zoom = 1.0; // vertical visible span in world millimetres
@@ -94,7 +98,17 @@ public:
     // Navigation is view-only; changing it keeps the active typed-pick session.
     void setMouseNavigationMode(MouseNavigationMode mode);
     MouseNavigationMode mouseNavigationMode() const;
+    void setLeftButtonMode(LeftButtonMode mode);
+    LeftButtonMode leftButtonMode() const;
     QString mouseNavigationHint() const;
+    RotationCenterMode rotationCenterMode() const;
+    std::array<double, 3> rotationCenter() const;
+    void setRotationCenterToModel();
+    void setRotationCenterToView();
+    void setRotationCenter(const std::array<double, 3>& worldPoint);
+    void beginPickRotationCenter();
+    void cancelPickRotationCenter();
+    bool isPickingRotationCenter() const;
     void setPickEnabled(bool enabled);
     // An empty filter means smart CAD picking. Editor sessions temporarily take precedence.
     void setSelectionFilter(std::optional<PickKind> kind);
@@ -157,6 +171,8 @@ signals:
     void viewportSelectionChanged();
     void pickSessionChanged(bool active);
     void pickCancelled();
+    void rotationCenterPickModeChanged(bool active);
+    void rotationCenterChanged(const std::array<double, 3>& worldPoint);
 
 protected:
     void initializeGL() override;
@@ -202,9 +218,13 @@ private:
     void drawPickOverlay();
     void drawScalarLegend();
     void drawMotionSymbols();
+    void drawRotationCenterOverlay();
+    void drawViewportLogo();
     void reportGraphicsError(const QString& message);
     void interruptPointerOperation();
+    bool findRotationCenterPoint(const QPointF& position, std::array<double, 3>& worldPoint) const;
     bool setRotationCenterAt(const QPointF& position);
+    void pulsePivotIndicator();
 };
 
 } // namespace MotionOcc

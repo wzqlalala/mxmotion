@@ -137,31 +137,150 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         return std::make_pair(transform(body,vector(row,"origin",{0,0,0})),
             unit(transform(body,vector(row,"axis",vector(row,"baseSpin")),true)));};
 
+    // 统一按模型树选中范围控制符号显隐：
+    // 1) 未选中任何运动学节点（selectedCollection 为空）时默认不显示任何符号；
+    // 2) selectedCollection == "*" 时全量显示已启用对象（对应“显示全部运动符号”开关）；
+    // 3) 选中分类父节点（selectedId < 0）时预览该组全部符号（不标黄强调）；
+    // 4) 选中具体子节点（selectedId >= 0）时高亮该对象自身，并以次级常态显示其直接引用的运动副/标记点/执行器。
+    if (selectedCollection.isEmpty()) return output;
+    const bool showAll = (selectedCollection == QLatin1String("*"));
+    const bool isForceGroup = (selectedCollection == QLatin1String("forceElements") && selectedId < 0);
+
+    auto collectSelectedRows = [&](const QString& col) -> QJsonArray {
+        if (selectedCollection != col) return {};
+        if (selectedId < 0) return document.collection(col);
+        const auto entity = document.entity(col, selectedId);
+        return entity.isEmpty() ? QJsonArray{} : QJsonArray{entity};
+    };
+
+    QSet<int> referencedJoints;
+    QSet<int> referencedMarkers;
+    QSet<int> referencedHydCylinders;
+    QSet<int> referencedHydMotors;
+    QMap<QString, QSet<int>> referencedElecActuators;
+
+    if (!showAll) {
+        if (selectedCollection == QLatin1String("drives") || selectedCollection == QLatin1String("couplings")) {
+            for (const auto& value : collectSelectedRows(selectedCollection)) {
+                const auto row = value.toObject();
+                if (selectedCollection == QLatin1String("couplings")) {
+                    referencedJoints.insert(row.value("firstJointId").toInt(-1));
+                    referencedJoints.insert(row.value("secondJointId").toInt(-1));
+                } else if (row.value("targetType").toString("Joint") == QLatin1String("Joint")) {
+                    referencedJoints.insert(row.value("targetJointId").toInt(-1));
+                }
+            }
+        } else if (selectedCollection == QLatin1String("springs")) {
+            for (const auto& value : collectSelectedRows(selectedCollection)) {
+                const auto row = value.toObject();
+                if (row.value("springType").toString() != QLatin1String("BodyPoint"))
+                    referencedJoints.insert(row.value("jointId").toInt(-1));
+                referencedMarkers.insert(row.value("markerIId").toInt(-1));
+                referencedMarkers.insert(row.value("markerJId").toInt(-1));
+            }
+        } else if (isForceGroup
+                   || QStringList{"vectorForces", "scalarForces", "scalarTorques",
+                                  "threePointForces", "threePointTorques", "tensionCables", "softStops"}.contains(selectedCollection)) {
+            const QStringList cols = isForceGroup
+                ? QStringList{"vectorForces", "scalarForces", "scalarTorques", "threePointForces", "threePointTorques", "tensionCables", "softStops"}
+                : QStringList{selectedCollection};
+            for (const auto& col : cols) {
+                const auto rows = isForceGroup ? document.collection(col) : collectSelectedRows(col);
+                for (const auto& value : rows) {
+                    const auto row = value.toObject();
+                    referencedMarkers.insert(row.value("markerIId").toInt(-1));
+                    referencedMarkers.insert(row.value("markerJId").toInt(-1));
+                }
+            }
+        } else if (selectedCollection == QLatin1String("hydraulicCylinders")
+                   || selectedCollection == QLatin1String("ehaActuators")
+                   || selectedCollection == QLatin1String("emaActuators")) {
+            for (const auto& value : collectSelectedRows(selectedCollection)) {
+                const auto row = value.toObject();
+                if (row.value("mountMode").toString() == QLatin1String("Joint"))
+                    referencedJoints.insert(row.value("targetJointId").toInt(-1));
+            }
+        } else if (selectedCollection == QLatin1String("hydraulicMotors")
+                   || selectedCollection == QLatin1String("electricMotors")) {
+            for (const auto& value : collectSelectedRows(selectedCollection))
+                referencedJoints.insert(value.toObject().value("targetJointId").toInt(-1));
+        } else if (selectedCollection == QLatin1String("hydraulicComponents")) {
+            for (const auto& value : collectSelectedRows(selectedCollection)) {
+                const auto row = value.toObject();
+                if (row.value("componentType").toString() != QLatin1String("PortConnection")) continue;
+                const int actId = row.value("actuatorId").toInt(-1);
+                if (actId < 0) continue;
+                if (row.value("actuatorType").toString("Cylinder") == QLatin1String("Motor")) {
+                    referencedHydMotors.insert(actId);
+                    referencedJoints.insert(document.entity("hydraulicMotors", actId).value("targetJointId").toInt(-1));
+                } else {
+                    referencedHydCylinders.insert(actId);
+                    const auto cyl = document.entity("hydraulicCylinders", actId);
+                    if (cyl.value("mountMode").toString() == QLatin1String("Joint"))
+                        referencedJoints.insert(cyl.value("targetJointId").toInt(-1));
+                }
+            }
+        } else if (selectedCollection == QLatin1String("hydraulicNodes") && selectedId >= 0) {
+            for (const auto& v : document.collection("hydraulicCylinders")) {
+                const auto r = v.toObject();
+                if (r.value("supplyMode").toString() == QLatin1String("ExternalCircuit")
+                    && (r.value("portANodeId").toInt(-1) == selectedId || r.value("portBNodeId").toInt(-1) == selectedId))
+                    referencedHydCylinders.insert(r.value("id").toInt(-1));
+            }
+            for (const auto& v : document.collection("hydraulicMotors")) {
+                const auto r = v.toObject();
+                if (r.value("supplyMode").toString() == QLatin1String("ExternalCircuit")
+                    && (r.value("portANodeId").toInt(-1) == selectedId || r.value("portBNodeId").toInt(-1) == selectedId))
+                    referencedHydMotors.insert(r.value("id").toInt(-1));
+            }
+            for (const auto& v : document.collection("hydraulicComponents")) {
+                const auto r = v.toObject();
+                if (r.value("componentType").toString() == QLatin1String("PortConnection")
+                    && r.value("targetNodeId").toInt(-1) == selectedId) {
+                    const int actId = r.value("actuatorId").toInt(-1);
+                    if (r.value("actuatorType").toString("Cylinder") == QLatin1String("Motor"))
+                        referencedHydMotors.insert(actId);
+                    else
+                        referencedHydCylinders.insert(actId);
+                }
+            }
+        } else if (selectedCollection == QLatin1String("inverters")) {
+            for (const char* actCol : {"electricMotors", "ehaActuators", "emaActuators"}) {
+                for (const auto& v : document.collection(QLatin1String(actCol))) {
+                    const auto r = v.toObject();
+                    const int invId = r.value("inverterId").toInt(-1);
+                    if (r.value("controlMode").toString() == QLatin1String("ExternalInverter")
+                        && invId >= 0 && (selectedId < 0 || invId == selectedId))
+                        referencedElecActuators[QLatin1String(actCol)].insert(r.value("id").toInt(-1));
+                }
+            }
+        }
+        referencedJoints.remove(-1);
+        referencedMarkers.remove(-1);
+        referencedHydCylinders.remove(-1);
+        referencedHydMotors.remove(-1);
+    }
+
+    const auto directMatch = [&](const QString& col, int id) {
+        if (showAll) return true;
+        if (isForceGroup && QStringList{"vectorForces", "scalarForces", "scalarTorques",
+                                        "threePointForces", "threePointTorques", "tensionCables", "softStops"}.contains(col))
+            return true;
+        return selectedCollection == col && (selectedId < 0 || selectedId == id);
+    };
+
     for(const auto& value:document.collection("bodies")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        const int body=row.value("id").toInt(-1);
+        if(!directMatch(QStringLiteral("bodies"),body)||!visible(row))continue;
         const auto center=point(row.value("centerOfMass"));if(!center)continue;
-        const int body=row.value("id").toInt(-1);const auto origin=transform(body,*center);
+        const auto origin=transform(body,*center);
         auto symbol=make("bodies",row,origin,bodyColor);
         crosshair(symbol,origin,scale*.3);ring(symbol,origin,{0,0,1},scale*.2);append(std::move(symbol));
     }
-    // 沿用原模型树的符号范围：父节点显示全组，子节点显示自身，驱动和耦合副仅显示引用项。
-    const bool showAllJoints = selectedCollection == "joints" && selectedId < 0;
-    QSet<int> selectedJoints;
+    const bool showAllJoints = showAll || (selectedCollection == "joints" && selectedId < 0);
+    QSet<int> selectedJoints = referencedJoints;
     if (selectedCollection == "joints" && selectedId >= 0) selectedJoints.insert(selectedId);
-    else if (selectedCollection == "drives" || selectedCollection == "couplings") {
-        const auto references = selectedId < 0 ? document.collection(selectedCollection)
-            : QJsonArray{document.entity(selectedCollection, selectedId)};
-        for (const auto& value : references) {
-            const auto row = value.toObject();
-            if (selectedCollection == "couplings") {
-                selectedJoints.insert(row.value("firstJointId").toInt(-1));
-                selectedJoints.insert(row.value("secondJointId").toInt(-1));
-            } else if (row.value("targetType").toString("Joint") == "Joint") {
-                selectedJoints.insert(row.value("targetJointId").toInt(-1));
-            }
-        }
-        selectedJoints.remove(-1);
-    }
     const auto joints = showAllJoints || !selectedJoints.isEmpty() ? document.collection("joints") : QJsonArray{};
     for(const auto& value : joints){
         const auto row=value.toObject();
@@ -207,7 +326,8 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         append(std::move(symbol));
     }
     for(const auto& value:document.collection("couplings")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        if(!directMatch(QStringLiteral("couplings"),row.value("id").toInt(-1))||!visible(row))continue;
         const auto a=document.entity("joints",row.value("firstJointId").toInt(-1)),b=document.entity("joints",row.value("secondJointId").toInt(-1));
         if(a.isEmpty()||b.isEmpty())continue;
         const auto [pa,na]=jointFrame(a,a.value("actionBodyId").toInt(-1));
@@ -219,11 +339,13 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         append(std::move(symbol));
     }
     for(const auto& collection:{"springs","tensionCables","softStops"})for(const auto& value:document.collection(collection)){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        const QString colStr=QString::fromLatin1(collection);
+        if(!directMatch(colStr,row.value("id").toInt(-1))||!visible(row))continue;
         auto a=transform(row.value("bodyIId").toInt(-1),vector(row,"localI",{0,0,0}));
         auto b=transform(row.value("bodyJId").toInt(-1),vector(row,"localJ",{0,0,0}));
         const auto type=row.value("springType").toString();
-        if(QString::fromLatin1(collection)=="springs"&&type!="BodyPoint"){
+        if(colStr=="springs"&&type!="BodyPoint"){
             const auto joint=document.entity("joints",row.value("jointId").toInt(-1));if(joint.isEmpty())continue;
             const auto [origin,axis]=jointFrame(joint,joint.value("actionBodyId").toInt(-1));
             if(type=="Torsional"){
@@ -235,8 +357,8 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
             b=transform(joint.value("baseBodyId").toInt(-1),add(raw,mul(unit(vector(joint,"axis",vector(joint,"baseSpin"))),row.value("installValue").toDouble())));
         }
         auto symbol=make(collection,row,mul(add(a,b),.5),springColor);
-        if(QString::fromLatin1(collection)=="springs")coil(symbol,a,b,scale*.5);
-        else if(QString::fromLatin1(collection)=="softStops"){
+        if(colStr=="springs")coil(symbol,a,b,scale*.5);
+        else if(colStr=="softStops"){
             const int mode=row.value("directionMode").toInt(1);
             const auto direction=unit(transform(mode==2?row.value("bodyIId").toInt(-1):mode==3?row.value("bodyJId").toInt(-1):-1,vector(row,"direction"),true));
             const auto stop=add(b,mul(direction,row.value("stopPosition").toDouble()));
@@ -245,7 +367,8 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         crosshair(symbol,a,scale*.12);crosshair(symbol,b,scale*.12);append(std::move(symbol));
     }
     for(const auto& collection:{"vectorForces","scalarForces","scalarTorques","threePointForces","threePointTorques"})for(const auto& value:document.collection(collection)){
-        const auto row=value.toObject();if(!visible(row))continue;const QString name=QString::fromLatin1(collection);
+        const auto row=value.toObject();const QString name=QString::fromLatin1(collection);
+        if(!directMatch(name,row.value("id").toInt(-1))||!visible(row))continue;
         Point origin{},direction{};
         const bool vectorForce=name=="vectorForces";
         if(vectorForce){
@@ -272,7 +395,9 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         append(std::move(symbol));
     }
     for(const auto& value:document.collection("markers")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        const int mid=row.value("id").toInt(-1);
+        if((!directMatch(QStringLiteral("markers"),mid)&&!referencedMarkers.contains(mid))||!visible(row))continue;
         const int body=row.value("bodyId").toInt(-1);const auto position=point(row.value("localPosition"));if(!position)continue;
         const auto origin=transform(body,*position);const auto q=row.value("localRotation").toObject();
         QQuaternion orientation(float(q.value("w").toDouble(1)),float(q.value("x").toDouble()),float(q.value("y").toDouble()),float(q.value("z").toDouble()));
@@ -284,7 +409,8 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
             arrow(symbol,origin,transform(body,{double(rotated.x()),double(rotated.y()),double(rotated.z())},true),size);append(std::move(symbol));}
     }
     for(const auto& value:document.collection("sensors")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        if(!directMatch(QStringLiteral("sensors"),row.value("id").toInt(-1))||!visible(row))continue;
         if(row.value("sensorType").toString()=="Distance"){
             const auto a=row.value("pointA").toObject(),b=row.value("pointB").toObject();
             const auto pa=sensorPoint(a.value("bodyId").toInt(-1),vector(a,"localPos",{0,0,0}));
@@ -298,7 +424,9 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
     }
     const QColor hydraulicColor(22,128,184);
     for(const auto& value:document.collection("hydraulicCylinders")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        const int cid=row.value("id").toInt(-1);
+        if((!directMatch(QStringLiteral("hydraulicCylinders"),cid)&&!referencedHydCylinders.contains(cid))||!visible(row))continue;
         Point a{},b{};
         if(row.value("mountMode").toString()=="Joint"){
             const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
@@ -329,7 +457,9 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
         append(std::move(symbol));
     }
     for(const auto& value:document.collection("hydraulicMotors")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        const int mid=row.value("id").toInt(-1);
+        if((!directMatch(QStringLiteral("hydraulicMotors"),mid)&&!referencedHydMotors.contains(mid))||!visible(row))continue;
         const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
         if(joint.isEmpty())continue;
         const auto [origin,axis]=jointFrame(joint,joint.value("actionBodyId").toInt(-1));
@@ -347,7 +477,9 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
     }
     const QColor electricColor(46,164,108);
     for(const auto& value:document.collection("electricMotors")){
-        const auto row=value.toObject();if(!visible(row))continue;
+        const auto row=value.toObject();
+        const int emId=row.value("id").toInt(-1);
+        if((!directMatch(QStringLiteral("electricMotors"),emId)&&!referencedElecActuators.value(QStringLiteral("electricMotors")).contains(emId))||!visible(row))continue;
         const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));
         if(joint.isEmpty())continue;
         const auto [origin,axis]=jointFrame(joint,joint.value("actionBodyId").toInt(-1));
@@ -366,7 +498,9 @@ QVector<MotionSymbol> nativeMotionSymbols(const CadDocument& cad,const NativeMot
     }
     const QColor integratedColor(142,92,205);
     const auto drawLinearServoSymbol=[&](const char* colName,const QJsonObject& row,bool hasSidePumpPod){
-        if(!visible(row))return;
+        const QString colStr=QString::fromLatin1(colName);
+        const int actId=row.value("id").toInt(-1);
+        if((!directMatch(colStr,actId)&&!referencedElecActuators.value(colStr).contains(actId))||!visible(row))return;
         Point a{},b{};
         if(row.value("mountMode").toString()=="Joint"){
             const auto joint=document.entity("joints",row.value("targetJointId").toInt(-1));

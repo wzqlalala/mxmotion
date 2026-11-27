@@ -24,6 +24,7 @@ public:
     void endEdit();
     void refreshMeshes();
     void adoptExternalDocument(const NativeMotionDocument& document);
+    void reloadDocument(const NativeMotionDocument& document);
     void setExtensionFields(const QString& collection,int id,const QJsonObject& fields);
     const NativeMotionDocument& document() const { return document_; }
     const CadDocument& cadDocument() const { return cad_; }

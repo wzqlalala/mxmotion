@@ -176,6 +176,121 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
                 !sameProjection(before, projected(view, partId)), "Wheel zoom did not retain its cursor anchor");
         log << "Classic orbit/pan, click isolation and cursor-anchored wheel zoom passed\n";
 
+        // Verify default model bounding-box rotation center, view center, custom interactive pick,
+        // and Classic left-button OrbitSpace / OrbitPlane / Pan modes.
+        reset();
+        const auto pointNear3D = [](const Point& a, const Point& b, double tol = 1e-3) {
+            return std::hypot(std::hypot(a[0] - b[0], a[1] - b[1]), a[2] - b[2]) < tol;
+        };
+        require(view.rotationCenterMode() == OccViewport::RotationCenterMode::ModelCenter &&
+                pointNear3D(view.rotationCenter(), {20.0, 15.0, 10.0}),
+                "Default rotation center must equal the model bounding-box center");
+        const QPointF modelCenterBeforeOrbit = view.projectPoint({20.0, 15.0, 10.0});
+        drag(view, center + QPointF(-60, -25), center + QPointF(55, 42), Qt::LeftButton);
+        require(pointsNear(modelCenterBeforeOrbit, view.projectPoint({20.0, 15.0, 10.0}), 0.01),
+                "Classic orbit did not pivot around the model bounding-box center");
+
+        // Adding a translated part updates the default rotation center to the combined model AABB center
+        // automatically on setScene without jumping the existing view.
+        {
+            CadDocument twoPartCad;
+            int firstId = -1, secondId = -1;
+            require(twoPartCad.addPrimitive(Primitive::Box, 40, 30, 20, firstId, error) &&
+                    twoPartCad.addPrimitive(Primitive::Box, 40, 30, 20, secondId, error), error);
+            QMatrix4x4 secondPose;
+            secondPose.translate(60.0f, 0.0f, 0.0f);
+            reset();
+            const auto projBeforeTwoPart = projected(view, partId);
+            view.setScene(twoPartCad, {});
+            view.setPartPoses({{secondId, secondPose}});
+            require(view.rotationCenterMode() == OccViewport::RotationCenterMode::ModelCenter &&
+                    pointNear3D(view.rotationCenter(), {50.0, 15.0, 10.0}),
+                    "Default rotation center did not follow the whole-model bounding-box center");
+            require(sameProjection(projBeforeTwoPart, projected(view, firstId)),
+                    "Updating default model-bounds pivot jumped the displayed scene");
+            const QPointF combinedPivotScreen = view.projectPoint({50.0, 15.0, 10.0});
+            drag(view, center, center + QPointF(64, 38), Qt::LeftButton);
+            require(pointsNear(combinedPivotScreen, view.projectPoint({50.0, 15.0, 10.0}), 0.01),
+                    "Orbit did not use the updated whole-model bounding-box center");
+            view.clearPartPoses();
+            view.setScene(cad, {});
+            reset();
+        }
+
+        // View-center rotation pivot: pan off-center, set pivot to view center without scene jump, then orbit.
+        drag(view, center, center + QPointF(92, -48), Qt::MiddleButton);
+        before = projected(view, partId);
+        view.setRotationCenterToView();
+        require(view.rotationCenterMode() == OccViewport::RotationCenterMode::ViewCenter &&
+                sameProjection(before, projected(view, partId)) &&
+                pointsNear(view.projectPoint(view.rotationCenter()), center, 0.02),
+                "Setting view rotation center jumped the scene or missed viewport center");
+        drag(view, center + QPointF(70, 10), center + QPointF(-20, 65), Qt::LeftButton);
+        require(pointsNear(view.projectPoint(view.rotationCenter()), center, 0.02) &&
+                !sameProjection(before, projected(view, partId)),
+                "Orbit after setRotationCenterToView did not pivot around the viewport center");
+
+        // Custom interactive rotation-center pick mode + Esc isolation from typed picker.
+        reset();
+        view.beginPick(PickKind::Face, false, {partId});
+        view.beginPickRotationCenter();
+        require(view.isPickingRotationCenter() && view.isPicking(),
+                "Custom rotation-center pick unexpectedly cancelled an active typed picker");
+        key(view, QEvent::KeyPress, Qt::Key_Escape);
+        require(!view.isPickingRotationCenter() && view.isPicking() && cancelled == 0,
+                "Esc during custom rotation-center pick did not preserve the active typed picker");
+        view.endPick();
+
+        const Point cornerVertex{40.0, 30.0, 20.0};
+        const QPointF cornerScreen = view.projectPoint(cornerVertex, partId);
+        before = projected(view, partId);
+        view.beginPickRotationCenter();
+        mouse(view, QEvent::MouseMove, cornerScreen, Qt::NoButton, Qt::NoButton);
+        require(!view.grabFramebuffer().isNull(), "Rotation-center hover overlay failed to render");
+        click(view, cornerScreen, Qt::LeftButton);
+        require(!view.isPickingRotationCenter() && selected == 0 &&
+                view.rotationCenterMode() == OccViewport::RotationCenterMode::CustomPoint &&
+                pointNear3D(view.rotationCenter(), cornerVertex) &&
+                sameProjection(before, projected(view, partId)),
+                "Interactive custom rotation-center pick did not snap cleanly without scene jump");
+        drag(view, center, center + QPointF(-75, 48), Qt::LeftButton);
+        require(pointsNear(cornerScreen, view.projectPoint(cornerVertex, partId), 0.02) &&
+                !sameProjection(before, projected(view, partId)),
+                "Classic left-drag orbit did not pivot around the picked custom vertex");
+
+        // Restore model bounding-box rotation center without jumping the current camera view.
+        before = projected(view, partId);
+        view.setRotationCenterToModel();
+        require(view.rotationCenterMode() == OccViewport::RotationCenterMode::ModelCenter &&
+                pointNear3D(view.rotationCenter(), {20.0, 15.0, 10.0}) &&
+                sameProjection(before, projected(view, partId)),
+                "Restoring model rotation center jumped the scene or missed bounds center");
+
+        // Left-button OrbitPlane (screen-plane roll around pivot) and Pan modes.
+        reset();
+        view.setLeftButtonMode(OccViewport::LeftButtonMode::OrbitPlane);
+        before = projected(view, partId);
+        drag(view, center + QPointF(120, 0), center + QPointF(0, -120), Qt::LeftButton);
+        const auto rolled = projected(view, partId);
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            const QPointF d = before[i] - center;
+            require(pointsNear(rolled[i], center + QPointF(d.y(), -d.x()), 0.5),
+                    "Left-button OrbitPlane did not roll in the screen plane around the pivot");
+        }
+        before = projected(view, partId);
+        drag(view, center, center + QPointF(44, -28), Qt::MiddleButton);
+        translated(before, projected(view, partId), {44, -28}, "Middle-button pan failed in OrbitPlane mode");
+
+        reset();
+        view.setLeftButtonMode(OccViewport::LeftButtonMode::Pan);
+        before = projected(view, partId);
+        drag(view, center, center + QPointF(-38, 29), Qt::LeftButton);
+        translated(before, projected(view, partId), {-38, 29}, "Left-button Pan mode did not translate cleanly");
+        require(selected == 0, "Left-button Pan drag unexpectedly selected a part");
+        view.setLeftButtonMode(OccViewport::LeftButtonMode::OrbitSpace);
+        reset();
+        log << "Model/view/custom rotation centers and left-button OrbitSpace/OrbitPlane/Pan modes passed\n";
+
         view.setMouseNavigationMode(OccViewport::MouseNavigationMode::Nx);
         require(view.mouseNavigationHint().contains("Shift+中键") && view.mouseNavigationHint().contains("Ctrl+中键"),
                 "NX navigation help does not describe its modifiers");
@@ -278,13 +393,14 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         view.beginPick(PickKind::Node, true, {partId});
         const auto first = view.projectPoint({0,0,20},partId), last = view.projectPoint({15,10,20},partId);
         before = projected(view, partId);
-        drag(view, first, last, Qt::LeftButton, Qt::ControlModifier);
+        drag(view, first, last, Qt::LeftButton, Qt::ShiftModifier);
         require(view.pickSelection().size() == 2 && view.pickSelection()[0].nodeId == 101 && view.pickSelection()[1].nodeId == 205,
-                "NX navigation broke Ctrl-left rectangle node IDs");
+                "NX navigation broke Shift-left rectangle node IDs");
         require(sameProjection(before, projected(view, partId)), "Node rectangle moved the camera");
-        click(view, view.projectPoint(cloud.nodes.front(), partId), Qt::RightButton);
+        mouse(view, QEvent::MouseButtonPress, view.projectPoint(cloud.nodes.front(), partId), Qt::RightButton, Qt::RightButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonRelease, view.projectPoint(cloud.nodes.front(), partId), Qt::RightButton, Qt::NoButton, Qt::ControlModifier);
         require(view.pickSelection().size() == 1 && view.pickSelection().front().nodeId == 205,
-                "NX right click did not remove the targeted node");
+                "Ctrl-right click did not remove the targeted node");
         mouse(view, QEvent::MouseButtonPress, center, Qt::MiddleButton, Qt::MiddleButton);
         key(view, QEvent::KeyPress, Qt::Key_Escape);
         require(view.isPicking() && view.pickSelection().size() == 1 && cancelled == 0,
@@ -294,10 +410,10 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
         key(view, QEvent::KeyPress, Qt::Key_Escape);
         require(!view.isPicking() && cancelled == 1, "Idle Esc no longer cancels the pick session");
         view.beginPick(PickKind::Node, true, {partId});
-        mouse(view, QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
-        mouse(view, QEvent::MouseMove, last, Qt::NoButton, Qt::LeftButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, last, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
         QFocusEvent lostFocus(QEvent::FocusOut); QApplication::sendEvent(&view, &lostFocus);
-        mouse(view, QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
         require(view.isPicking() && view.pickSelection().isEmpty(), "Interrupted rectangle committed stale nodes or ended the collector");
         view.setMouseNavigationMode(OccViewport::MouseNavigationMode::Classic);
         require(view.isPicking(), "Changing mouse mode cancelled an active typed picker");
@@ -327,8 +443,11 @@ int runMotionOccNavigationSmoke(QApplication& app, const QString& outputDirector
                 hud->y()+hud->height()+12 == view.height() &&
                 hud->testAttribute(Qt::WA_TransparentForMouseEvents),
                 "Motion's transparent, DPI-aware lower-left triad was not installed");
-        QFont triadFont(QStringLiteral("Segoe UI")); triadFont.setStyleHint(QFont::SansSerif);
-        triadFont.setPointSizeF(std::max(7.5, hud->font().pointSizeF()*.85));
+        QFont triadFont(MxFunctions::UiMetrics::uiFontFamily()); triadFont.setStyleHint(QFont::SansSerif);
+        if (hud->font().pointSizeF() > 0.0)
+            triadFont.setPointSizeF(std::max(7.5, hud->font().pointSizeF()*.85));
+        else
+            triadFont.setPixelSize(std::max(10, int(std::lround(std::max(12, hud->font().pixelSize())*.85))));
         const auto textHeight = QFontMetricsF(triadFont).height();
         view.viewIsometric(); app.processEvents();
         require(view.grab().save(output.filePath(QStringLiteral("motion-triad-isometric.png"))),

@@ -104,6 +104,31 @@ int MotionViewPages::createViewport(MotionWindow& project)
         for (auto* other : project.m_viewports) if (other != view) other->setPickEnabled(!active);
         project.m_refreshViewportPickControls(active);
     });
+    connect(view, &OccViewport::rotationCenterPickModeChanged, &project, [&project, view](bool active) {
+        if (view != project.m_viewport) return;
+        if (auto* action = project.command(Command::CustomRotationCenter)) {
+            const QSignalBlocker blocker(action);
+            action->setChecked(active);
+        }
+        if (active && project.m_notice)
+            project.setStatusNotice(project.tr("自定义旋转中心：请点击模型顶点、棱边或表面设定旋转中心，右键或按 Esc 取消。"));
+    });
+    connect(view, &OccViewport::rotationCenterChanged, &project, [&project, view](const std::array<double, 3>& pt) {
+        if (!project.m_projectActive || view != project.m_viewport || !project.m_notice) return;
+        const QString coords = QStringLiteral("(%1, %2, %3) mm")
+            .arg(pt[0], 0, 'f', 2).arg(pt[1], 0, 'f', 2).arg(pt[2], 0, 'f', 2);
+        switch (view->rotationCenterMode()) {
+        case OccViewport::RotationCenterMode::ModelCenter:
+            project.setStatusNotice(project.tr("已恢复默认旋转中心（模型包围盒中心）：%1").arg(coords));
+            break;
+        case OccViewport::RotationCenterMode::ViewCenter:
+            project.setStatusNotice(project.tr("已设为视图旋转中心：%1").arg(coords));
+            break;
+        case OccViewport::RotationCenterMode::CustomPoint:
+            project.setStatusNotice(project.tr("已设置自定义旋转中心：%1").arg(coords));
+            break;
+        }
+    });
     connect(view, &OccViewport::graphicsError, &project, [&project](const QString& error) {
         if (project.m_notice) project.setNotice(project.tr("OpenGL：%1").arg(error), true);
     });
@@ -423,6 +448,13 @@ void MotionWindow::activateViewport(int id)
     m_viewport = next;
     if (auto* context = LegacyPickContext::forObject(this, false)) context->setViewport(next);
     command(next->mouseNavigationMode() == OccViewport::MouseNavigationMode::Nx ? Command::NavigationNx : Command::NavigationClassic)->setChecked(true);
+    const Command leftModes[] = {Command::OrbitSpaceMode, Command::OrbitPlaneMode, Command::PanDragMode};
+    command(leftModes[static_cast<int>(next->leftButtonMode())])->setChecked(true);
+    {
+        auto* customPivot = command(Command::CustomRotationCenter);
+        const QSignalBlocker blocker(customPivot);
+        customPivot->setChecked(next->isPickingRotationCenter());
+    }
     const Command displayModes[] = {Command::ShadedEdges, Command::Shaded, Command::Wireframe, Command::MeshDisplay};
     command(displayModes[static_cast<int>(next->displayMode())])->setChecked(true);
     if (m_viewPageTree) m_refreshViewportPickControls(false);

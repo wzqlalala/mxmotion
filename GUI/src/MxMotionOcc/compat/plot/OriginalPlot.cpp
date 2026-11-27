@@ -1,6 +1,7 @@
 #include "mPlotView.h"
 #include "mPlotViewStyleWidget.h"
 #include "mPlotBasic.h"
+#include "UiMetrics.h"
 #include "UiPalette.h"
 #include <QCheckBox>
 #include <QColorDialog>
@@ -30,6 +31,25 @@
 
 namespace PlotView {
 namespace {
+QwtText makeQwtTitleText(const QString& content, int extraPx = 0) {
+    QFont font(MxFunctions::UiMetrics::uiFontFamily());
+    font.setPixelSize(MxFunctions::UiMetrics::bodyFontSize() + extraPx);
+    font.setWeight(QFont::Bold);
+    QwtText text(content);
+    text.setFont(font);
+    text.setColor(MxFunctions::UiPalette::text());
+    return text;
+}
+void applyOriginalPlotFonts(QwtPlot* plot) {
+    if(!plot)return;
+    QFont bodyFont(MxFunctions::UiMetrics::uiFontFamily());
+    bodyFont.setPixelSize(MxFunctions::UiMetrics::bodyFontSize());
+    plot->setFont(bodyFont);
+    QFont tickFont(MxFunctions::UiMetrics::uiFontFamily());
+    tickFont.setPixelSize(MxFunctions::UiMetrics::helperFontSize());
+    for(int axis=0;axis<QwtPlot::axisCnt;++axis)plot->setAxisFont(axis,tickFont);
+    if(auto* legend=plot->legend())legend->setFont(bodyFont);
+}
 class OriginalLegend final:public QwtLegend {
 protected:
     void updateWidget(QWidget* widget,const QwtLegendData& data) override {
@@ -61,6 +81,7 @@ mPlotView::mPlotView(QWidget* parent):QWidget(parent)
     setObjectName(QStringLiteral("mPlotView"));
     auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,0);
     plot_=new QwtPlot(this);plot_->setObjectName(QStringLiteral("originalMotionQwtPlot"));layout->addWidget(plot_);
+    applyOriginalPlotFonts(plot_);
     auto* canvas=static_cast<QwtPlotCanvas*>(plot_->canvas());canvas->setFrameShape(QFrame::NoFrame);
     grid_=new QwtPlotGrid;grid_->setMajorPen(MxFunctions::UiPalette::border(),0,Qt::DotLine);grid_->attach(plot_);
     axes_[X_Top].isVisible=false;axes_[Y_Right].isVisible=false;
@@ -139,7 +160,7 @@ void mPlotView::setAxisSettings(AxisId axis,const AxisSettings& settings)
     if(!settings.autoScale&&(!std::isfinite(settings.minimum)||!std::isfinite(settings.maximum)
         ||settings.maximum<=settings.minimum||(settings.isLog&&settings.minimum<=0)))return;
     axes_[std::size_t(axis)]=settings;
-    plot_->enableAxis(int(axis),settings.isVisible);plot_->setAxisTitle(int(axis),settings.title);
+    plot_->enableAxis(int(axis),settings.isVisible);plot_->setAxisTitle(int(axis),makeQwtTitleText(settings.title));
     plot_->setAxisScaleEngine(int(axis),settings.isLog?static_cast<QwtScaleEngine*>(new QwtLogScaleEngine):new QwtLinearScaleEngine);
     if(settings.autoScale)plot_->setAxisAutoScale(int(axis));else plot_->setAxisScale(int(axis),settings.minimum,settings.maximum,settings.stepSize);
     plot_->replot();
@@ -150,8 +171,9 @@ void mPlotView::updateAxisLog(AxisId axis,const AxisSettings& settings){setAxisS
 PlotSettings mPlotView::getPlotSettings()const{auto result=settings_;result.title=plot_->title().text();return result;}
 void mPlotView::setPlotSettings(const PlotSettings& settings)
 {
-    settings_=settings;plot_->setTitle(settings.title);plot_->setCanvasBackground(settings.backgroundColor);grid_->setVisible(settings.showGrid);
+    settings_=settings;plot_->setTitle(makeQwtTitleText(settings.title,1));plot_->setCanvasBackground(settings.backgroundColor);grid_->setVisible(settings.showGrid);
     if(settings.showLegend&&!plot_->legend())plot_->insertLegend(new OriginalLegend,QwtPlot::BottomLegend);
+    applyOriginalPlotFonts(plot_);
     if(plot_->legend())plot_->legend()->setVisible(settings.showLegend);
     plot_->replot();
 }

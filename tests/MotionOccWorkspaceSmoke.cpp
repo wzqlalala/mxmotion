@@ -1,3 +1,10 @@
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#endif
+
 #include "MotionWorkspace.h"
 #include "MotionWindow.h"
 #include "OccViewport.h"
@@ -23,6 +30,7 @@
 #include <QPointer>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 
@@ -300,6 +308,66 @@ int runMotionOccWorkspaceSmoke(QApplication&, const QString& directory)
                 QStringLiteral("Opening the saved project replaced the independent second project"));
         dialogs.check();
         log << "PASS Reopening a saved model preserves the other open project\n";
+
+        // 验证主工作台最大化状态下：客户区原点无双倍内缩偏移、底部预留 1px 防 OpenGL 全屏独占抢占，
+        // 且“文件”菜单与模型树右键菜单均能正常弹出响应。
+        workspace.showMaximized();
+        QApplication::processEvents();
+#ifdef Q_OS_WIN
+        const HWND hwnd = reinterpret_cast<HWND>(workspace.winId());
+        if (::IsZoomed(hwnd)) {
+            if (const HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)) {
+                MONITORINFO mi{};
+                mi.cbSize = sizeof(mi);
+                if (GetMonitorInfoW(hMon, &mi)) {
+                    POINT clientOrigin{0, 0};
+                    ClientToScreen(hwnd, &clientOrigin);
+                    RECT clientRect{};
+                    GetClientRect(hwnd, &clientRect);
+                    require(clientOrigin.x == mi.rcWork.left && clientOrigin.y == mi.rcWork.top,
+                            QStringLiteral("Maximized client origin shifted from rcWork top-left: (%1,%2) vs (%3,%4)")
+                                .arg(clientOrigin.x).arg(clientOrigin.y).arg(mi.rcWork.left).arg(mi.rcWork.top));
+                    const int expectedH = (mi.rcWork.bottom - mi.rcWork.top) - 1;
+                    require((clientRect.bottom - clientRect.top) == expectedH,
+                            QStringLiteral("Maximized client height did not reserve 1px anti-fullscreen margin: %1 vs %2")
+                                .arg(clientRect.bottom - clientRect.top).arg(expectedH));
+                }
+            }
+        }
+#endif
+        auto* fileBtn = second->findChild<QToolButton*>(QStringLiteral("FileButton"));
+        require(fileBtn && fileBtn->menu(), QStringLiteral("Maximized active project missing FileButton menu"));
+        bool fileMenuShown = false;
+        QTimer::singleShot(0, fileBtn->menu(), [&] {
+            if (auto* popup = qobject_cast<QMenu*>(QApplication::activePopupWidget())) {
+                fileMenuShown = popup->isVisible() && !popup->actions().isEmpty();
+                popup->close();
+            }
+        });
+        fileBtn->showMenu();
+        QApplication::processEvents();
+        require(fileMenuShown, QStringLiteral("File menu failed to open while workspace is maximized"));
+
+        auto& maxTree = modelTree(*second);
+        maxTree.expandToDepth(2);
+        QApplication::processEvents();
+        QTreeWidgetItem* partRow = nullptr;
+        for (QTreeWidgetItemIterator it(&maxTree); *it; ++it) {
+            if ((*it)->data(0, Qt::UserRole + 1).toInt() == int(ModelNode::Part)) { partRow = *it; break; }
+        }
+        require(partRow != nullptr, QStringLiteral("Missing part row in maximized model tree"));
+        bool treeMenuShown = false;
+        QTimer::singleShot(0, &maxTree, [&] {
+            if (auto* popup = qobject_cast<QMenu*>(QApplication::activePopupWidget())) {
+                treeMenuShown = popup->isVisible() && !popup->actions().isEmpty();
+                popup->close();
+            }
+        });
+        QMetaObject::invokeMethod(&maxTree, "customContextMenuRequested", Qt::DirectConnection,
+                                  Q_ARG(QPoint, maxTree.visualItemRect(partRow).center()));
+        QApplication::processEvents();
+        require(treeMenuShown, QStringLiteral("Model tree context menu failed to open while workspace is maximized"));
+        log << "PASS Maximized workspace preserves exact client origin, 1px OpenGL safe margin, File menu and tree context menu\n";
         return 0;
     } catch (const std::exception& exception) {
         log << "FAIL: " << exception.what() << '\n';

@@ -46,11 +46,35 @@ Key key(Type type, const RenderPickResultData& value) { return {type,value.part_
 }
 
 struct LegacyPickContext::GeometryIndex {
-    struct Location { int partId; int localIndex; };
+    struct Location { int partId = -1; int localIndex = -1; };
     std::vector<std::pair<int,TopoDS_Shape>> parts;
+    std::array<bool,4> categoryBuilt{false,false,false,false};
     std::array<TopTools_IndexedMapOfShape,4> globals;
-    std::array<std::map<int,std::vector<Location>>,4> locations;
+    std::array<std::vector<Location>,4> primaryLocations;
+    std::array<std::map<int,std::vector<Location>>,4> extraLocations;
+    std::map<int,std::array<std::vector<int>,4>> partLocalToGlobal;
+    std::array<std::vector<PickResult>,4> resolvedGeometryCache;
+    std::array<std::vector<std::uint8_t>,4> resolvedGeometryState; // 0=未算, 1=有效, 2=无效
+    std::map<int,PickResult> partCentroidCache;
+    std::map<int,std::vector<std::array<std::uint32_t,2>>> meshEdgeCache;
     std::map<Key,PickResult> sampled;
+
+    void clearAll()
+    {
+        parts.clear();
+        sampled.clear();
+        partLocalToGlobal.clear();
+        partCentroidCache.clear();
+        meshEdgeCache.clear();
+        for (int c = 0; c < 4; ++c) {
+            categoryBuilt[c] = false;
+            globals[c].Clear();
+            primaryLocations[c].clear();
+            extraLocations[c].clear();
+            resolvedGeometryCache[c].clear();
+            resolvedGeometryState[c].clear();
+        }
+    }
 };
 QPointer<LegacyPickContext> LegacyPickContext::s_current;
 
@@ -61,7 +85,7 @@ LegacyPickContext::LegacyPickContext(QWidget* owner, OccViewport* viewport, cons
     setObjectName(QStringLiteral("originalGuiPickContext"));
     if (owner) owner->setProperty("motionOccLegacyPickContext", QVariant::fromValue(static_cast<QObject*>(this)));
     s_current = this;
-    ensureGeometry();
+    syncDocumentIdentity();
     setViewport(viewport);
 }
 
@@ -123,7 +147,7 @@ LegacyPickContext* LegacyPickContext::activeForViewport(const OccViewport& viewp
 
 void LegacyPickContext::setMeshes(const std::map<int,FemMesh>* meshes)
 {
-    m_meshes=meshes;m_index->sampled.clear();
+    m_meshes=meshes;m_index->sampled.clear();m_index->meshEdgeCache.clear();
     for(auto it=m_nodeIds.begin();it!=m_nodeIds.end();) {
         const auto mesh=meshes?meshes->find(it->first):std::map<int,FemMesh>::const_iterator{};
         if(!meshes || mesh==meshes->end() || it->second.size()!=int(mesh->second.nodes.size()))it=m_nodeIds.erase(it);
@@ -135,6 +159,7 @@ void LegacyPickContext::setNodeIds(int partId,const QVector<int>& ids)
     if(ids.isEmpty()) {
         m_nodeIds.erase(partId);
         m_index->sampled.clear();
+        m_index->meshEdgeCache.erase(partId);
         if(m_viewport&&m_meshes) {
             const auto mesh=m_meshes->find(partId);
             if(mesh!=m_meshes->end())m_viewport->setPickNodes(partId,mesh->second);
@@ -144,10 +169,16 @@ void LegacyPickContext::setNodeIds(int partId,const QVector<int>& ids)
     if(!m_meshes)return;
     const auto mesh=m_meshes->find(partId);
     if(mesh==m_meshes->end() || ids.size()!=int(mesh->second.nodes.size()))return;
+    const auto existing = m_nodeIds.find(partId);
+    if (existing != m_nodeIds.end() && existing->second == ids) {
+        if (m_viewport) m_viewport->setPickNodes(partId, mesh->second, ids);
+        return;
+    }
     std::set<int> unique;
     for(int id:ids)if(id<=0 || !unique.insert(id).second)return;
     m_nodeIds[partId]=ids;
     m_index->sampled.clear();
+    m_index->meshEdgeCache.erase(partId);
     if(m_viewport)m_viewport->setPickNodes(partId,mesh->second,ids);
 }
 QVector<int> LegacyPickContext::nodeIds(int partId) const
@@ -162,28 +193,49 @@ QVector<int> LegacyPickContext::nodeIds(int partId) const
     for(int i=0;i<int(mesh->second.nodes.size());++i)result.append(i+1);
     return result;
 }
-void LegacyPickContext::refreshGeometry() { ensureGeometry(); }
-void LegacyPickContext::ensureGeometry() const
+void LegacyPickContext::refreshGeometry() { syncDocumentIdentity(); }
+void LegacyPickContext::syncDocumentIdentity() const
 {
     const auto& parts = m_document.parts();
     bool same = parts.size() == m_index->parts.size();
     if (same) for (std::size_t i=0;i<parts.size();++i)
         if (parts[i].id != m_index->parts[i].first || !parts[i].shape.IsEqual(m_index->parts[i].second)) { same = false; break; }
     if (same) return;
-    m_index->parts.clear(); m_index->sampled.clear();
-    for (auto& map : m_index->globals) map.Clear();
-    for (auto& map : m_index->locations) map.clear();
+    m_index->clearAll();
+    m_index->parts.reserve(parts.size());
+    for (const auto& part : parts) m_index->parts.emplace_back(part.id, part.shape);
+}
+void LegacyPickContext::ensureCategory(int c) const
+{
+    syncDocumentIdentity();
+    if (c < 0 || c >= 4 || m_index->categoryBuilt[c]) return;
+    m_index->categoryBuilt[c] = true;
     const TopAbs_ShapeEnum kinds[] = {TopAbs_VERTEX,TopAbs_EDGE,TopAbs_FACE,TopAbs_SOLID};
+    const auto& parts = m_document.parts();
+    auto& globals = m_index->globals[c];
+    auto& primary = m_index->primaryLocations[c];
+    auto& extras = m_index->extraLocations[c];
     for (const auto& part : parts) {
-        m_index->parts.emplace_back(part.id,part.shape);
-        for (int c=0;c<4;++c) {
-            TopTools_IndexedMapOfShape local; TopExp::MapShapes(part.shape,kinds[c],local);
-            for (int index=1;index<=local.Extent();++index) {
-                const int globalId=m_index->globals[c].Add(local(index));
-                m_index->locations[c][globalId].push_back({part.id,index});
+        TopTools_IndexedMapOfShape local;
+        TopExp::MapShapes(part.shape, kinds[c], local);
+        auto& localMap = m_index->partLocalToGlobal[part.id][c];
+        localMap.resize(std::size_t(local.Extent()));
+        for (int index = 1; index <= local.Extent(); ++index) {
+            const int globalId = globals.Add(local(index));
+            localMap[std::size_t(index - 1)] = globalId;
+            if (int(primary.size()) < globalId) primary.resize(std::size_t(globalId));
+            auto& first = primary[std::size_t(globalId - 1)];
+            if (first.partId < 0) {
+                first = {part.id, index};
+            } else if (first.partId != part.id || first.localIndex != index) {
+                auto& list = extras[globalId];
+                if (list.empty()) list.push_back(first);
+                list.push_back({part.id, index});
             }
         }
     }
+    m_index->resolvedGeometryCache[c].resize(primary.size());
+    m_index->resolvedGeometryState[c].assign(primary.size(), 0);
 }
 PickKind LegacyPickContext::toKind(Type type)
 {
@@ -194,11 +246,13 @@ PickKind LegacyPickContext::toKind(Type type)
 }
 int LegacyPickContext::globalTopologyId(const PickResult& pick) const
 {
-    ensureGeometry(); const int c=category(typeOf(pick.kind));
+    const int c=category(typeOf(pick.kind));
     if (c<0 || !m_document.part(pick.partId)) return -1;
-    const TopAbs_ShapeEnum kinds[] = {TopAbs_VERTEX,TopAbs_EDGE,TopAbs_FACE,TopAbs_SOLID};
-    TopTools_IndexedMapOfShape local; TopExp::MapShapes(m_document.part(pick.partId)->shape,kinds[c],local);
-    return pick.index>0 && pick.index<=local.Extent() ? m_index->globals[c].FindIndex(local(pick.index)) : -1;
+    ensureCategory(c);
+    const auto partIt = m_index->partLocalToGlobal.find(pick.partId);
+    if (partIt == m_index->partLocalToGlobal.end()) return -1;
+    const auto& localMap = partIt->second[c];
+    return (pick.index > 0 && std::size_t(pick.index) <= localMap.size()) ? localMap[std::size_t(pick.index - 1)] : -1;
 }
 std::pair<Type,RenderPickResultData> LegacyPickContext::toLegacy(const PickResult& pick, Type selectedType)
 {
@@ -210,7 +264,7 @@ std::pair<Type,RenderPickResultData> LegacyPickContext::toLegacy(const PickResul
         result.result_id = pick.partId;
         return {type, result};
     }
-    ensureGeometry();
+    syncDocumentIdentity();
     if (category(type)>=0) result.result_id=globalTopologyId(pick);
     else if (type==Type::Node) result.result_id=pick.nodeId;
     else if (type==Type::ElementEdge) {
@@ -224,16 +278,32 @@ std::pair<Type,RenderPickResultData> LegacyPickContext::toLegacy(const PickResul
 
 PickResult LegacyPickContext::resolveGeometry(Type type, int globalId, int partHint) const
 {
-    ensureGeometry(); const int c=category(type); PickResult out;
-    if (c<0 || globalId<1 || globalId>m_index->globals[c].Extent()) return out;
-    const auto found=m_index->locations[c].find(globalId);
-    if (found==m_index->locations[c].end() || found->second.empty()) return out;
-    auto location=found->second.front();
-    if (partHint>0) {
-        const auto match=std::find_if(found->second.begin(),found->second.end(),[partHint](const auto& p){return p.partId==partHint;});
-        if (match==found->second.end()) return out;
-        location=*match;
+    const int c=category(type); PickResult out;
+    if (c<0) return out;
+    ensureCategory(c);
+    if (globalId<1 || globalId>m_index->globals[c].Extent()) return out;
+    const auto& primary = m_index->primaryLocations[c][std::size_t(globalId - 1)];
+    if (primary.partId < 0) return out;
+    auto location = primary;
+    if (partHint > 0 && location.partId != partHint) {
+        const auto extraIt = m_index->extraLocations[c].find(globalId);
+        if (extraIt == m_index->extraLocations[c].end()) return out;
+        const auto match = std::find_if(extraIt->second.begin(), extraIt->second.end(),
+            [partHint](const auto& p) { return p.partId == partHint; });
+        if (match == extraIt->second.end()) return out;
+        location = *match;
     }
+
+    auto& state = m_index->resolvedGeometryState[c][std::size_t(globalId - 1)];
+    auto& cached = m_index->resolvedGeometryCache[c][std::size_t(globalId - 1)];
+    if (state == 2) return {};
+    if (state == 1) {
+        out = cached;
+        out.partId = location.partId;
+        out.index = location.localIndex;
+        return out;
+    }
+
     out.kind=toKind(type); out.partId=location.partId; out.index=location.localIndex;
     const auto& shape=m_index->globals[c](globalId);
     try {
@@ -252,9 +322,9 @@ PickResult LegacyPickContext::resolveGeometry(Type type, int globalId, int partH
         } else {
             GProp_GProps props;
             if (type==Type::GeoSolid) BRepGProp::VolumeProperties(shape,props); else BRepGProp::SurfaceProperties(shape,props);
-            if (std::abs(props.Mass())<=1e-14) return {};
+            if (std::abs(props.Mass())<=1e-14) { state = 2; return {}; }
             out.position=xyz(props.CentreOfMass());
-            if (type==Type::GeoFace) {
+            if (type==Type::GeoFace && !BRep_Tool::Surface(TopoDS::Face(shape)).IsNull()) {
                 BRepAdaptor_Surface surface(TopoDS::Face(shape));
                 const double u=(surface.FirstUParameter()+surface.LastUParameter())*.5;
                 const double v=(surface.FirstVParameter()+surface.LastVParameter())*.5;
@@ -269,12 +339,14 @@ PickResult LegacyPickContext::resolveGeometry(Type type, int globalId, int partH
             }
         }
         out.hitPosition=out.position;
-    } catch (const Standard_Failure&) { return {}; }
+    } catch (const Standard_Failure&) { state = 2; return {}; }
+    cached = out;
+    state = 1;
     return out;
 }
 PickResult LegacyPickContext::resolve(Type type,const RenderPickResultData& value) const
 {
-    ensureGeometry();
+    syncDocumentIdentity();
     const auto sampled=m_index->sampled.find(key(type,value));
     if (category(type)>=0) {
         auto exact=resolveGeometry(type,value.result_id,value.part_id);
@@ -292,12 +364,37 @@ PickResult LegacyPickContext::resolve(Type type,const RenderPickResultData& valu
     if (type==Type::Part) {
         out.partId=value.part_id>0 ? value.part_id : value.result_id;
         const auto* part=m_document.part(out.partId); if (!part) return {};
+        const auto cachedPart = m_index->partCentroidCache.find(out.partId);
+        if (cachedPart != m_index->partCentroidCache.end()) return cachedPart->second;
+        if (part->tessellatedDisplayOnly && !part->display.triangles.empty()) {
+            double areaSum = 0.0;
+            std::array<double, 3> weighted{};
+            for (const auto& tri : part->display.triangles) {
+                const auto& a = part->display.vertices[tri[0]];
+                const auto& b = part->display.vertices[tri[1]];
+                const auto& c = part->display.vertices[tri[2]];
+                const QVector3D ab = b - a, ac = c - a;
+                const double area2 = double(QVector3D::crossProduct(ab, ac).length());
+                if (!(area2 > 0.0)) continue;
+                areaSum += area2;
+                weighted[0] += area2 * (double(a.x()) + double(b.x()) + double(c.x())) / 3.0;
+                weighted[1] += area2 * (double(a.y()) + double(b.y()) + double(c.y())) / 3.0;
+                weighted[2] += area2 * (double(a.z()) + double(b.z()) + double(c.z())) / 3.0;
+            }
+            if (areaSum > 0.0) {
+                out.position = out.hitPosition = {weighted[0]/areaSum, weighted[1]/areaSum, weighted[2]/areaSum};
+                m_index->partCentroidCache[out.partId] = out;
+                return out;
+            }
+        }
         try {
             GProp_GProps props; BRepGProp::VolumeProperties(part->shape,props);
             if (std::abs(props.Mass())<=1e-14) BRepGProp::SurfaceProperties(part->shape,props);
             if (std::abs(props.Mass())<=1e-14) BRepGProp::LinearProperties(part->shape,props);
             if (std::abs(props.Mass())<=1e-14) return {};
-            out.position=out.hitPosition=xyz(props.CentreOfMass()); return out;
+            out.position=out.hitPosition=xyz(props.CentreOfMass());
+            m_index->partCentroidCache[out.partId] = out;
+            return out;
         } catch (const Standard_Failure&) { return {}; }
     }
     if (!m_meshes) return {};
@@ -319,12 +416,18 @@ PickResult LegacyPickContext::resolve(Type type,const RenderPickResultData& valu
     } else if (type==Type::ElementEdge) {
         const int a=nodeIndex(value.result_id),b=nodeIndex(value.result_id2);
         if (a<0 || b<0 || a==b) return {};
-        std::set<std::array<std::uint32_t,2>> edges;
-        const auto add=[&](std::uint32_t x,std::uint32_t y){edges.insert({std::min(x,y),std::max(x,y)});};
-        for (const auto& face:mesh.surface) for (int i=0;i<3;++i) add(face[i],face[(i+1)%3]);
-        for (const auto& cell:mesh.tetrahedra) for (int i=0;i<4;++i) for (int j=i+1;j<4;++j) add(cell[i],cell[j]);
-        const auto edge=edges.find({std::uint32_t(std::min(a,b)),std::uint32_t(std::max(a,b))});
-        if (edge==edges.end()) return {};
+        auto& edges = m_index->meshEdgeCache[out.partId];
+        if (edges.empty() && (!mesh.surface.empty() || !mesh.tetrahedra.empty())) {
+            edges.reserve(mesh.surface.size()*3 + mesh.tetrahedra.size()*6);
+            const auto add=[&](std::uint32_t x,std::uint32_t y){edges.push_back({std::min(x,y),std::max(x,y)});};
+            for (const auto& face:mesh.surface) for (int i=0;i<3;++i) add(face[i],face[(i+1)%3]);
+            for (const auto& cell:mesh.tetrahedra) for (int i=0;i<4;++i) for (int j=i+1;j<4;++j) add(cell[i],cell[j]);
+            std::sort(edges.begin(), edges.end());
+            edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        }
+        const std::array<std::uint32_t, 2> needle{std::uint32_t(std::min(a,b)), std::uint32_t(std::max(a,b))};
+        const auto edge = std::lower_bound(edges.begin(), edges.end(), needle);
+        if (edge == edges.end() || *edge != needle) return {};
         out.index=int(std::distance(edges.begin(),edge))+1; nodes.assign(edge->begin(),edge->end());
     } else if (type==Type::Element && !mesh.tetrahedra.empty()) {
         if (value.result_id<1 || value.result_id>int(mesh.tetrahedra.size())) return {};

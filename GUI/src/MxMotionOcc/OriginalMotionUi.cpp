@@ -69,11 +69,17 @@ void MotionWindow::ensureOriginalMotionContext() {
     if (!m_projectActive) return;
     ensureOriginalCurveHost();
     if(!m_model.nativeDocument)return;
-    if(m_original && m_original->document().root==m_model.nativeDocument->root
-       && m_original->document().bodyPartBindings==m_model.nativeDocument->bodyPartBindings
-       && m_original->document().baseDirectory==m_model.nativeDocument->baseDirectory
-       && m_original->document().projectAssetDirectory==m_model.nativeDocument->projectAssetDirectory)
+    if(m_original && &m_original->cadDocument()==&m_document) {
+        m_original->picks()->setViewport(m_viewport);
+        if(m_original->document().root==m_model.nativeDocument->root
+           && m_original->document().bodyPartBindings==m_model.nativeDocument->bodyPartBindings
+           && m_original->document().baseDirectory==m_model.nativeDocument->baseDirectory
+           && m_original->document().projectAssetDirectory==m_model.nativeDocument->projectAssetDirectory)
+            return;
+        m_original->reloadDocument(*m_model.nativeDocument);
+        for(const auto& [id,result]:m_results)syncOriginalMotionResults(id);
         return;
+    }
     m_original.reset();
     m_original=std::make_unique<LegacyMotionContext>(this,m_viewport,m_document,m_meshes,*m_model.nativeDocument);
     connect(m_original.get(),&LegacyMotionContext::documentChanged,this,&MotionWindow::commitOriginalMotionDocument);
@@ -151,6 +157,7 @@ void MotionWindow::commitOriginalMotionDocument(const NativeMotionDocument& docu
     syncNativeMotionModel(m_model);setProjectModified(true);
     updateTree();updateActions();
     if (physicsChanged) refreshMotionSymbols();
+    syncMultiphysicsSchematic(false, false);
 }
 void MotionWindow::publishOriginalSolveProgress(int id,int percent) {
     if(m_original)emit m_original->viewportModel()->motionSolveProgress(id,percent);

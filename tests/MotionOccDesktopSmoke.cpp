@@ -545,6 +545,8 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
         const auto& a = nodes[0].position;
         const auto& b = nodes[1].position;
         const double distance = std::hypot(b[0]-a[0], b[1]-a[1], b[2]-a[2]);
+        selectionDock->toggleView(true);
+        QApplication::processEvents();
         require(selectionTable->rowCount() == 5 && selectionTable->columnCount() == 6
             && selectionTable->item(1, 0) && selectionTable->item(1, 0)->text() == QStringLiteral("距离(mm)"),
             QStringLiteral("Two selected nodes did not open the original measurement rows"));
@@ -555,8 +557,6 @@ int runMotionOccDesktopSmoke(QApplication&, const QString& outputDirectory)
             && firstId && firstId->text().toInt() == nodes[0].nodeId
             && secondId && secondId->text().toInt() == nodes[1].nodeId,
             QStringLiteral("Selection measurement did not report actual node IDs and distance"));
-        selectionDock->toggleView(true);
-        QApplication::processEvents();
         require(window.grab().save(output.filePath(QStringLiteral("selection-info.png"))),
             QStringLiteral("Selection information panel could not be captured"));
         selectionDock->toggleView(false);

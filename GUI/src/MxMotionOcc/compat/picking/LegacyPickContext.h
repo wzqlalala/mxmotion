@@ -39,6 +39,7 @@ public:
     PickResult resolve(MxFunctions::PickDataType type, const RenderPickResultData& value) const;
     PickResult resolveGeometry(MxFunctions::PickDataType type, int globalId, int partHint = -1) const;
     QVector<PickResult> resolve(const LegacyPickMap& data) const;
+    QVector<PickResult> resolvePickerFeedback(const LegacyPickMap& data) const;
     QVector3D averageCoordinate(const LegacyPickMap& data) const;
     QVector3D direction(const LegacyPickMap& data) const;
     int globalTopologyId(const PickResult& pick) const;
@@ -62,8 +63,8 @@ signals:
     void pickTypeChanged(MxFunctions::PickDataType type);
     void selectionRejected(const QString& message);
 private:
-    void ensureGeometry() const;
-    QVector<PickResult> resolvePickerFeedback(const LegacyPickMap& data) const;
+    void syncDocumentIdentity() const;
+    void ensureCategory(int c) const;
     struct GeometryIndex;
     std::unique_ptr<GeometryIndex> m_index;
     QPointer<OccViewport> m_viewport;

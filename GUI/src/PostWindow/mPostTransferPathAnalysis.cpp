@@ -3281,7 +3281,9 @@ namespace PostWindow
             infoMarkers.insert(qwtPlot, marker);
         }
         marker->detach();
-        QString html = QString("<div style='font-family: Arial; font-size: 12px; color: black;'>%1</div>")
+        QString html = QString("<div style='font-family: \"%1\"; font-size: %2px; color: black;'>%3</div>")
+            .arg(MxFunctions::UiMetrics::uiFontFamily())
+            .arg(MxFunctions::UiMetrics::bodyFontSize())
             .arg(infoLines.join("<br>"));
         QwtText text(html);
         text.setRenderFlags(Qt::AlignCenter | Qt::AlignTop);

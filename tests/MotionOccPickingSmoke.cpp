@@ -10,6 +10,7 @@
 #include <TopoDS.hxx>
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QImage>
@@ -121,10 +122,29 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         require(view.pickSelection().size() == 2, "Re-entered session did not restore node picks");
         view.setPickSelection({});
         const auto a = view.projectPoint({0,0,20}, partId), b = view.projectPoint({15,10,20}, partId);
-        mouse(view, QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
-        mouse(view, QEvent::MouseMove, b, Qt::NoButton, Qt::LeftButton, Qt::ControlModifier);
-        mouse(view, QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton, Qt::ControlModifier);
-        require(view.pickSelection().size() == 2 && view.pickSelection()[0].nodeId == 101 && view.pickSelection()[1].nodeId == 205, "Ctrl rectangle did not pick actual nodes inside rectangle");
+        // Shift + 左键拖动 = 框选加
+        mouse(view, QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, b, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        require(view.pickSelection().size() == 2 && view.pickSelection()[0].nodeId == 101 && view.pickSelection()[1].nodeId == 205,
+                "Shift-left rectangle did not box-add actual nodes inside rectangle");
+        // Ctrl + 左键单选加
+        mouse(view, QEvent::MouseButtonPress, view.projectPoint(cloud.nodes[2], partId), Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonRelease, view.projectPoint(cloud.nodes[2], partId), Qt::LeftButton, Qt::NoButton, Qt::ControlModifier);
+        require(view.pickSelection().size() == 3 && view.pickSelection()[2].nodeId == 500,
+                "Ctrl-left click did not single-add node");
+        // Ctrl + 右键单选减
+        mouse(view, QEvent::MouseButtonPress, view.projectPoint(cloud.nodes[2], partId), Qt::RightButton, Qt::RightButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonRelease, view.projectPoint(cloud.nodes[2], partId), Qt::RightButton, Qt::NoButton, Qt::ControlModifier);
+        require(view.pickSelection().size() == 2 && view.pickSelection()[0].nodeId == 101 && view.pickSelection()[1].nodeId == 205,
+                "Ctrl-right click did not single-subtract targeted node");
+        // Shift + 右键拖动 = 框选减
+        const auto subA = view.projectPoint({0,0,20}, partId), subB = view.projectPoint({6,6,20}, partId);
+        mouse(view, QEvent::MouseButtonPress, subA, Qt::RightButton, Qt::RightButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, subB, Qt::NoButton, Qt::RightButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, subB, Qt::RightButton, Qt::NoButton, Qt::ShiftModifier);
+        require(view.pickSelection().size() == 1 && view.pickSelection()[0].nodeId == 205,
+                "Shift-right rectangle did not box-subtract targeted node");
         const auto beforeHover = view.grabFramebuffer();
         mouse(view, QEvent::MouseMove, view.projectPoint(cloud.nodes[2], partId), Qt::NoButton, Qt::NoButton);
         require(view.grabFramebuffer() != beforeHover, "Hover highlight did not update rendered image");
@@ -222,6 +242,87 @@ int runMotionOccPickingSmoke(QApplication& app, const QString& outputDirectory)
         require(picked.partId == ids.front() && pointsNear(picked.position, {40,30,100}),
                 "Remapped prepared part changed its ID or vertex location");
         log << "Prepared scene append preserves existing picks and remaps new geometry IDs\n";
+        view.endPick();
+
+        // 验证视口交互拾取模式下（部件 / 几何面）Ctrl+左键单选加、Ctrl+右键单选减、Shift+左键框选加、Shift+右键框选减，以及大规模网格拾取流畅度
+        cad.clear();
+        int boxA = -1, boxB = -1;
+        require(cad.addPrimitive(Primitive::Box, 20, 20, 20, boxA, error), error);
+        require(cad.addPrimitive(Primitive::Box, 20, 20, 20, boxB, error), error);
+        QMatrix4x4 poseB;
+        poseB.translate(80, 0, 0);
+        view.setScene(cad, {});
+        view.setPartPoses({{boxB, poseB}});
+        view.setSelectionFilter(PickKind::Part);
+        view.viewTop();
+        view.fitAll();
+        app.processEvents();
+        const QPointF ptA = view.projectPoint({10, 10, 20}, boxA);
+        const QPointF ptB = view.projectPoint({10, 10, 20}, boxB);
+        click(view, ptA);
+        mouse(view, QEvent::MouseButtonPress, ptB, Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonRelease, ptB, Qt::LeftButton, Qt::NoButton, Qt::ControlModifier);
+        require(view.viewportSelection().size() == 2, "Part mode Ctrl+left did not single-add second part");
+        mouse(view, QEvent::MouseButtonPress, ptA, Qt::RightButton, Qt::RightButton, Qt::ControlModifier);
+        mouse(view, QEvent::MouseButtonRelease, ptA, Qt::RightButton, Qt::NoButton, Qt::ControlModifier);
+        require(view.viewportSelection().size() == 1 && view.viewportSelection().front().partId == boxB,
+                "Part mode Ctrl+right did not single-subtract first part");
+        const double splitX = (ptA.x() + ptB.x()) * 0.5;
+        const QPointF allTopLeft(10, 10);
+        const QPointF allBottomRight(view.width() - 10, view.height() - 10);
+        mouse(view, QEvent::MouseButtonPress, allTopLeft, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, allBottomRight, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, allBottomRight, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        require(view.viewportSelection().size() == 2, "Part mode Shift+left did not box-add both parts");
+        const QPointF subPartB0(splitX, 10), subPartB1(view.width() - 10, view.height() - 10);
+        mouse(view, QEvent::MouseButtonPress, subPartB0, Qt::RightButton, Qt::RightButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, subPartB1, Qt::NoButton, Qt::RightButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, subPartB1, Qt::RightButton, Qt::NoButton, Qt::ShiftModifier);
+        require(view.viewportSelection().size() == 1 && view.viewportSelection().front().partId == boxA,
+                "Part mode Shift+right did not box-subtract second part");
+
+        view.setSelectionFilter(PickKind::Face);
+        mouse(view, QEvent::MouseButtonPress, allTopLeft, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, allBottomRight, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, allBottomRight, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        require(view.viewportSelection().size() == 12, "Face mode Shift+left did not box-add all 12 faces of 2 boxes");
+        mouse(view, QEvent::MouseButtonPress, subPartB0, Qt::RightButton, Qt::RightButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, subPartB1, Qt::NoButton, Qt::RightButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, subPartB1, Qt::RightButton, Qt::NoButton, Qt::ShiftModifier);
+        require(view.viewportSelection().size() == 6, "Face mode Shift+right did not box-subtract 6 faces of second box");
+
+        FemMesh dense;
+        QVector<int> denseIds;
+        constexpr int nx = 100, ny = 150;
+        dense.nodes.reserve(nx * ny);
+        denseIds.reserve(nx * ny);
+        for (int iy = 0; iy < ny; ++iy) {
+            for (int ix = 0; ix < nx; ++ix) {
+                dense.nodes.push_back({20.0 * ix / (nx - 1), 20.0 * iy / (ny - 1), 20.0});
+                denseIds.append(int(dense.nodes.size()));
+            }
+        }
+        QElapsedTimer timer;
+        timer.start();
+        view.setPickNodes(boxA, dense, denseIds);
+        view.setPickNodes(boxA, dense, denseIds); // 重复调用应命中 O(1) 缓存短路
+        view.beginPick(PickKind::Node, true, {boxA});
+        for (int step = 0; step < 10; ++step)
+            mouse(view, QEvent::MouseMove, QPointF(ptA.x() - 10 + step * 2, ptA.y()), Qt::NoButton, Qt::NoButton);
+        mouse(view, QEvent::MouseButtonPress, QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseMove, QPointF(splitX, view.height() - 10), Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+        mouse(view, QEvent::MouseButtonRelease, QPointF(splitX, view.height() - 10), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        QVector<QVector3D> auxPts;
+        auxPts.reserve(5000);
+        for (int i = 0; i < 5000; ++i) auxPts.append(QVector3D(float(i % 100) * 0.2f, float(i / 100) * 0.4f, 20.0f));
+        view.setAuxiliaryPoints(QStringLiteral("bench_pts"), auxPts, QColor(24, 144, 255), 8.0f);
+        const auto denseImg = view.grabFramebuffer(); // 含 15000 候选+已选节点与 5000 个三维辅助点的整帧渲染
+        view.clearAuxiliaryPoints(QStringLiteral("bench_pts"));
+        const qint64 elapsedMs = timer.elapsed();
+        require(!denseImg.isNull() && view.pickSelection().size() == nx * ny, "Dense 15k-node Shift+left box-add missed nodes");
+        require(elapsedMs < 350, QStringLiteral("Dense 15k-node pick + 5k 3D point highlight frame too slow (%1 ms)").arg(elapsedMs));
+        log << "Part/Face Ctrl+Left/Right & Shift+Left/Right and 15k-node fast pick (" << elapsedMs << " ms) passed\n";
+
         log << "PASS; selection changes=" << changed << "\n"; log.flush();
         view.close(); return 0;
     } catch (const std::exception& failure) {

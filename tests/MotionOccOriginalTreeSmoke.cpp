@@ -1,5 +1,6 @@
 #include "MotionWindow.h"
 #include "MultiphysicsSchematicDialog.h"
+#include "UiMetrics.h"
 #include "OccViewport.h"
 #include "NativeMotionDocument.h"
 #include "NativeBodyMass.h"
@@ -14,18 +15,22 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFontInfo>
 #include <QGraphicsView>
 #include <QImage>
 #include <QJsonArray>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSlider>
+#include <QStatusBar>
 #include <QToolButton>
 #include <QTextStream>
 #include <QTimer>
@@ -188,6 +193,13 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
         expectGlyphs(true, false, "Drive did not restrict glyphs to its target joint");
         select(tree,"markers",11);
         expectGlyphs(false, false, "Unrelated tree node left a cached joint glyph visible", "joint-hidden.png");
+        auto* toggleSymbols = window.findChild<QAction*>("toggleMotionSymbolsAction");
+        require(toggleSymbols && toggleSymbols->isCheckable() && !toggleSymbols->isChecked(),
+            "Viewport toolbar is missing checkable toggleMotionSymbolsAction");
+        toggleSymbols->trigger();
+        expectGlyphs(true, true, "Global 显示运动符号 toggle did not preview all joints");
+        toggleSymbols->trigger();
+        expectGlyphs(false, false, "Unchecking 显示运动符号 toggle did not hide unselected joints");
         menu(tree, node(tree, "joints", 47), "删除");
         log << "PASS framebuffer joint group/leaf/drive/unrelated node and blank viewport click\n";log.flush();
         for(const auto* key:{"bodies","autoFlexBodies","joints","couplings","drives","springs","forceElements",
@@ -327,14 +339,129 @@ int runMotionOccOriginalTreeSmoke(QApplication&,const QString& directory) {
                 "导入/导出运动数据 buttons must be placed immediately after 导入/导出几何模型");
         }
 
-        window.dispatchOriginalMotionAction("openMultiphysicsSchematic");
+        const auto isCompliantUiFont = [](const QWidget* w) {
+            if (!w) return true;
+            const QString fam = w->fontInfo().family();
+            const bool notLegacyFallback = !fam.contains(QStringLiteral("SimSun"), Qt::CaseInsensitive)
+                && !fam.contains(QStringLiteral("宋体"))
+                && !fam.contains(QStringLiteral("Arial"), Qt::CaseInsensitive)
+                && !fam.contains(QStringLiteral("Segoe UI"), Qt::CaseInsensitive);
+            return notLegacyFallback
+                && (fam.contains(QStringLiteral("YaHei"), Qt::CaseInsensitive)
+                    || fam.contains(QStringLiteral("雅黑"))
+                    || fam.compare(MxFunctions::UiMetrics::uiFontFamily(), Qt::CaseInsensitive) == 0);
+        };
+        require(isCompliantUiFont(tree) && isCompliantUiFont(window.statusBar()),
+            QStringLiteral("Main tree or status bar fell back to non-compliant font: tree=%1, status=%2")
+                .arg(tree ? tree->fontInfo().family() : QString(), window.statusBar()->fontInfo().family()));
+
+        // 验证点击模型树机电液节点自动唤出二维原理图并双向联动
+        const int tankNodeId = context()->document().collection("hydraulicNodes").first().toObject().value("id").toInt(-1);
+        const int pumpCompId = context()->document().collection("hydraulicComponents").first().toObject().value("id").toInt(-1);
+        const int hydMotorId = context()->document().collection("hydraulicMotors").first().toObject().value("id").toInt(-1);
+        require(tankNodeId >= 0 && pumpCompId >= 0 && hydMotorId >= 0, "Expected Stage 3 hydraulic entities in document");
+
+        if (auto* preSchem = window.findChild<MultiphysicsSchematicDialog*>("multiphysicsSchematicDialog")) {
+            preSchem->close();
+            QApplication::processEvents();
+        }
+        select(tree, "hydraulicNodes", tankNodeId);
         auto* schem = window.findChild<MultiphysicsSchematicDialog*>("multiphysicsSchematicDialog");
+        require(schem && schem->isVisible(),
+            "Selecting a multiphysics tree node did not auto-open the 2D schematic dialog");
+        require(schem->selectedCollection() == QLatin1String("hydraulicNodes") && schem->selectedEntityId() == tankNodeId,
+            "Auto-opened 2D schematic did not highlight the selected hydraulic node");
+        require(tree->currentItem() == node(tree, "hydraulicNodes", tankNodeId),
+            "Auto-opening 2D schematic stole or altered model tree selection");
+
+        // 验证从二维原理图点击图元反向联动模型树与属性面板
+        require(schem->activateEntityOrPin("hydraulicComponents", pumpCompId),
+            "Could not click pump block inside 2D schematic");
+        QApplication::processEvents();
+        require(tree->currentItem() == node(tree, "hydraulicComponents", pumpCompId),
+            "Clicking a block in 2D schematic did not sync model tree selection");
+        auto* syncedPumpEditor = window.findChild<QWidget*>("nativeEditor_hydraulicComponents");
+        require(syncedPumpEditor && syncedPumpEditor->findChild<QAbstractButton*>("nativeLocateInSchematicBtn")
+            && syncedPumpEditor->findChild<QLabel*>("nativeMultiphysicsTopologySummary"),
+            "Clicking a block in 2D schematic did not open its parameter panel with circuit locator header");
+
+        // 验证“端口连接 (PortConnection)”双端可视化图上拾取与保存
+        window.dispatchOriginalMotionAction("createHydraulicComponent", "PortConnection");
+        QApplication::processEvents();
+        auto* pcEditor = window.findChild<QWidget*>("nativeEditor_hydraulicComponents");
+        auto* pickNodeBtn = pcEditor ? pcEditor->findChild<QPushButton*>("native_pickPort_targetNodeId") : nullptr;
+        auto* pickActBtn = pcEditor ? pcEditor->findChild<QPushButton*>("native_pickPort_actuatorEndpoint") : nullptr;
+        auto* guidedBtn = pcEditor ? pcEditor->findChild<QPushButton*>("native_pickPort_guidedPair") : nullptr;
+        require(pcEditor && pickNodeBtn && pickActBtn && guidedBtn,
+            "PortConnection editor is missing interactive schematic port pick buttons");
+
+        pickNodeBtn->click();
+        QApplication::processEvents();
+        require(schem->isPortPicking() && pickNodeBtn->isChecked(),
+            "Clicking 图上拾取 for PortConnection node did not enter schematic port-picking mode");
+        require(schem->activateEntityOrPin("hydraulicNodes", tankNodeId),
+            "Could not pick target hydraulic node on 2D schematic");
+        QApplication::processEvents();
+        require(!schem->isPortPicking() && !pickNodeBtn->isChecked(),
+            "Schematic port-picking mode did not exit after picking hydraulic node");
+        auto* pcNodeCombo = pcEditor->findChild<QComboBox*>("native_targetNodeId");
+        require(pcNodeCombo && pcNodeCombo->currentData().toInt() == tankNodeId,
+            "Picking hydraulic node on 2D schematic did not populate PortConnection targetNodeId");
+
+        pickActBtn->click();
+        QApplication::processEvents();
+        require(schem->isPortPicking() && pickActBtn->isChecked(),
+            "Clicking 图上选油口 for PortConnection did not enter actuator port-picking mode");
+        require(schem->activateEntityOrPin("hydraulicMotors", hydMotorId, "portBNodeId"),
+            "Could not pick hydraulic motor port B on 2D schematic");
+        QApplication::processEvents();
+        require(!schem->isPortPicking() && !pickActBtn->isChecked(),
+            "Schematic port-picking mode did not exit after picking actuator port");
+        auto* pcActTypeCombo = pcEditor->findChild<QComboBox*>("native_actuatorType");
+        auto* pcActIdCombo = pcEditor->findChild<QComboBox*>("native_actuatorId");
+        auto* pcActPortCombo = pcEditor->findChild<QComboBox*>("native_actuatorPort");
+        require(pcActTypeCombo && pcActTypeCombo->currentData().toString() == QLatin1String("Motor")
+            && pcActIdCombo && pcActIdCombo->currentData().toInt() == hydMotorId
+            && pcActPortCombo && pcActPortCombo->currentData().toString() == QLatin1String("B"),
+            "Picking hydraulic motor port B on 2D schematic did not populate PortConnection actuator fields");
+
+        auto* pcApply = pcEditor->findChild<QPushButton*>("motionApplyButton");
+        require(pcApply != nullptr, "PortConnection editor missing apply button");
+        pcApply->click();
+        QApplication::processEvents();
+        bool foundSavedPortConn = false;
+        for (const auto& v : context()->document().collection("hydraulicComponents")) {
+            const auto o = v.toObject();
+            if (o.value("componentType").toString() == QLatin1String("PortConnection")) {
+                foundSavedPortConn = (o.value("targetNodeId").toInt(-1) == tankNodeId
+                    && o.value("actuatorType").toString() == QLatin1String("Motor")
+                    && o.value("actuatorId").toInt(-1) == hydMotorId
+                    && o.value("actuatorPort").toString() == QLatin1String("B"));
+            }
+        }
+        require(foundSavedPortConn, "Saved PortConnection did not persist picked node and actuator port B");
+
+        window.dispatchOriginalMotionAction("openMultiphysicsSchematic");
+        schem = window.findChild<MultiphysicsSchematicDialog*>("multiphysicsSchematicDialog");
         require(schem && schem->isVisible(), "Multiphysics 2D circuit schematic dialog did not open");
         QApplication::processEvents();
+        require(isCompliantUiFont(schem),
+            QStringLiteral("Multiphysics schematic dialog root font is non-compliant: %1").arg(schem->fontInfo().family()));
+        for (auto* lbl : schem->findChildren<QLabel*>()) {
+            if (!lbl->isVisible()) continue;
+            require(isCompliantUiFont(lbl),
+                QStringLiteral("Schematic label '%1' (%2) rendered with non-compliant font: %3")
+                    .arg(lbl->text(), lbl->objectName(), lbl->fontInfo().family()));
+        }
         const auto schemButtons = schem->findChildren<QAbstractButton*>();
         require(schemButtons.size() >= 14, "Multiphysics schematic dialog is missing expected toolbar/action buttons");
         for (auto* btn : schemButtons) {
             if (!btn->isVisible()) continue;
+            if (!btn->text().isEmpty()) {
+                require(isCompliantUiFont(btn),
+                    QStringLiteral("Schematic button '%1' (%2) rendered with non-compliant font: %3")
+                        .arg(btn->text(), btn->objectName(), btn->fontInfo().family()));
+            }
             const int minReadableWidth = btn->fontMetrics().horizontalAdvance(btn->text()) + 16;
             require(btn->height() >= 28 && btn->width() >= minReadableWidth,
                 QStringLiteral("Schematic button too small or clipped: %1 (%2x%3, need >=%4x28)")

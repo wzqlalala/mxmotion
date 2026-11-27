@@ -3,6 +3,7 @@
 #pragma once
 
 #include "OrientationTriadGeometry.h"
+#include "compat/UiMetrics.h"
 #include "OrientationTriadCamera.h"
 #include "OrientationTriadInteraction.h"
 
@@ -152,10 +153,13 @@ class ViewportOrientationTriad final : public QWidget {
             painter.drawPolygon(face.polygon);
         }
 
-        // Explicit sans-serif avoids the serif XYZ fallback of the old HUD.
-        QFont label_font(QStringLiteral("Segoe UI"));
+        // 统一采用规范无衬线 UI 字体（Windows 下为微软雅黑），同时兼容像素字号与点阵字号缩放
+        QFont label_font(MxFunctions::UiMetrics::uiFontFamily());
         label_font.setStyleHint(QFont::SansSerif);
-        label_font.setPointSizeF(std::max(7.5, font().pointSizeF() * .85));
+        if (font().pointSizeF() > 0.0)
+            label_font.setPointSizeF(std::max(7.5, font().pointSizeF() * .85));
+        else
+            label_font.setPixelSize(std::max(10, int(std::lround(std::max(12, font().pixelSize()) * .85))));
         const QFontMetricsF metrics(label_font);
         const auto labels = OrientationTriadLabelCenters(axes, size(), metrics.height());
         for (int index = 0; index < 3; ++index) {

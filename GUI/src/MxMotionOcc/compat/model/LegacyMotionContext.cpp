@@ -133,6 +133,17 @@ void LegacyMotionContext::adoptExternalDocument(const NativeMotionDocument& docu
     // the original objects while a property widget still holds their address.
     document_=document;
 }
+void LegacyMotionContext::reloadDocument(const NativeMotionDocument& document) {
+    endEdit();
+    flushTimer_.stop();
+    document_ = document;
+    picks_->refreshGeometry();
+    MechPreData::mViewportModelManager::getInstance()->setCurrentViewportModel(viewport_.get());
+    LegacyMotionJsonAdapter::load(inputForOriginalGui(), *model_);
+    baseline_ = LegacyMotionJsonAdapter::save(*model_);
+    flexAttachmentCommits_.clear();
+    confirmedFlexAttachments_.clear();
+}
 void LegacyMotionContext::setExtensionFields(const QString& collection,int id,const QJsonObject& fields) {
     flush();auto data=document_.root.value("motionData").toObject();auto rows=data.value(collection).toArray();
     for(int i=0;i<rows.size();++i) {
@@ -260,6 +271,7 @@ void LegacyMotionContext::watch(QWidget* panel) {
 void LegacyMotionContext::endEdit() {
     if(ending_)return;ending_=true;flush();
     if(unedit) { auto callback=std::move(unedit);unedit={};callback(); }
+    if(render_ && render_->GetSymbolController())render_->GetSymbolController()->clear();
     if(auto* active=MechMainWindow::mPickWidgetController::activeController())active->setPickActive(false);
     panel_.clear();ending_=false;
 }
